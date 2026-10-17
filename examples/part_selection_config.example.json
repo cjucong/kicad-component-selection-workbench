@@ -1,0 +1,11 @@
+{
+  "project_name": "MyBoard",
+  "project_root": "..",
+  "schematic_dir": "DOC",
+  "source_bom": "__schematic__",
+  "lcsc_bom_pattern": "BOM/*LCSC*.csv",
+  "input_refs": "BOM/part_selection_input.txt",
+  "output_overrides": "BOM/part_selection_overrides.json",
+  "stock_cache": "BOM/lcsc_stock_cache.json",
+  "kicad_protocol": "kicad-sch-search"
+}
