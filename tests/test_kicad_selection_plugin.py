@@ -20,6 +20,12 @@ sys.path.insert(0, str(PLUGIN))
 
 
 class SelectionPluginTests(unittest.TestCase):
+    def test_non_ascii_powershell_payload_has_utf8_bom_for_english_windows(self):
+        for name, data in importlib.import_module('package_plugin').package_files().items():
+            if name.endswith('.ps1') and not data.isascii():
+                self.assertTrue(data.startswith(b'\xef\xbb\xbf'), name)
+                data.decode('utf-8-sig')
+
     def setUp(self):
         self.temp = temporary_project(prefix="selection_plugin_")
         self.addCleanup(self.temp.cleanup)
@@ -493,7 +499,7 @@ assert.ok(!bomRowMatchesSearch(row,'missing'));
             self.assertIn("resources", metadata)
             manifest = json.loads(archive.read("plugins/plugin.json"))
             self.assertEqual(manifest["actions"][0]["scopes"], ["pcb", "schematic"])
-            self.assertEqual(metadata["versions"][0]["version"], "0.1.3")
+            self.assertEqual(metadata["versions"][0]["version"], "0.1.4")
             self.assertIn("plugins/__init__.py", names)
             self.assertIn("plugins/" + manifest["actions"][0]["entrypoint"], names)
             self.assertIn("plugins/app/part_selection_server.py", names)
