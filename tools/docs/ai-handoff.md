@@ -60,6 +60,8 @@ WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（sta
 
 候选搜索的 `sources` 包含 domestic、partner、overseas，以及初始商城无匹配后启动的 fallback（补充检索）。进入 fallback 前先发布 querying，退出时区分 ready / empty / failed，不能让补充来源有结果却仅显示初始渠道为空。前端 `candidateSearchStatusText()` 统一区分运行中、部分返回、缓存更新与最终空结果；紧凑状态栏同时容纳筛选标签和数量。回归见 `test_progressive_search.py`，隔离 Chromium 交互见 `run_candidate_search_smoke.py`。
 
+字段编辑的定向合并由 `edited_row_merge_updates()` 和 `save_field_override()` 在 `OVERRIDES_UPDATE_LOCK` 内处理：先基于编辑前的全来源分组确定目标，再保存来源字段及继承选型；前端传 `bom`，不要用当前搜索过滤后的位号猜目标。目标唯一主料及其参数、备选、订货和确认状态沿用，备注/同步基线不复制；原记录和方向在外部 `row_merge_*` 备份后才原子保存。目标原记录不改，没有匹配目标/无变化/目标多主料冲突时不套用继承。不得在普通 `row_selection_updates()` 中按排序挑主料，保留原冲突清空政策。见 `test_directed_row_merge.py` 和 `run_directed_row_merge_smoke.py`。
+
 读取工作台状态使用 PartSelectionApp.rows()，不要自行拼合 CSV、记录和库存。选料记录默认在目标工程 BOM/part_selection_overrides.json；同步审计和运行日志在 bom_dir，分别以 CSV 和 JSONL 保存。按 attempt_id 串联事务。
 
 物料参数摘要由 `stock_param_text()` 与前端 `stockParamText()` 同步维护：参数详情后补封装及尚未出现的品牌，不包含包装方式和商品类别；摘要同时用于列表显示和原理图 Description。变更时更新两端测试与使用文档。

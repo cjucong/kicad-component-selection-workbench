@@ -1187,6 +1187,50 @@ def row_selection_updates(parts, overrides: dict[str, dict]) -> dict[str, dict]:
     return updates
 
 
+def edited_row_merge_updates(parts, overrides: dict[str, dict], refs: list[str], fields: dict, stock_cache=None):
+    """Inherit an unambiguous, pre-existing destination only on an explicit key edit."""
+    selected = set(refs)
+    destinations = {}
+    incoming = {}
+    for part in parts:
+        before = effective_part_fields(part, overrides.get(part.ref, {}))
+        key = tuple(before[name] for name in EDITABLE_FIELDS)
+        if part.ref not in selected:
+            destinations.setdefault(key, []).append(part)
+        else:
+            after = {**before, **fields}
+            new_key = tuple(after[name] for name in EDITABLE_FIELDS)
+            if new_key != key:
+                incoming.setdefault(new_key, []).append(part)
+    updates, merges = {}, []
+    for key, members in incoming.items():
+        targets = destinations.get(key)
+        if not targets:
+            continue
+        target = group_parts_for_review(targets, overrides)[0]
+        code = target["effective_c_code"]
+        codes = {selection_code(part, overrides.get(part.ref, {})) for part in targets} - {""}
+        if len(codes) > 1 or not (code or target["procurement_choice"]) or (not code and target["selection_mixed"]):
+            continue
+        descriptions = [saved_candidate_description({"override": overrides.get(part.ref, {}), "effective_c_code": code})
+                        for part in targets]
+        description = max(descriptions, key=len, default="") or stock_param_text((stock_cache or {}).get(code)) or target["description"]
+        selection = {
+            "accepted_c_code": code, "manual_c_code": code, "stock_c_code": code,
+            "decision": "AcceptManual" if code else "ClearSelection",
+            "status": target["status"], "review_status": target["review_status"],
+            "alternate_parts": target["alternate_parts"], "procurement_choice": target["procurement_choice"],
+            "field_overrides": {"description": description, "description_c_code": code},
+        }
+        if target["review_status"] == "Confirmed":
+            selection["review_confirmed_at"] = max(
+                (str(overrides.get(part.ref, {}).get("review_confirmed_at") or "") for part in targets), default="")
+        for part in members:
+            updates[part.ref] = selection
+        merges.append({"refs": [part.ref for part in members], "target_refs": target["refs_list"], "c_code": code})
+    return updates, merges
+
+
 def group_parts_for_review(parts, overrides: dict[str, dict[str, object]]) -> list[dict[str, object]]:
     parts = list(parts)
     overrides = dict(overrides)
@@ -1846,9 +1890,40 @@ class PartSelectionApp:
             update["note"] = payload["note"]
         if not update["field_overrides"]:
             raise ValueError("no editable fields were provided")
-        preserve_unchanged_notes(update, refs, load_overrides(self.overrides_path))
-        overrides = save_override_updates(self.overrides_path, {ref: update for ref in refs})
-        return {"ok": True, "refs": refs, "override": overrides.get(refs[0], {})}
+        with OVERRIDES_UPDATE_LOCK:
+            overrides = load_overrides(self.overrides_path)
+            preserve_unchanged_notes(update, refs, overrides)
+            parts = []
+            if hasattr(self, "config"):
+                bom = str(payload.get("bom") or "")
+                if self.is_schematic_source(bom):
+                    parts = list(load_schematic_parts(self.config["schematic_dir"]).values())
+                elif bom or self.source_bom().is_file():
+                    source = self.resolve_bom_path(bom)
+                    lcsc = source if source.suffix.lower() in {".xlsx", ".xlsm"} or "LCSC" in source.name.upper() else self.lcsc_bom()
+                    parts = merge_part_data(self.refs("", bom), self.project_root, source, lcsc, self.config["schematic_dir"])
+            fields = {key: str(value or "").strip() for key, value in update["field_overrides"].items()}
+            cache = load_stock_cache(self.stock_cache_path) if parts else {}
+            inherited, merges = edited_row_merge_updates(parts, overrides, refs, fields, cache)
+            if merges:
+                backup = runtime_directory(self.project_root) / f"row_merge_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
+                save_overrides(backup / "overrides_before.json", overrides)
+                (backup / "merge.json").write_text(json.dumps({"fields": fields, "merges": merges}, ensure_ascii=False, indent=2), encoding="utf-8")
+            actual = read_schematic_symbol_field_values(self.config["schematic_dir"], list(inherited), EDITABLE_FIELDS) if inherited else {}
+            now = datetime.now().isoformat(timespec="seconds")
+            for ref in refs:
+                previous = overrides.get(ref, {})
+                selection = inherited.get(ref, {})
+                ref_update = {**selection, **update, "field_overrides": {**selection.get("field_overrides", {}), **fields}}
+                if selection:
+                    ref_update["schematic_field_snapshot"] = {
+                        **actual.get(ref, {}), **normalize_schematic_field_snapshot(previous.get("schematic_field_snapshot"))}
+                record = merge_override_record(previous, ref_update, now)
+                if "review_confirmed_at" in selection:
+                    record["review_confirmed_at"] = selection["review_confirmed_at"]
+                overrides[ref] = record
+            save_overrides(self.overrides_path, overrides)
+        return {"ok": True, "refs": refs, "override": overrides.get(refs[0], {}), "merged_into": merges}
 
     def adopt_schematic_fields(self, payload: dict[str, object]) -> dict[str, object]:
         refs = split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))
@@ -6884,7 +6959,7 @@ async function flushRowEdits() {{
 async function persistRowInput(entry) {{
   const {{tr, input, refs, field}} = entry;
   const value = (entry.resolvedValue ?? entry.value).trim();
-  const payload = {{refs}};
+  const payload = {{refs, bom: loadedRowsBom}};
   let endpoint = "/api/field_override";
   if (field === "replacement_c_code") {{
     if (value && !/^C[0-9]+$/i.test(value)) throw new Error("请输入完整 C 编码，例如 C49678");
@@ -6955,7 +7030,8 @@ async function persistRowInput(entry) {{
   if (field !== "note" && document.body.contains(tr)) markRowNeedsSchematicSync(tr, refs);
   if (field === "footprint") refreshFootprintLibraries();
   if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");
-  setState(`已自动保存 ${{refs}} 的 ${{field}}`, "saved");
+  const merged = (data.merged_into || []).map(item => item.target_refs.join(",") + (item.c_code ? "（" + item.c_code + "）" : "（订货料）")).join("、");
+  setState(merged ? `已合并到 ${{merged}}，沿用目标行选型；请核对并同步原理图` : `已自动保存 ${{refs}} 的 ${{field}}`, "saved");
 }}
 
 rowsEl.addEventListener("input", event => {{
