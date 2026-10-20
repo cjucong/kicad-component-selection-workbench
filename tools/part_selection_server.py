@@ -3344,6 +3344,9 @@ body {{ --sticky-toolbar-height: 0px; --sticky-filter-height: 0px; --statusbar-h
 .app-menu.open .menu-popup {{ display: block; }}
 .menu-popup > button, .menu-popup .view-wrap > button {{ display: block; width: 100%; border: 0; border-radius: 2px; padding: 7px 9px; text-align: left; background: #fff; box-shadow: none; white-space: nowrap; }}
 .menu-popup > button:hover, .menu-popup .view-wrap > button:hover {{ background: #edf5fb; }}
+.menu-popup > button:focus-visible, [data-menu-trigger]:focus-visible {{ outline: 2px solid #237bb5; outline-offset: -2px; }}
+.rows-empty-state {{ padding: 28px 16px; text-align: center; color: #526375; }}
+.rows-empty-state button {{ margin-left: 12px; }}
 .menu-popup .view-wrap {{ display: block; }}
 .menu-popup .view-panel {{ top: 0; left: calc(100% + 2px); right: auto; }}
 .toolbar-section {{ display: flex; flex: 0 0 auto; flex-direction: column; gap: 2px; min-width: 0; margin: 0; padding: 0 12px; border: 0; border-right: 1px solid #cbd0d4; background: transparent; }}
@@ -3683,14 +3686,14 @@ tr.hidden-row {{ display: none; }}
 </section>
 <section class="toolbar-section stock-section" aria-label="库存查询">
   <span class="section-title">库存查询</span><div class="section-actions">
-  <button type="button" id="queryMissingStock" class="tool-button" aria-label="查询未查库存" data-tooltip="仅查询没有库存缓存的主料及备选料，已有查询结果保留。">{toolbar_content('package-search', '查询未查')}</button>
-  <button type="button" id="queryAllStock" class="tool-button" aria-label="刷新全部库存" data-tooltip="重新联网查询全部主料及备选料库存，更新旧缓存。">{toolbar_content('refresh-cw', '刷新全部')}</button>
+  <button type="button" id="queryMissingStock" class="tool-button" disabled aria-label="查询未查库存" data-tooltip="仅查询没有库存缓存的主料及备选料，已有查询结果保留。">{toolbar_content('package-search', '查询未查')}</button>
+  <button type="button" id="queryAllStock" class="tool-button" disabled aria-label="刷新全部库存" data-tooltip="重新联网查询全部主料及备选料库存，更新旧缓存。">{toolbar_content('refresh-cw', '刷新全部')}</button>
   </div>
 </section>
 <section class="toolbar-section action-section" aria-label="写入原理图">
   <span class="section-title">写入原理图</span><div class="section-actions">
   <button type="button" id="syncSelectedSchematic" class="tool-button action-sync selected-sync" disabled aria-label="同步所选行（0）" data-tooltip="工作台 → 原理图：仅同步当前可见且已勾选的行，执行前确认。">{toolbar_content('list-checks', '同步所选', True)}</button>
-  <button type="button" id="syncAllSchematic" class="tool-button action-sync" aria-label="同步全部原理图" data-tooltip="工作台 → 原理图：处理整个 BOM，不受筛选或勾选限制，执行前确认。">{toolbar_content('layers', '同步全部')}</button>
+  <button type="button" id="syncAllSchematic" class="tool-button action-sync" disabled aria-label="同步全部原理图" data-tooltip="工作台 → 原理图：处理整个 BOM，不受筛选或勾选限制，执行前确认。">{toolbar_content('layers', '同步全部')}</button>
   </div>
 </section>
 <section class="toolbar-section export-section" aria-label="表格导出">
@@ -3734,7 +3737,7 @@ tr.hidden-row {{ display: none; }}
 <div id="toolbarTooltip" class="toolbar-tooltip" role="tooltip" hidden></div>
 <footer class="workbench-statusbar">
 <div class="status-line">
-<span id="state" class="status">准备就绪</span>
+<span id="state" class="status" role="status">正在读取数据源…</span>
 <output id="workbenchSummary" aria-label="器件状态统计"><span id="summaryRows">0 组 / 0 器件</span><span id="summaryPending">待同步 0</span><span id="summaryReview">未确认 0</span></output>
 </div>
 <div id="syncProgress" class="sync-progress" aria-live="polite">
@@ -3770,6 +3773,9 @@ tr.hidden-row {{ display: none; }}
 </thead>
 <tbody id="rows"></tbody>
 </table>
+<div id="rowsEmptyState" class="rows-empty-state" hidden>
+  <span id="rowsEmptyMessage" role="status"></span><button id="resetRowFilters" type="button">清除筛选</button>
+</div>
 </main>
 <div id="refContextMenu" class="ref-context-menu">
   <button type="button" data-action="split-ref-row">拆出为单独行编辑</button>
@@ -4074,9 +4080,10 @@ function startSyncProgressTicker(steps) {{
 }}
 
 function resetQueryAllButton() {{
-  queryMissingButton.disabled = false;
+  const unavailable = rowsLoading || loadedRowsBom === null || loadedRowsBom !== (bomSelect.value || "");
+  queryMissingButton.disabled = unavailable;
   setToolbarLabel(queryMissingButton, "查询未查");
-  queryAllButton.disabled = false;
+  queryAllButton.disabled = unavailable;
   setToolbarLabel(queryAllButton, "刷新全部");
 }}
 
@@ -5050,6 +5057,7 @@ function applyActiveFilter() {{
     if (visible) visibleCount += 1;
   }});
   bomSearchCount.textContent = `${{visibleCount}} / ${{currentRows.length}} 行`;
+  updateRowsEmptyState(visibleCount);
   if (changedView) {{
     let savedScroll = 0;
     try {{ savedScroll = Number(sessionStorage.getItem(FILTER_SCROLL_STORAGE_PREFIX + nextViewKey) || 0); }}
@@ -5060,6 +5068,23 @@ function applyActiveFilter() {{
   updateSyncSelection();
   updateWorkbenchSummary();
 }}
+
+function updateRowsEmptyState(visibleCount = visibleSyncRows().length) {{
+  const panel = document.getElementById("rowsEmptyState");
+  panel.hidden = rowsLoading || loadedRowsBom === null || loadedRowsBom !== (bomSelect.value || "") || visibleCount > 0;
+  const filtered = activeFilters.size > 0 || Boolean(bomSearch.value.trim());
+  document.getElementById("rowsEmptyMessage").textContent = currentRows.length
+    ? "没有匹配当前筛选的器件" : "当前数据源没有器件";
+  document.getElementById("resetRowFilters").hidden = !filtered;
+}}
+
+document.getElementById("resetRowFilters").addEventListener("click", () => {{
+  bomSearch.value = "";
+  activeFilters.clear();
+  updateFilterButtons();
+  applyActiveFilter();
+  bomSearch.focus();
+}});
 
 function visibleSyncRows() {{
   return Array.from(rowsEl.querySelectorAll("tr[data-ref]")).filter(tr => !tr.classList.contains("hidden-row"));
@@ -6882,6 +6907,7 @@ async function loadRows(anchor = null) {{
   try {{ await flushRowEdits(); }} catch (error) {{ setState(error.message, "error"); return; }}
   if (version !== rowsLoadVersion || bom !== (bomSelect.value || "")) return;
   rowsLoading = true;
+  updateRowsEmptyState();
   if (loadedRowsBom !== bom) {{
     rowsEl.innerHTML = "";
     currentRows = [];
@@ -6909,6 +6935,7 @@ async function loadRows(anchor = null) {{
   }} finally {{
     if (version === rowsLoadVersion) {{
       rowsLoading = false;
+      updateRowsEmptyState();
       syncAllButton.disabled = bulkSyncRunning || loadedRowsBom !== (bomSelect.value || "");
       updateSyncSelection();
       resetQueryAllButton();
@@ -6919,6 +6946,8 @@ async function loadRows(anchor = null) {{
 async function loadBomOptions() {{
   const res = await fetch("/api/boms");
   const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "读取数据源失败");
+  if (!Array.isArray(data.boms) || !data.boms.length) throw new Error("没有可用的数据源");
   let selectedBom = data.default_bom;
   try {{
     const intent = JSON.parse(sessionStorage.getItem("partSelectionSourceOnce") || "null");
@@ -6927,6 +6956,18 @@ async function loadBomOptions() {{
   }} catch (error) {{ /* A stale or unavailable session store must not change the startup source. */ }}
   bomSelect.innerHTML = data.boms.map(item => `<option value="${{esc(item.path)}}" ${{item.path === selectedBom ? "selected" : ""}}>${{esc(item.name)}}</option>`).join("");
   updateUiSettings({{selectedBom}});
+}}
+
+async function initializeWorkbenchRows() {{
+  const refresh = document.getElementById("refreshSchematicRows");
+  refresh.disabled = true;
+  try {{
+    setState("正在读取数据源…");
+    await loadBomOptions();
+    await loadRows();
+  }} catch (error) {{
+    setState(`读取数据源失败：${{error.message || String(error)}}；可点击“重新读取”重试`, "error");
+  }} finally {{ refresh.disabled = false; }}
 }}
 
 const rowEditQueue = createRowEditQueue({{
@@ -7421,8 +7462,11 @@ function closeColumnPanel() {{
 
 function closeToolbarMenus() {{
   document.querySelectorAll(".app-menu.open").forEach(menu => {{
+    const trigger = menu.querySelector("[data-menu-trigger]");
+    const restoreFocus = menu.contains(document.activeElement) && document.activeElement !== trigger;
     menu.classList.remove("open");
-    menu.querySelector("[data-menu-trigger]")?.setAttribute("aria-expanded", "false");
+    trigger?.setAttribute("aria-expanded", "false");
+    if (restoreFocus) trigger?.focus();
   }});
 }}
 
@@ -7485,7 +7529,63 @@ document.querySelectorAll("[data-menu-trigger]").forEach((trigger, index) => {{
   popup.id = `workbenchMenu${{index}}`;
   trigger.setAttribute("aria-controls", popup.id);
   trigger.setAttribute("aria-haspopup", "true");
-  trigger.addEventListener("click", () => {{
+  const menu = trigger.closest(".app-menu");
+  const commandMenu = !popup.querySelector("select, input");
+  if (commandMenu) {{
+    popup.setAttribute("role", "menu");
+    popup.setAttribute("aria-label", trigger.getAttribute("aria-label") || trigger.textContent.trim());
+    popup.querySelectorAll("button").forEach(item => {{ item.setAttribute("role", "menuitem"); item.tabIndex = -1; }});
+  }}
+  const controls = () => Array.from(popup.querySelectorAll("button, select, input, a[href]"))
+    .filter(item => !item.disabled && item.getClientRects().length);
+  function openMenu(last = false) {{
+    closeToolbarMenus();
+    closeColumnPanel();
+    hideToolbarTooltip();
+    menu.classList.add("open");
+    trigger.setAttribute("aria-expanded", "true");
+    positionToolbarPopups();
+    const items = controls();
+    (last ? items.at(-1) : items[0])?.focus();
+  }}
+  menu.addEventListener("keydown", event => {{
+    if (event.key === "Tab" && commandMenu && menu.classList.contains("open")) {{
+      trigger.focus();
+      closeToolbarMenus();
+      return;
+    }}
+    const atTrigger = event.target === trigger;
+    if (atTrigger && ["ArrowDown", "ArrowUp"].includes(event.key)) {{
+      event.preventDefault();
+      openMenu(event.key === "ArrowUp");
+      return;
+    }}
+    // Keep native select/input editing keys; Escape is handled by the document.
+    if (!atTrigger && !event.target.matches("button")) return;
+    if (["ArrowLeft", "ArrowRight"].includes(event.key) && menu.closest(".app-menubar")) {{
+      event.preventDefault();
+      const triggers = Array.from(document.querySelectorAll(".app-menubar [data-menu-trigger]"));
+      const next = triggers[(triggers.indexOf(trigger) + (event.key === "ArrowRight" ? 1 : triggers.length - 1)) % triggers.length];
+      const wasOpen = menu.classList.contains("open");
+      closeToolbarMenus();
+      next.focus();
+      if (wasOpen) next.dispatchEvent(new KeyboardEvent("keydown", {{key:"ArrowDown", bubbles:true, cancelable:true}}));
+    }} else if (!atTrigger && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {{
+      event.preventDefault();
+      const items = controls();
+      const current = items.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : (current + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+      items[next]?.focus();
+    }}
+  }});
+  menu.addEventListener("focusout", event => {{
+    if (event.relatedTarget && !menu.contains(event.relatedTarget)) {{
+      menu.classList.remove("open");
+      trigger.setAttribute("aria-expanded", "false");
+    }}
+  }});
+  trigger.addEventListener("click", event => {{
     const menu = trigger.closest(".app-menu");
     const open = !menu.classList.contains("open");
     closeToolbarMenus();
@@ -7494,6 +7594,7 @@ document.querySelectorAll("[data-menu-trigger]").forEach((trigger, index) => {{
     menu.classList.toggle("open", open);
     trigger.setAttribute("aria-expanded", String(open));
     positionToolbarPopups();
+    if (open && event.detail === 0) controls()[0]?.focus();
   }});
 }});
 document.getElementById("saveDefaultView").addEventListener("click", () => {{
@@ -7512,7 +7613,8 @@ document.getElementById("loadDefaultView").addEventListener("click", () => {{
   try {{ loadDefaultViewConfig(); }} catch (err) {{ setState(`加载默认配置失败：${{err.message || String(err)}}`, "error"); }}
   closeToolbarMenus();
 }});
-document.getElementById("refreshSchematicRows").addEventListener("click", () => {{
+document.getElementById("refreshSchematicRows").addEventListener("click", async () => {{
+  if (!bomSelect.options.length) {{ await initializeWorkbenchRows(); closeToolbarMenus(); return; }}
   selectedRowRefs.clear();
   refsInput.value = "";
   bomSearch.value = "";
@@ -7627,9 +7729,7 @@ applyCandidateColumnOrder();
 applyCandidateSavedWidths();
 renderColumnPanel();
 applyColumnVisibility();
-loadBomOptions().then(() => {{
-  loadRows();
-}});
+initializeWorkbenchRows();
 </script>
 <script>{footprint_js}</script>
 <script>{path_settings_js}</script>

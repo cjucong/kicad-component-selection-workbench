@@ -98,7 +98,7 @@ const vm=require('vm'),assert=require('assert');
 const store=new Map(), selected=[];
 const data={project_root:'project',default_bom:'__schematic__',boms:[
  {path:'__schematic__',name:'schematic'},{path:'old.csv',name:'csv'}]};
-const c={fetch:async()=>({json:async()=>data}),esc:x=>x,
+const c={fetch:async()=>({ok:true,json:async()=>data}),esc:x=>x,
  loadUiSettings:()=>({selectedBom:'old.csv'}),updateUiSettings:x=>selected.push(x.selectedBom),
  bomSelect:{innerHTML:''},sessionStorage:{getItem:k=>store.get(k)||null,removeItem:k=>store.delete(k)}};
 vm.runInNewContext(process.argv[1],c);

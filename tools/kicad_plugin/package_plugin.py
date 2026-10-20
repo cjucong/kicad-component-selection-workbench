@@ -21,7 +21,10 @@ ROOT = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
 from part_selection_runtime import runtime_directory
 IDENTIFIER = "com.smu.part-selection"
-from updater import VERSION, REPOSITORY
+if __package__:
+    from .updater import VERSION, REPOSITORY
+else:
+    from updater import VERSION, REPOSITORY
 CORE_FILES = (
     "part_selection_server.py", "part_selection_helper.py", "part_selection_overrides.py",
     "part_selection_library.py", "part_selection_footprints.py", "part_selection_runtime.py", "part_selection_paths.py", "part_selection_settings.py", "part_selection_lifecycle.py",

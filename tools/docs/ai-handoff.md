@@ -68,6 +68,8 @@ WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（sta
 
 ## 保持的行为边界
 
+- 顶部纯命令菜单支持键盘移焦与 Escape 返回，带 select 的 BOM 导出面板保留原生表单键盘行为，不强加 role=menu。初始化通过 initializeWorkbenchRows 捕获 HTTP/JSON/空来源错误，重新读取可重试；同步和库存只对已成功加载且匹配当前来源的列表可用。筛选空态在 tbody 外，不改变数据行统计、列宽采样或选中位号集合。参考及范围见 design-review.md。
+
 - 自动保存与 Enter 共享 rowEditQueue；行数据包含 schematic_fields_by_ref 作为逐位号磁盘基线，保存成功更新 field_diffs/field_diffs_by_ref 及当前行，不使用上次网页输入作为 old。确认状态不调用 loadRows；Enter 仅真实分组变化时重绘并保持屏幕位置。新增跳转偏好 jump_cursor_behavior=return/stay，在工程设置保存；stay 传 -MoveCursorAfterJump。Set-KiCadForeground 仅 IsIconic 时执行 SW_RESTORE，禁止无条件还原最大化窗口。
 
 - 分组只按 Comment + Value + Footprint；主料冲突显式清空，不回退历史料号。备份后持久化，不丢备注、备选、订货和审计信息。

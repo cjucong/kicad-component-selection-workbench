@@ -17,6 +17,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | 测试类别 | 范围 |
 | --- | --- |
 | `test_auto_column_widths.py`、`test_workbench_toolbar.py` | 自动列宽按钮位置、列宽计算与持久化，以及整页生成 JavaScript 的语法校验（包括 Python 字符串转义） |
+| `test_workbench_interactions.py` | 初始化 HTTP/JSON/空来源失败及重试、未加载/切换来源时按钮保护、打包模块独立进程导入（防止测试顺序掩盖依赖问题） |
 | `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 搜索、筛选、库存、订货与请求竞态 |
 | `test_*selection*`、`test_selected_schematic_sync.py` | 配置、主料一致性、记录及同步范围 |
 | `test_path_settings.py`、`test_part_selection_overrides.py` | 更换型号网页搜索偏好、确认时间戳持久化及路径设置 |
@@ -61,6 +62,8 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 临时 ZIP、解压文件、截图、报告、下载、字节码和测试缓存不得写入源码或正式工程，不得提交。稳定夹具应最小化并说明用途，禁止为测试复制真实工程或其 `.git`。
 
 ## 真实冒烟
+
+`python -B tests/run_workbench_interactions_smoke.py` 使用 Chromium 与自动清理的合成工程，验证菜单方向键/Home/End/Enter/空格/Tab/Esc、执行后焦点恢复、BOM 原生下拉框、启动 503 失败后重新读取、空筛选提示与清除、隐藏行不计入所选同步且取消筛选后勾选保留。可设置工程外已存在的 `WORKBENCH_AUDIT_SCREENSHOTS` 目录保存桌面和 800 像素宽截图；Node 需要能解析 playwright（可设置 NODE_PATH）。不访问商城、不调用真实同步、不打开用户 KiCad；localhost 仅为隔离测试传输。
 
 `python -B tests/run_directed_row_merge_smoke.py` 在 Chromium 中分别以自动保存和 Enter 将 `4.7nF` 并入已有 `4.7nF 50V` 目标行，验证目标 C 编码、参数、备选与确认状态保留、待同步差异正确及重开持久化。仅使用 `test_directed_row_merge.py` 的一次性合成工程，不写真实工程、不执行 KiCad 同步；单元回归另覆盖 Comment/封装、反向位号、订货链接、目标不唯一和无目标场景。
 

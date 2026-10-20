@@ -228,6 +228,7 @@ const selectedRowRefs = new Set(['R1']);
 function cancelStockQueries() {}
 function setState(message) {states.push(message);}
 function updateSyncSelection() {}
+function updateRowsEmptyState() {}
 function resetQueryAllButton() {}
 function restoreRowAnchor() {}
 function renderRows(rows) {rendered = rows;}
