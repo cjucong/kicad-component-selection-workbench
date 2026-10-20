@@ -471,6 +471,8 @@ vm.runInContext(FUNCTIONS,ctx);
   const row={stock_c_code:'C4283613',override:{field_overrides:{description_c_code:'C4283613',description:'line one\nline two'}}};
   const stock=ctx.initialStock(row);
   assert.equal(ctx.stockParamText(stock),'line one\nline two');
+  const material = ctx.stockParamText({param:'Capacitance: 100nF',param_detail:'Brand: Murata; Temperature: X7R',package:'0402',brand:'Murata',arrange:'Tape Reel',category:'MLCC capacitor'});
+  assert.equal(material,'Capacitance: 100nF\nBrand: Murata; Temperature: X7R\n\u5c01\u88c5: 0402');
   assert.equal(ctx.schematicDescription({querySelector:()=>({dataset:{stockParamText:ctx.stockParamText(stock)}})}),'line one\nline two');
   await ctx.chooseCandidate('C4283613');
   assert.equal(calls[0],'abort');

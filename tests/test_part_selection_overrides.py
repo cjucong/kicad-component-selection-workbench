@@ -57,9 +57,16 @@ class PartSelectionOverridesTest(unittest.TestCase):
     def test_stock_parameter_summary_includes_brand(self):
         self.assertEqual(
             part_selection_server.stock_param_text(
-                {"param": "阻值: 10kΩ", "brand": "VISHAY", "category": "贴片电阻"}
+                {
+                    "param": "阻值: 10kΩ",
+                    "param_detail": "品牌: VISHAY; 精度: ±1%",
+                    "brand": "VISHAY",
+                    "package": "0603",
+                    "arrange": "圆盘",
+                    "category": "贴片电阻",
+                }
             ),
-            "阻值: 10kΩ\n品牌: VISHAY\n贴片电阻",
+            "阻值: 10kΩ\n品牌: VISHAY; 精度: ±1%\n封装: 0603",
         )
 
     def test_sync_records_save_all_designators_once_and_preserve_selection(self):
@@ -2058,8 +2065,10 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertIn('["review", "确认料"]', html)
             self.assertIn('data-col="row_no"', html)
             self.assertNotIn('data-col="brand"', html)
-            self.assertIn('pieces.push(`品牌: ${stock.brand}`)', html)
-            self.assertIn('stock.brand ? `品牌: ${stock.brand}` : ""', html)
+            self.assertIn('const brand = String(stock.brand || "").trim();', html)
+            self.assertIn('pieces.push(`封装: ${packageName}`)', html)
+            self.assertNotIn('pieces.push(stock.arrange)', html)
+            self.assertNotIn('esc(item.category || "")', html)
             self.assertIn('data-field="review_status"', html)
             self.assertIn("review-ok", html)
             self.assertIn("review-warn", html)

@@ -266,13 +266,14 @@ def stock_param_text(stock: object) -> str:
         pieces.append(primary)
     if detail and detail != primary:
         pieces.append(detail)
+    existing_text = "\n".join(pieces)
+    package = str(stock.get("package") or "").strip()
+    if package and not re.search(r"(?:封装|package)\s*[:：]", existing_text, re.I):
+        pieces.append(f"封装: {package}")
     brand = str(stock.get("brand") or "").strip()
-    if brand:
+    normalized_text = re.sub(r"\s+", "", existing_text).casefold()
+    if brand and re.sub(r"\s+", "", brand).casefold() not in normalized_text:
         pieces.append(f"品牌: {brand}")
-    for key in ("arrange", "category"):
-        value = str(stock.get(key) or "")
-        if value:
-            pieces.append(value)
     return "\n".join(pieces)
 
 
@@ -4777,20 +4778,17 @@ function stockParamText(stock) {{
   const pieces = [];
   if (primary) pieces.push(primary);
   if (detail && detail !== primary) pieces.push(detail);
-  if (stock.brand) pieces.push(`品牌: ${{stock.brand}}`);
-  if (stock.arrange) pieces.push(stock.arrange);
-  if (stock.category) pieces.push(stock.category);
+  const existingText = pieces.join("\\n");
+  const packageName = String(stock.package || "").trim();
+  if (packageName && !/(?:封装|package)\\s*[:：]/i.test(existingText)) pieces.push(`封装: ${{packageName}}`);
+  const brand = String(stock.brand || "").trim();
+  const normalizedText = existingText.replace(/\\s+/g, "").toLocaleLowerCase();
+  if (brand && !normalizedText.includes(brand.replace(/\\s+/g, "").toLocaleLowerCase())) pieces.push(`品牌: ${{brand}}`);
   return pieces.join("\\n");
 }}
 
 function renderStockParam(stock) {{
-  return renderCandidateParam(
-    stock.param || "",
-    stock.param_detail || "",
-    stock.arrange || "",
-    stock.category || "",
-    stock.brand ? `品牌: ${{stock.brand}}` : ""
-  );
+  return renderCandidateParam(stockParamText(stock));
 }}
 
 function stockAlreadyQueried(stock) {{
@@ -6286,10 +6284,9 @@ function renderCandidateRows(items, partnerEntries = null) {{
         <div><strong>${{esc(item.model || "")}}</strong></div>
         <div>${{esc(item.brand || "")}}</div>
         <div class="mono">${{esc(item.package || "")}}</div>
-        <div>${{esc(item.category || "")}}</div>
         <div class="status">${{esc(item.match_type || "")}}</div>
       </td>
-      <td data-candidate-col="param">${{renderCandidateParam(item.param || "", item.param_detail || "", item.arrange || "")}}</td>
+      <td data-candidate-col="param">${{renderCandidateParam(item.param || "", item.param_detail || "")}}</td>
       <td data-candidate-col="code" class="mono">${{item.url ? `<a target="_blank" rel="noopener" data-secondary-search="${{esc(item.c_code || "")}}" href="${{esc(item.url)}}">${{esc(item.c_code || "")}}</a>` : esc(item.c_code || "")}}</td>
       <td data-candidate-col="channel_stock">
         <div>${{esc(item.channel || "")}}</div>

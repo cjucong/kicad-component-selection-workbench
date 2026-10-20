@@ -60,6 +60,8 @@ WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（sta
 
 读取工作台状态使用 PartSelectionApp.rows()，不要自行拼合 CSV、记录和库存。选料记录默认在目标工程 BOM/part_selection_overrides.json；同步审计和运行日志在 bom_dir，分别以 CSV 和 JSONL 保存。按 attempt_id 串联事务。
 
+物料参数摘要由 `stock_param_text()` 与前端 `stockParamText()` 同步维护：参数详情后补封装及尚未出现的品牌，不包含包装方式和商品类别；摘要同时用于列表显示和原理图 Description。变更时更新两端测试与使用文档。
+
 ## 保持的行为边界
 
 - 自动保存与 Enter 共享 rowEditQueue；行数据包含 schematic_fields_by_ref 作为逐位号磁盘基线，保存成功更新 field_diffs/field_diffs_by_ref 及当前行，不使用上次网页输入作为 old。确认状态不调用 loadRows；Enter 仅真实分组变化时重绘并保持屏幕位置。新增跳转偏好 jump_cursor_behavior=return/stay，在工程设置保存；stay 传 -MoveCursorAfterJump。Set-KiCadForeground 仅 IsIconic 时执行 SW_RESTORE，禁止无条件还原最大化窗口。
