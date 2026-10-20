@@ -8,26 +8,29 @@
 
 ```powershell
 python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json"
-python -B tools/part_selection_server.py --config "E:/work/Board/BOM/part_selection_config.json" --open
 ```
 
-两条分别用于独立窗口和浏览器，择一运行。--project 可替代 --config；同时给出时，配置解析根目录必须匹配。不要把插件仓库当成工程，不要为排错复制整套工程工具。
+只支持独立窗口，已移除浏览器模式及自动回退。--project 可替代 --config；同时给出时，配置解析根目录必须匹配。不要把插件仓库当成工程，不要为排错复制整套工程工具。
 
 中文启动器无参数弹工程选择器是预期行为。KiCad 按钮无法唯一识别工程时也会要求手动选择，这不是 BOM 导入窗口。
 
-顶部“文件 → 工程与路径配置…”提供可编辑表单，数据路径保存后立即应用，点击“完成并刷新”。若提示任务未结束，先等待搜索、转换或其他操作完成再保存；若配置被其他窗口修改，重新打开表单。运行目录修改或直接手改 JSON 需要重启对应后端，刷新网页或关闭窗口可能仍复用旧服务。检查工程和配置路径后再重启，不按端口号盲目结束进程。
+顶部“文件 → 工程与路径配置…”提供可编辑表单，数据路径保存后立即应用，点击“完成并刷新”。若提示任务未结束，先等待搜索、转换或其他操作完成再保存；若配置被其他窗口修改，重新打开表单。运行目录修改后使用“文件 → 重启工作台”；手改 JSON 则先关闭工作台、备份再修改，随后重新启动。正常关闭会等待行编辑保存并退出所属后台，忙碌或失败时会保留窗口。
+
+## 旧版后台仍在运行
+
+升级前启动的旧服务没有退出接口，关闭旧窗口可能留有后台；新版会拒绝复用旧版或其他窗口的同工程后台，不会另外启动第二个写入服务。只需首次升级时手动处理一次：等待任务结束，关闭旧助手，在任务管理器“详细信息”显示“命令行”，核对进程是否运行本插件的 `part_selection_server.py`，且 `--config` 指向自己的工程配置，再结束已确认的旧后台。不要结束 KiCad、其他 Python 程序或仅凭端口猜测的进程。重新从插件启动后，新版关闭窗口即可退出后台。
 
 ## 记录、库存或日志消失
 
 先在菜单配置窗口核对 output_overrides、stock_cache、bom_dir 和当前工程。菜单迁移默认复制已有数据，遇到目标文件内容不同会停止，不覆盖；原文件仍在旧位置。直接手改 JSON 不会自动搬迁旧文件，不要把空白页面当成旧记录已清除，更不要未经确认保存空记录。必要时停止对应服务，备份原文件并复制到新位置后再启动核对。
 
-已有 BOM/part_selection_config.json 应继续使用原路径；bom_dir 变化不会自动改其他显式路径。列宽/列顺序在 localStorage，浏览器和独立窗口不共享；这与人工主料记录不同。
+已有 BOM/part_selection_config.json 应继续使用原路径；bom_dir 变化不会自动改其他显式路径。列宽/列顺序保存在独立工作台 localStorage，重启保留；与旧浏览器不共享，也不同于人工主料记录。
 
 库存缓存不是实时结果，查询失败和无货应分开看。核对所选 C 编码、缓存对应项与来源时间，采购前检查官网。
 
 ## 服务或桌面窗口打不开
 
-确认 Python 3.10+、pip 和依赖可用，桌面环境使用 tools/kicad_plugin/desktop-requirements.txt，浏览器后端使用 tools/requirements.txt。独立窗口还需 WebView2 Runtime，网页回退需 Edge/Chrome。离线机器须提前准备依赖。
+确认 Python 3.10+、pip 和依赖可用，使用 tools/kicad_plugin/desktop-requirements.txt。独立窗口还需 WebView2 Runtime；依赖或窗口初始化失败会报错，不再回退浏览器。离线机器须提前准备依赖。
 
 查看桌面基目录的 desktop.log；默认 %LOCALAPPDATA%/KiCadPartSelection，KICAD_PART_SELECTION_HOME 设置后使用该位置。工程哈希目录中的 server.log、runtime-install.log、window.log 分别用于后端、私有环境与窗口诊断。PCB 兼容入口另查 pcb-launch.log。旧辅助跳转脚本如报告日志路径，以实际错误输出为准，不把系统临时目录当成正式记录或新的 QA 输出位置。
 

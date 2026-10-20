@@ -11,7 +11,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "tools" / "kicad_plugin"
@@ -144,6 +144,8 @@ class SelectionPluginTests(unittest.TestCase):
 
     def test_schematic_launch_does_not_open_picker_when_pcb_path_is_empty(self):
         import desktop
+        from part_selection_lifecycle import DesktopLifecycle
+        view = MagicMock()
         root = self.project()
         client = SimpleNamespace(
             get_board=lambda: SimpleNamespace(get_project=lambda: SimpleNamespace(path="")),
@@ -151,6 +153,7 @@ class SelectionPluginTests(unittest.TestCase):
             get_project=lambda doc: SimpleNamespace(path=""),
         )
         with patch.dict(sys.modules, {
+                "webview":view,
                 "kipy": SimpleNamespace(KiCad=lambda: client),
                 "kipy.proto.common.types.base_types_pb2": SimpleNamespace(
                     DocumentType=SimpleNamespace(DOCTYPE_SCHEMATIC=1))}), patch.dict(
@@ -160,11 +163,12 @@ class SelectionPluginTests(unittest.TestCase):
                 desktop, "acquire_window", return_value=(None, True)), patch.object(
                 desktop, "release_window"), patch.object(desktop, "ensure_config", return_value=root / "config.json"), patch.object(
                 desktop, "ensure_backend", return_value="http://127.0.0.1:1234/") as backend, patch.object(
-                desktop.webbrowser, "open") as browser:
-            self.assertEqual(desktop.main(["--browser"]), 0)
+                DesktopLifecycle, "_stop_backend"):
+            self.assertEqual(desktop.main([]), 0)
             picker.assert_not_called()
             self.assertEqual(backend.call_args.args[0], root)
-            browser.assert_called_once_with("http://127.0.0.1:1234/")
+            self.assertEqual(view.create_window.call_args.args[1],"http://127.0.0.1:1234/")
+            self.assertIn('js_api',view.create_window.call_args.kwargs)
 
     def test_entrypoint_records_startup_before_argument_parser_exits(self):
         for argument, status in (("--help", 0), ("--invalid-dispatch-argument", 2)):
@@ -411,7 +415,7 @@ assert.ok(!bomRowMatchesSearch(row,'missing'));
         import desktop
         root = self.project()
         config = desktop.ensure_config(root)
-        payload = {"project_root": str(root), "config_path": str(config), "desktop_launcher_version": 2,
+        payload = {"project_root": str(root), "config_path": str(config), "desktop_launcher_version": 3,
                    "backend_directory": str(desktop.CORE)}
         self.assertTrue(desktop.matches_service(payload, root, config))
         self.assertFalse(desktop.matches_service({**payload, "project_root": str(self.root)}, root, config))

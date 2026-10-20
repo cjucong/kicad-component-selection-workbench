@@ -12,8 +12,6 @@ def main(argv=None):
         arguments.pop(0)
     if arguments and arguments[0] == '--desktop':
         arguments.pop(0)
-    elif '--browser' not in arguments:
-        arguments.append('--browser')
     return desktop.main(arguments)
 
 

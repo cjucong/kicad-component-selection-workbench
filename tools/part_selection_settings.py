@@ -32,11 +32,15 @@ class SettingsGate:
     def __init__(self):
         self.lock = threading.RLock()
         self.active = 0
+        self.stopping = False
 
     def request(self, method):
         @wraps(method)
         def wrapped(*args, **kwargs):
             with self.lock:
+                if self.stopping:
+                    args[0].send_error(503, 'Workbench is shutting down')
+                    return
                 self.active += 1
             try:
                 return method(*args, **kwargs)

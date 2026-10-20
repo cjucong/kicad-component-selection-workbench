@@ -85,26 +85,34 @@ python -m pip install -r tools/kicad_plugin/desktop-requirements.txt
 python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro"
 ```
 
-使用既有配置或浏览器模式：
+使用既有配置：
 
 ```powershell
 python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json"
-python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json" --browser
 ```
 
-上述两条择一。中文入口 tools/启动器件选料助手.bat 转发 --project/--config，无参数弹工程选择器。--project 为绝对工程目录或文件；--config 解析 project_root，两者同时提供必须一致。私有桌面环境重新启动时保留 --config。
+中文入口 tools/启动器件选料助手.bat 转发 --project/--config，无参数弹工程选择器。--project 为绝对工程目录或文件；--config 解析 project_root，两者同时提供必须一致。私有桌面环境重新启动时保留 --config。只支持独立工作台，不提供浏览器模式或依赖失败后的浏览器回退；外部商城快捷页面不受影响。
 
 隐藏启动桥由 start_part_selection_tool.vbs 和 launch_part_selection.py 提供，完整保留上述参数；未指定目标时选择工程。共享 part_selection_paths.py 随安装包提供，不依赖工程 tools。
 
-每个工程保持自己的配置、人工记录、库存和库文件；插件升级不替换这些内容。服务仅监听本机，复用时核验工程与配置身份，8765 被其他工程占用时选择工程隔离端口，不终止他人的服务。顶部“文件 → 工程与路径配置…”支持输入或浏览选择路径，数据路径保存后立即应用；运行环境路径修改需重启助手及对应后台。关闭窗口不等于关闭后端；直接手改 JSON 后仍应停止并重启对应后端，详见 [配置说明](part-selection.md)。
+每个工程保持自己的配置、人工记录、库存和库文件；插件升级不替换这些内容。服务仅监听本机，核验程序、工程、配置及本次宿主身份，8765 被其他工程占用时选择工程隔离端口，不终止他人的服务。顶部“文件 → 工程与路径配置…”支持输入或浏览选择路径，数据路径保存后立即应用；运行环境路径修改后使用“文件 → 重启工作台”。直接手改 JSON 前先关闭工作台并备份，详见 [配置说明](part-selection.md)。
+
+## 关闭与重启
+
+- 右上角叉号与“文件 → 退出工作台”采用同一流程：等待行内输入保存成功，再退出本窗口所属的工程后台；不关闭 KiCad。
+- “文件 → 重启工作台”在原后台端口释放后，按相同工程和配置重新启动独立窗口；列布局及已保存记录保留。仅刷新界面不会重启后台。
+- 搜索、转换、同步或其他数据请求未完成时提示等待；输入法组字未完成时暂不退出。未保存的路径配置先询问是否放弃。保存或退出失败时保留窗口和编辑内容，可处理后重试，不强杀任务。
+- 宿主意外退出时，后台监视宿主进程，等待请求和任务结束后自行退出，不会强制中断写入。
+
+升级前遗留的旧后台不支持上述接口，新版不会静默复用，也不会再为同工程创建另一个写入服务。首次升级如遇旧后台提示，按 [旧版后台处理](troubleshooting.md#旧版后台仍在运行) 手动退出已核实的旧服务一次；之后正常关闭即可退出后台。
 
 ## 窗口与日志
 
 桌面基目录默认 `%LOCALAPPDATA%/KiCadPartSelection/`，可通过绝对、工程外的 KICAD_PART_SELECTION_HOME 修改；desktop.log 为入口日志，pcb-launch.log 为 PCB 兼容入口日志。工程哈希目录保存 server.log、window.log、runtime-install.log、desktop-runtime 和 webview 数据。
 
-临时转换、预览、下载与备份使用 runtime_directory(project_root)，默认工程外同盘缓存；KICAD_PART_SELECTION_CACHE 可指定绝对、同盘、工程外父目录，程序追加工程哈希子目录。正式记录路径依配置，工程库仍是设计依赖。更改任何路径不自动迁移已有数据。
+临时转换、预览、下载与备份使用 runtime_directory(project_root)，默认工程外同盘缓存；KICAD_PART_SELECTION_CACHE 可指定绝对、同盘、工程外父目录，程序追加工程哈希子目录。正式记录路径依配置，工程库仍是设计依赖。菜单保存按显式勾选复制已有正式数据；直接手改 JSON 不自动迁移，运行环境不自动搬迁。
 
-窗口支持选择文字、原生复制粘贴和右键菜单；只读结果不变为可编辑字段。浏览器与独立窗口的 localStorage 不共享。宿主设置升级后重开助手窗口，插件注册变化后重启 KiCad。
+窗口支持选择文字、原生复制粘贴和右键菜单；只读结果不变为可编辑字段。列布局保存在独立窗口 localStorage，重启保留；旧浏览器布局不自动迁入。宿主设置升级后重启工作台，插件注册变化后重启 KiCad。
 
 ## KiCad 入口及同步限制
 

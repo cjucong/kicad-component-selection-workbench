@@ -1414,6 +1414,7 @@ class PartSelectionApp:
         self.config = load_config(config_path)
         apply_runtime_settings(self.config)
         self.settings_gate = SettingsGate()
+        self.lifecycle = None
         self.project_root = self.config["project_root"]
         self.bom_dir = self.config["bom_dir"]
         self.overrides_path = self.config["output_overrides"]
@@ -3090,7 +3091,8 @@ def make_handler(app: PartSelectionApp):
                 return
             if parsed.path == "/api/config":
                 config = {key: str(value) if isinstance(value, Path) else value for key, value in app.config.items()}
-                config["desktop_launcher_version"] = 2
+                config["desktop_launcher_version"] = 3
+                config["desktop_owner_id"] = app.lifecycle.identity if app.lifecycle else ''
                 config["backend_directory"] = str(Path(__file__).resolve().parent)
                 json_response(self, config)
                 return
@@ -3110,6 +3112,11 @@ def make_handler(app: PartSelectionApp):
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
             try:
                 payload = json.loads(body)
+                if parsed.path == "/api/desktop_shutdown":
+                    if not app.lifecycle:
+                        raise ValueError('此后台不是由独立工作台启动的，不能从网页关闭')
+                    json_response(self, app.lifecycle.shutdown(self.headers.get('X-Desktop-Token','')))
+                    return
                 if parsed.path == "/api/path_settings":
                     json_response(self, app.save_path_settings(payload))
                     return
@@ -3218,6 +3225,7 @@ def render_index(app: PartSelectionApp) -> str:
     row_edits_js = (Path(__file__).resolve().parent / "web" / "row-edits.js").read_text(encoding="utf-8")
     path_settings_js = (Path(__file__).resolve().parent / "web" / "path-settings.js").read_text(encoding="utf-8")
     path_settings_css = (Path(__file__).resolve().parent / "web" / "path-settings.css").read_text(encoding="utf-8")
+    desktop_lifecycle_js = (Path(__file__).resolve().parent / "web" / "desktop-lifecycle.js").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3544,6 +3552,8 @@ tr.hidden-row {{ display: none; }}
       <button type="button" data-command="saveDefaultView">保存当前列表配置为默认</button>
       <button type="button" data-command="loadDefaultView">加载默认列表配置</button>
       <button type="button" id="openPathConfig">工程与路径配置…</button>
+      <button type="button" id="restartWorkbench">重启工作台</button>
+      <button type="button" id="exitWorkbench">退出工作台</button>
     </div>
   </div>
   <div class="app-menu">
@@ -7309,6 +7319,7 @@ loadBomOptions().then(() => {{
 </script>
 <script>{footprint_js}</script>
 <script>{path_settings_js}</script>
+<script>{desktop_lifecycle_js}</script>
 </body>
 </html>"""
 
@@ -7319,7 +7330,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", type=Path, help="KiCad project file or directory")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--open", action="store_true", help="Open the UI in the default browser.")
+    parser.add_argument("--desktop-owner-pid", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--bulk-sync-bom", default="", help="Sync the merged web-state of a BOM into KiCad schematics, then exit.")
     parser.add_argument("--bulk-sync-dry-run", action="store_true", help="Only report what the bulk schematic sync would do.")
     parser.add_argument("--bulk-sync-no-notify", action="store_true", help="Do not notify or activate KiCad after bulk schematic sync.")
@@ -7348,12 +7359,19 @@ def main() -> int:
         return 0 if result.get("ok") else 1
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
+    if args.desktop_owner_pid:
+        from part_selection_lifecycle import ServiceLifecycle
+        token = os.environ.pop('KICAD_PART_SELECTION_DESKTOP_TOKEN', '')
+        if args.desktop_owner_pid <= 0 or not token:
+            server.server_close()
+            raise ValueError('Desktop service requires a valid owner and token')
+        app.lifecycle = ServiceLifecycle(app, server, token)
+        threading.Thread(target=app.lifecycle.watch_owner, args=(args.desktop_owner_pid,),
+                         daemon=True, name='desktop-owner').start()
     url = f"http://{args.host}:{args.port}/"
     print(f"Part selection helper: {url}")
     print(f"Config: {app.config['config_path']}")
     print(f"Overrides: {app.overrides_path}")
-    if args.open:
-        webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

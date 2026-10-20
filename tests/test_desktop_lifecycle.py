@@ -1,0 +1,292 @@
+"""Desktop-owned service shutdown, without using production projects or windows."""
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+import threading
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+from http.server import ThreadingHTTPServer
+
+import pytest
+
+from part_selection_server import PartSelectionApp, make_handler
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools/kicad_plugin'))
+
+
+@pytest.fixture
+def app(scratch_project):
+    root = Path(scratch_project)
+    config = root / 'settings.json'
+    config.write_text(json.dumps({'schematic_dir':'.'}))
+    instance = PartSelectionApp(config)
+    yield instance
+    instance.search_jobs.close()
+    instance.selection_jobs.close()
+
+
+def test_only_owner_can_stop_idle_service_and_new_requests_are_blocked(app):
+    from part_selection_lifecycle import ServiceLifecycle
+    server = Mock()
+    stopped = threading.Event()
+    server.shutdown.side_effect = stopped.set
+    lifecycle = ServiceLifecycle(app, server, 'secret')
+    with pytest.raises(ValueError, match='身份'):
+        lifecycle.shutdown('other')
+    assert not app.settings_gate.stopping
+    with patch.object(app.selection_jobs, 'busy', return_value=True):
+        with pytest.raises(ValueError, match='尚未完成'):
+            lifecycle.shutdown('secret')
+    assert not app.settings_gate.stopping
+    lifecycle.shutdown('secret')
+    assert app.settings_gate.stopping
+    assert stopped.wait(2)
+    server.shutdown.assert_called_once()
+
+
+def test_shutdown_does_not_interrupt_other_request(app):
+    from part_selection_lifecycle import ServiceLifecycle
+    lifecycle = ServiceLifecycle(app, Mock(), 'secret')
+    app.settings_gate.active = 2
+    with pytest.raises(ValueError, match='请求'):
+        lifecycle.shutdown('secret')
+    assert not app.settings_gate.stopping
+
+
+def test_unmanaged_server_has_no_shutdown_authority(app):
+    from part_selection_lifecycle import ServiceLifecycle
+    with pytest.raises(ValueError, match='身份'):
+        ServiceLifecycle(app, Mock(), '').shutdown('')
+
+
+def test_http_shutdown_auth_busy_and_real_port_release(app):
+    from part_selection_lifecycle import ServiceLifecycle, owner_id
+    server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(app))
+    app.lifecycle = ServiceLifecycle(app, server, 'secret')
+
+    def serve():
+        try:
+            server.serve_forever(poll_interval=0.05)
+        finally:
+            server.server_close()
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+
+    def stop(token):
+        return urlopen(Request(base+'/api/desktop_shutdown', data=b'{}',
+            headers={'Content-Type':'application/json','X-Desktop-Token':token}),timeout=3)
+
+    try:
+        with urlopen(base+'/api/config') as response:
+            info = json.load(response)
+        assert info['desktop_launcher_version']==3
+        assert info['desktop_owner_id']==owner_id('secret')
+        assert 'secret' not in json.dumps(info)
+        with pytest.raises(HTTPError):
+            stop('wrong')
+        with patch.object(app.search_jobs, 'busy', return_value=True):
+            with pytest.raises(HTTPError):
+                stop('secret')
+        with stop('secret') as response:
+            assert json.load(response)['ok']
+        thread.join(timeout=4)
+        assert not thread.is_alive()
+        with pytest.raises(OSError):
+            urlopen(base+'/api/config',timeout=0.5)
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+        thread.join(timeout=4)
+        server.server_close()
+
+
+def controller():
+    from part_selection_lifecycle import DesktopLifecycle
+    window = SimpleNamespace(evaluate_js=Mock(), destroy=Mock(), get_current_url=lambda:'http://127.0.0.1:1234/')
+    lifecycle = DesktopLifecycle('http://127.0.0.1:1234/', 'secret')
+    lifecycle.window = window
+    return lifecycle, window
+
+
+def test_native_close_is_deferred_until_frontend_saved():
+    lifecycle, window = controller()
+    dispatched = threading.Event()
+    window.evaluate_js.side_effect = lambda script:dispatched.set()
+    assert lifecycle.on_closing() is False
+    assert dispatched.wait(2)
+    window.evaluate_js.assert_called_once_with('window.requestDesktopExit(false)')
+    window.destroy.assert_not_called()
+
+
+def test_restart_stops_owned_service_before_destroying_window():
+    lifecycle, window = controller()
+    with patch.object(lifecycle, '_stop_backend') as stop:
+        result = lifecycle.finish_exit(True)
+    assert result['ok']
+    stop.assert_called_once()
+    assert lifecycle.restart
+    assert lifecycle.on_closing() is True
+    window.destroy.assert_called_once()
+
+
+def test_shutdown_failure_keeps_window_and_allows_retry():
+    lifecycle, window = controller()
+    with patch.object(lifecycle, '_stop_backend', side_effect=ValueError('同步尚未完成')):
+        result = lifecycle.finish_exit(False)
+    assert not result['ok']
+    assert '同步' in result['error']
+    assert not lifecycle.allow_close
+    window.destroy.assert_not_called()
+
+
+def test_foreign_webpage_cannot_call_native_shutdown():
+    lifecycle, window = controller()
+    window.get_current_url = lambda:'https://example.com/'
+    with patch.object(lifecycle, '_stop_backend') as stop:
+        assert not lifecycle.finish_exit(True)['ok']
+    stop.assert_not_called()
+
+
+def test_watchdog_waits_for_work_and_does_not_force_terminate(app):
+    from part_selection_lifecycle import ServiceLifecycle
+    server = Mock()
+    lifecycle = ServiceLifecycle(app, server, 'secret')
+    with patch.object(app.selection_jobs, 'busy', side_effect=[True, False]), patch(
+            'part_selection_lifecycle.time.sleep'):
+        lifecycle.owner_exited()
+    assert app.settings_gate.stopping
+
+
+def test_hidden_launcher_no_longer_adds_browser_mode():
+    import launch_part_selection
+    with patch.object(launch_part_selection.desktop,'main',return_value=0) as main:
+        launch_part_selection.main(['--hidden','--project','example'])
+    main.assert_called_once_with(['--project','example'])
+
+
+def test_stale_or_other_owned_service_is_not_silently_reused(app):
+    import desktop
+    payload = {'project_root':str(app.project_root),'config_path':str(app.config['config_path']),
+               'backend_directory':str(desktop.CORE),'desktop_launcher_version':2}
+    with patch.object(desktop,'service_info',return_value=payload), patch.object(desktop.subprocess,'Popen') as launch:
+        with pytest.raises(RuntimeError, match='旧版|其他'):
+            desktop.ensure_backend(app.project_root,app.config['config_path'],app.project_root,owner_token='new')
+    launch.assert_not_called()
+
+
+def test_same_project_from_another_installation_is_not_started_twice(app):
+    import desktop
+    payload = {'project_root':str(app.project_root),'config_path':str(app.config['config_path']),
+               'backend_directory':str(app.project_root / 'other-plugin'),'desktop_launcher_version':3}
+    with patch.object(desktop,'service_info',return_value=payload), patch.object(desktop.subprocess,'Popen') as launch:
+        with pytest.raises(RuntimeError, match='旧版|其他'):
+            desktop.ensure_backend(app.project_root,app.config['config_path'],app.project_root,owner_token='new')
+    launch.assert_not_called()
+
+
+def test_stopping_gate_rejects_new_requests(app):
+    handler = Mock()
+    method = Mock()
+    app.settings_gate.stopping = True
+    app.settings_gate.request(method)(handler)
+    handler.send_error.assert_called_once_with(503, 'Workbench is shutting down')
+    method.assert_not_called()
+    assert app.settings_gate.active==0
+
+
+def test_desktop_has_no_browser_flag_or_automatic_fallback():
+    import desktop
+    source = Path(desktop.__file__).read_text(encoding='utf-8')
+    assert 'import webbrowser' not in source
+    assert '"--browser"' not in source
+
+
+def test_restart_relaunch_preserves_explicit_config_and_hides_process(app):
+    import desktop
+    with patch.object(desktop.subprocess,'Popen') as launch:
+        desktop.relaunch_desktop(app.project_root,app.config['config_path'],app.project_root)
+    command = launch.call_args.args[0]
+    assert command[-4:]==['--project',str(app.project_root),'--config',str(app.config['config_path'])]
+    if desktop.os.name=='nt':
+        assert launch.call_args.kwargs['creationflags']==desktop.subprocess.CREATE_NO_WINDOW
+
+
+def test_real_owner_exit_triggers_graceful_service_shutdown(app):
+    from part_selection_lifecycle import ServiceLifecycle
+    stopped = threading.Event()
+    server = Mock()
+    server.shutdown.side_effect = stopped.set
+    lifecycle = ServiceLifecycle(app, server, 'secret')
+    options = {'creationflags':subprocess.CREATE_NO_WINDOW} if sys.platform=='win32' else {}
+    with subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(0.3)'], **options) as owner:
+        watcher = threading.Thread(target=lifecycle.watch_owner, args=(owner.pid,), daemon=True)
+        watcher.start()
+        owner.wait(timeout=5)
+        watcher.join(timeout=4)
+    assert stopped.wait(2)
+    assert not watcher.is_alive()
+    assert app.settings_gate.stopping
+
+
+def test_bridge_exposes_only_finish_exit():
+    from part_selection_lifecycle import DesktopBridge
+    bridge = DesktopBridge(Mock())
+    assert [name for name in dir(bridge) if not name.startswith('_')]==['finish_exit']
+
+
+def test_frontend_exit_flushes_edits_and_retains_window_on_busy_or_failure():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js required for frontend lifecycle regression')
+    source = Path(__file__).resolve().parents[1] / 'tools/web/desktop-lifecycle.js'
+    script = r"""
+const fs=require('fs'), vm=require('vm'), assert=require('assert');
+const source=fs.readFileSync(process.argv[1],'utf8');
+function setup(){
+ const calls=[], buttons={};
+ const context={bulkSyncRunning:false, composing:false, dirty:false, discard:false,
+   document:{body:{inert:false},querySelector:()=>context.composing,
+     getElementById:id=>({addEventListener:(_,handler)=>buttons[id]=handler})},
+   setState:(...args)=>calls.push(args),closeToolbarMenus:()=>{},
+   flushRowEdits:async()=>{calls.push('saved');},
+   window:{confirm:()=>context.discard,hasUnsavedPathSettings:()=>context.dirty,
+     pywebview:{api:{finish_exit:async restart=>{calls.push(['exit',restart]);return {ok:true};}}}}};
+ vm.runInNewContext(source,context);
+ return {context,calls,buttons};
+}
+(async()=>{
+ for(const mode of ['busy','composing','dirty','saveFailure','backendFailure','success']){
+  const {context:c,calls}=setup();
+  if(mode==='busy')c.bulkSyncRunning=true;
+  if(mode==='composing')c.composing=true;
+  if(mode==='dirty')c.dirty=true;
+  if(mode==='saveFailure')c.flushRowEdits=async()=>{throw Error('save failed');};
+  if(mode==='backendFailure')c.window.pywebview.api.finish_exit=async()=>({ok:false,error:'busy backend'});
+  await c.window.requestDesktopExit(true);
+  assert.strictEqual(c.document.body.inert,false,mode);
+  if(mode==='success')assert.deepStrictEqual(calls.slice(0,1),['saved']);
+  if(mode==='success')assert(calls.some(call=>Array.isArray(call)&&call[0]==='exit'&&call[1]===true));
+  else assert(!calls.some(call=>Array.isArray(call)&&call[0]==='exit'),mode);
+  if(mode==='saveFailure'){
+   c.flushRowEdits=async()=>calls.push('retry saved');
+   await c.window.requestDesktopExit(false);
+   assert(calls.some(call=>Array.isArray(call)&&call[0]==='exit'&&call[1]===false));
+  }
+ }
+ const {context:c,calls,buttons}=setup();
+ let finish;
+ c.flushRowEdits=()=>new Promise(resolve=>finish=resolve);
+ const pending=c.window.requestDesktopExit(false);
+ await c.window.requestDesktopExit(true);
+ finish(); await pending;
+ assert.strictEqual(calls.filter(call=>Array.isArray(call)&&call[0]==='exit').length,1);
+ assert.deepStrictEqual(Object.keys(buttons).sort(),['exitWorkbench','restartWorkbench']);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    subprocess.run([node,'-e',script,str(source)],check=True,capture_output=True,text=True,timeout=20)

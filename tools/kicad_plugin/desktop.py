@@ -7,11 +7,11 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import socket
 import subprocess
 import sys
 import time
-import webbrowser
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -146,18 +146,28 @@ def ensure_config(root: Path, config_path: Path | None = None) -> Path:
     return config
 
 
-def matches_service(payload: object, root: Path, config: Path) -> bool:
+def service_targets(payload: object, root: Path, config: Path) -> bool:
     if not isinstance(payload, dict) or not payload.get("config_path") or not payload.get("project_root"):
-        return False
-    if payload.get("desktop_launcher_version") != 2:
-        return False
-    if not payload.get("backend_directory") or Path(payload["backend_directory"]).resolve() != CORE.resolve():
         return False
     try:
         return (Path(payload["project_root"]).resolve() == root.resolve()
                 and Path(payload["config_path"]).resolve() == config.resolve())
     except (TypeError, OSError, ValueError):
         return False
+
+
+def matches_service(payload: object, root: Path, config: Path, owner_token=None) -> bool:
+    if not service_targets(payload, root, config) or payload.get('desktop_launcher_version') != 3:
+        return False
+    try:
+        if not payload.get('backend_directory') or Path(payload['backend_directory']).resolve() != CORE.resolve():
+            return False
+    except (TypeError, OSError, ValueError):
+        return False
+    if owner_token is not None:
+        from part_selection_lifecycle import owner_id
+        return payload.get('desktop_owner_id') == owner_id(owner_token)
+    return True
 
 
 def service_info(port: int) -> object:
@@ -207,12 +217,15 @@ def ensure_desktop_runtime(logs: Path) -> Path:
     return python.with_name("pythonw.exe") if os.name == "nt" else python
 
 
-def ensure_backend(root: Path, config: Path, logs: Path) -> str:
+def ensure_backend(root: Path, config: Path, logs: Path, *, owner_token: str) -> str:
     first = 18000 + int(project_key(root)[:6], 16) % 18000
     ports = [8765, *(first + offset for offset in range(10))]
     # Prefer the stable project-specific port if already running.
     for port in ports:
-        if matches_service(service_info(port), root, config):
+        info = service_info(port)
+        if service_targets(info, root, config):
+            if not matches_service(info, root, config, owner_token):
+                raise RuntimeError('该工程仍有旧版或其他工作台后台运行。请先退出原工作台；旧版后台需手动退出一次。不要重复启动或结束 KiCad。')
             logging.info("Reusing matching service on %s", port)
             return f"http://127.0.0.1:{port}/"
     for port in ports:
@@ -229,23 +242,36 @@ def ensure_backend(root: Path, config: Path, logs: Path) -> str:
         with (logs / "server.log").open("ab") as output:
             process = subprocess.Popen(
                 [str(python), "-B", str(CORE / "part_selection_server.py"),
-                 "--config", str(config), "--host", "127.0.0.1", "--port", str(port)],
+                 "--config", str(config), "--host", "127.0.0.1", "--port", str(port),
+                 "--desktop-owner-pid", str(os.getpid())],
                 cwd=root, stdin=subprocess.DEVNULL, stdout=output, stderr=output, **options,
+                env={**os.environ, 'KICAD_PART_SELECTION_DESKTOP_TOKEN':owner_token},
             )
         try:
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     break
-                if matches_service(service_info(port), root, config):
+                if matches_service(service_info(port), root, config, owner_token):
                     logging.info("Started matching service on %s pid=%s", port, process.pid)
                     return f"http://127.0.0.1:{port}/"
                 time.sleep(0.15)
         finally:
-            if process.poll() is None and not matches_service(service_info(port), root, config):
+            if process.poll() is None and not matches_service(service_info(port), root, config, owner_token):
                 process.terminate()
                 process.wait(timeout=5)
     raise RuntimeError(f"Could not start a matching service. See {logs / 'server.log'}")
+
+
+def relaunch_desktop(root, config, logs):
+    options = {'creationflags':subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+    python = Path(sys.executable)
+    if os.name == 'nt' and python.with_name('pythonw.exe').exists():
+        python = python.with_name('pythonw.exe')
+    with (logs / 'window.log').open('ab') as output:
+        subprocess.Popen([str(python),'-B',str(HERE / 'desktop.py'),
+                          '--project',str(root),'--config',str(config)],cwd=root,
+                         stdin=subprocess.DEVNULL,stdout=output,stderr=output,**options)
 
 
 def acquire_window(root: Path):
@@ -301,13 +327,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="KiCad part-selection desktop host")
     parser.add_argument("--project", type=Path, help="Absolute project file or directory")
     parser.add_argument("--config", type=Path, help="Explicit project configuration JSON")
-    parser.add_argument("--browser", action="store_true", help="Use the system browser instead of WebView2")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         logging.info("Argument parser exited status=%s", exc.code)
         raise
     handle = None
+    lifecycle = None
     try:
         if args.config:
             args.config = Path(os.path.expandvars(str(args.config))).expanduser().resolve()
@@ -341,57 +367,55 @@ def main(argv=None) -> int:
             raise ValueError("Desktop runtime must be outside the KiCad project")
         logs = log_base / project_key(root)
         logs.mkdir(exist_ok=True)
-        if not args.browser:
+        try:
+            import webview
+        except ImportError:
+            installer, installing = acquire_window(logs / "runtime-install")
             try:
-                import webview
-            except ImportError:
-                installer, installing = acquire_window(logs / "runtime-install")
-                try:
-                    if not installing:
-                        raise RuntimeError(f"Desktop dependencies are installing. See {logs / 'runtime-install.log'}")
-                    logging.info("Preparing private desktop environment for %s", root)
-                    python = ensure_desktop_runtime(logs)
-                except Exception:
-                    logging.exception("Private desktop environment failed; using browser")
-                    show_error(f"Desktop dependencies could not be prepared; using the browser.\n{logs / 'runtime-install.log'}")
-                    args.browser = True
-                else:
-                    with (logs / "window.log").open("ab") as output:
-                        options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-                        subprocess.Popen([str(python), "-B", str(HERE / "desktop.py"),
-                                          "--project", str(root), "--config", str(config)], cwd=root, stdin=subprocess.DEVNULL,
-                                         stdout=output, stderr=output, **options)
-                    return 0
-                finally:
-                    release_window(installer)
+                if not installing:
+                    raise RuntimeError(f"Desktop dependencies are installing. See {logs / 'runtime-install.log'}")
+                python = ensure_desktop_runtime(logs)
+                with (logs / "window.log").open("ab") as output:
+                    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+                    subprocess.Popen([str(python), "-B", str(HERE / "desktop.py"),
+                                      "--project", str(root), "--config", str(config)], cwd=root, stdin=subprocess.DEVNULL,
+                                     stdout=output, stderr=output, **options)
+                return 0
+            finally:
+                release_window(installer)
         title = f"{TITLE} | {root.name} [{project_key(root)[:6]}]"
         handle, acquired = acquire_window(root)
-        if not acquired and not args.browser:
+        if not acquired:
             if not activate_window(title):
                 raise RuntimeError("Workbench is starting. Retry shortly; see desktop.log if it does not appear.")
             return 0
-        url = ensure_backend(root, config, logs)
+        from part_selection_lifecycle import DesktopLifecycle, DesktopBridge
+        token = secrets.token_urlsafe(32)
+        url = ensure_backend(root, config, logs, owner_token=token)
+        lifecycle = DesktopLifecycle(url, token)
         logging.info("Opening project=%s url=%s", root, url)
-        if args.browser:
-            webbrowser.open(url)
-            return 0
-        try:
-            import webview
-            window = webview.create_window(title, url, width=1380, height=900, min_size=(800, 500), text_select=True)
-            window.events.loaded += lambda: enable_browser_shortcuts(window)
-            webview.start(gui="edgechromium", private_mode=False,
-                          storage_path=str(logs / "webview"))
-        except Exception:
-            logging.exception("WebView2 failed; falling back to browser")
-            webbrowser.open(url)
-            show_error(f"WebView2 could not start; opened the browser instead.\n"
-                       f"Install Microsoft Edge WebView2 Runtime and plugin dependencies.\n{log_base / 'desktop.log'}")
+        window = webview.create_window(title, url, width=1380, height=900, min_size=(800, 500),
+                                       text_select=True, js_api=DesktopBridge(lifecycle))
+        lifecycle.window = window
+        window.events.loaded += lambda: enable_browser_shortcuts(window)
+        window.events.closing += lifecycle.on_closing
+        webview.start(gui="edgechromium", private_mode=False,
+                      storage_path=str(logs / "webview"))
+        if lifecycle.restart:
+            release_window(handle)
+            handle = None
+            relaunch_desktop(root, config, logs)
         return 0
     except Exception as exc:
         logging.exception("Desktop launch failed")
         show_error(f"{exc}\n\n{log_base / 'desktop.log'}")
         return 1
     finally:
+        if lifecycle and not lifecycle.allow_close:
+            try:
+                lifecycle._stop_backend()
+            except Exception:
+                logging.exception('Desktop startup/exit cleanup deferred to owner watchdog')
         release_window(handle)
 
 

@@ -20,6 +20,16 @@
 
 ## 模块与数据流
 
+### 桌面生命周期
+
+用户入口仅保留 WebView2 独立窗口；删除 `--browser`、`--open` 和自动浏览器回退。localhost HTTP 保留作桌面内部传输及隔离诊断/测试，不再是面向用户的浏览器模式；外部商城链接仍可用 Chrome 打开。
+
+`part_selection_lifecycle.py` 管理宿主与后台。宿主生成随机令牌，通过环境变量 `KICAD_PART_SELECTION_DESKTOP_TOKEN` 交给子服务，服务读取后移除；令牌不写命令行、配置或日志。`/api/config` 的 desktop_launcher_version=3，desktop_owner_id 仅返回 SHA256 摘要。启动核对程序目录、工程、配置和宿主摘要，同工程旧/其他宿主服务需退出，不静默复用或另起同工程写入服务。
+
+WebView 只暴露 `DesktopBridge.finish_exit`，不得直接暴露带有 window 对象的控制器。`web/desktop-lifecycle.js` 统一处理叉号和菜单退出/重启，先 flushRowEdits，失败保留窗口；原生 Closing 事件先取消关闭，在另一线程调 JS，避免 UI 线程等待自己。后台 `POST /api/desktop_shutdown` 验证 X-Desktop-Token，并通过 SettingsGate 拒绝在途请求和搜索/转换，停止接收新请求后正常 shutdown。确认 TCP 端口释放才能销毁窗口；重启先释放工程窗口互斥锁，再携带显式工程/配置启动隐藏宿主。不结束 KiCad、不强杀用户任务。
+
+后台监视 `--desktop-owner-pid`，Windows 使用进程句柄避免 PID 重用；宿主异常退出后等待零请求及任务空闲再停止服务。旧服务没有该接口，需要首次升级时人工核对后退出，不能绕过归属校验批量结束 Python 进程。
+
 ```text
 显式工程/配置
   -> 配置 + 当前原理图/BOM + overrides + stock_cache

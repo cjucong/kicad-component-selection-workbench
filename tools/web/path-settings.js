@@ -53,6 +53,7 @@
     status.classList.toggle('path-error', failed);
   };
   const changed = () => fields.some(([key]) => inputs.get(key).value !== (snapshot?.values[key] || ''));
+  window.hasUnsavedPathSettings = () => dialog.open && !saved && changed();
   async function api(url, options) {
     const response = await fetch(url, options);
     const result = await response.json();

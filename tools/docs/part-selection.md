@@ -2,7 +2,7 @@
 
 [工具首页](../README.md) | [插件安装](kicad-plugin.md) | [开发接手](ai-handoff.md) | [故障排查](troubleshooting.md)
 
-命令从独立插件仓库根目录执行，工程位于仓库之外。Windows 10/11、Python 3.10+、openpyxl 为基础环境；独立窗口另需 WebView2 Runtime，库存网页回退需 Edge 或 Chrome。
+命令从独立插件仓库根目录执行，工程位于仓库之外。Windows 10/11、Python 3.10+、openpyxl 为基础环境；独立窗口另需 WebView2 Runtime，外部商城快捷页面使用 Edge 或 Chrome。
 
 ## 显式启动工程
 
@@ -19,11 +19,7 @@ python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro
 python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json"
 ```
 
-只需浏览器时安装 `tools/requirements.txt` 并运行：
-
-```powershell
-python -B tools/part_selection_server.py --config "E:/work/Board/BOM/part_selection_config.json" --host 127.0.0.1 --port 8765 --open
-```
+只支持独立工作台，不再提供浏览器启动或自动回退。关闭窗口等同“文件 → 退出工作台”：先保存行编辑，再退出所属后台。“文件 → 重启工作台”会等待原端口释放后以同一工程和配置重新启动；搜索、转换、同步或输入法组字尚未结束时保留窗口并提示处理。路径表单的未保存配置会单独询问是否放弃。
 
 后端也接受 `--project`；必须明确提供工程或配置，不从源码目录猜测。两参数同时给出时，配置的 project_root 必须与 --project 匹配。已有 `BOM/part_selection_config.json` 原样保留；新工程使用前核对配置和数据位置。
 
@@ -35,7 +31,7 @@ python -B tools/part_selection_server.py --config "E:/work/Board/BOM/part_select
 
 路径改动需按“保存并应用”，不采用行编辑的逐字自动保存。默认勾选复制已有记录、库存、位号清单、已导出 BOM/改动表和两类同步日志；先在工程外备份，再复制，保留原文件，目标有不同内容时拒绝覆盖。保存后点“完成并刷新”。搜索、转换或其他数据请求未结束时暂不允许切换路径；原理图与 PCB 本身不会因为改路径而移动。
 
-临时缓存和桌面环境默认继续在工程外，避免 KiCad 递归备份。runtime_cache、desktop_home 留空时使用启动环境变量或默认位置；指定路径时优先于对应环境变量。运行目录保存后需完整退出助手及对应后台再启动，不移动旧运行环境。插件程序安装目录只读，改安装位置需安装器的 --plugin-dir 参数。
+临时缓存和桌面环境默认继续在工程外，避免 KiCad 递归备份。runtime_cache、desktop_home 留空时使用启动环境变量或默认位置；指定路径时优先于对应环境变量。运行目录保存后使用“文件 → 重启工作台”，不移动旧运行环境。插件程序安装目录只读，改安装位置需安装器的 --plugin-dir 参数。
 
 示例是供新工程参考的配置，不要用它覆盖已有工程配置：
 
@@ -69,13 +65,13 @@ python -B tools/part_selection_server.py --config "E:/work/Board/BOM/part_select
 
 上述路径项也支持绝对路径及环境变量、`~` 展开。`source_bom` 的特殊值不是实际文件；开发代码保留其 Path 兼容表示。设置 bom_dir 不会自动重写 output_overrides、stock_cache 等其他显式路径，调整时逐项核对。
 
-菜单保存通过 /api/path_settings 校验并原子更新 JSON，保留未知工程选项与 project_root；表单带版本摘要，外部改过配置时拒绝覆盖。高级用户仍可直接编辑 JSON，但需先停止对应后端、备份后修改并用 --config 重启；只刷新网页或关闭独立窗口不足以确保旧后端退出。不要按端口号终止未核实的服务。
+菜单保存通过 /api/path_settings 校验并原子更新 JSON，保留未知工程选项与 project_root；表单带版本摘要，外部改过配置时拒绝覆盖。高级用户仍可直接编辑 JSON，但需先通过关闭工作台停止对应后端、备份后修改并用 --config 重启；仅刷新界面不会重启后台。升级前遗留的旧服务需手动退出一次，见 [旧版后台处理](troubleshooting.md#旧版后台仍在运行)。不要按端口号终止未核实的服务。
 
 ## 迁移已有记录
 
 推荐使用菜单配置窗口，保持“复制已有数据”勾选，由程序备份并复制后切换。若直接手改 JSON，**不会自动搬迁文件**：先备份原记录和配置，停止对应后端，将 overrides、库存缓存及需保留的同步日志复制到新位置，再修改各路径、重启并核对主料、备注、确认、备选和订货信息。保留原副本直到核对完成。若新路径为空，应先查明是否漏复制，未经确认不得新建空记录替代旧数据。
 
-`bom_dir` 下的同步日志通常为 `part_selection_schematic_sync_log.csv`、`part_selection_schematic_sync_runtime.jsonl`；已有工程仍沿用原 BOM 路径。浏览器列布局保存在 localStorage，普通浏览器与独立窗口不共享。
+`bom_dir` 下的同步日志通常为 `part_selection_schematic_sync_log.csv`、`part_selection_schematic_sync_runtime.jsonl`；已有工程仍沿用原 BOM 路径。列布局保存在独立工作台的 localStorage，重启保留；旧浏览器的布局不自动迁入。
 
 临时缓存默认在工程同级的 `../.kicad-part-selection-cache/<工程名>-<路径哈希>/`。可在启动前设置：
 

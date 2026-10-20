@@ -1,5 +1,6 @@
 """Opt-in Windows/WebView2 smoke test using an extracted package and disposable project."""
 import json
+import secrets
 import subprocess
 import sys
 import time
@@ -48,13 +49,14 @@ def run_smoke(output):
         return process
 
     result = {"schemas": "passed", "extracted_package": True}
+    token = secrets.token_urlsafe(32)
     try:
         with patch.object(desktop.subprocess, "Popen", side_effect=launch):
-            url = desktop.ensure_backend(project, config, output)
-            assert desktop.ensure_backend(project, config, output) == url
+            url = desktop.ensure_backend(project, config, output, owner_token=token)
+            assert desktop.ensure_backend(project, config, output, owner_token=token) == url
         assert len(processes) == 1, "Duplicate backend started"
         with urlopen(url + "api/config") as response:
-            assert desktop.matches_service(json.load(response), project, config)
+            assert desktop.matches_service(json.load(response), project, config, token)
         window = webview.create_window("Selection plugin QA", url, width=1100, height=720)
 
         def check_page():
