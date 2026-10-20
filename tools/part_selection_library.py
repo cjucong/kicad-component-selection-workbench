@@ -339,3 +339,7 @@ class SelectionJobs:
 
     def close(self):
         self.pool.shutdown(wait=True)
+
+    def busy(self):
+        with self.lock:
+            return any(not state['done'] for state in self.jobs.values())

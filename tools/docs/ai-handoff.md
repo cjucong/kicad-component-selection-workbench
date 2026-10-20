@@ -14,7 +14,7 @@
 - 不从源码父目录、当前目录、上一次工程猜测。中文启动器转发参数，无参数使用工程选择器；桌面私有 Python 环境重启必须保留 --config。
 - 已有 BOM/part_selection_config.json 继续使用，不强制重写。project_root 相对配置父目录；schematic_dir、bom_dir、source_bom、input_refs、output_overrides、stock_cache、converter_executable 相对工程根目录或使用展开后的绝对路径。
 - 默认 source_bom 是 `__schematic__`，保持其 Path 表示兼容测试；默认匹配 `BOM/*LCSC*.csv`。具体工程可保留原 CSV 及匹配规则。
-- “文件 → 路径配置文件…”通过 POST /api/open_path_config 用记事本打开当前 JSON，不是 UI 路径编辑器；修改 JSON 后重启该工程后端，不实时应用。更改输出路径不迁移旧数据，必须先备份/复制，再核对，不能静默建立空记录。
+- “文件 → 工程与路径配置…”通过 GET/POST /api/path_settings 读取、校验和保存，/api/path_picker 打开隐藏进程承载的原生路径选择器。正式数据默认工程 BOM，可指定其他目录；保存时先备份并按显式勾选复制原记录、导出和日志，保留原文件、拒绝覆盖不同目标。配置版本变化或任务忙碌时拒绝切换；数据路径即时应用，runtime_cache/desktop_home 下次完整重启生效。旧 /api/open_path_config 保留兼容，但菜单不再启动记事本。直接手改 JSON 仍需手动迁移并重启。
 - `runtime_directory(project_root)` 返回工程外同盘缓存，KICAD_PART_SELECTION_CACHE 指定绝对父目录，程序按工程路径哈希隔离。KICAD_PART_SELECTION_HOME 指定工程外绝对桌面环境/日志基目录。
 - 正式导入库仍是工程设计依赖，目标选择在现有预览 UI 中完成；不与临时缓存混用。
 
@@ -34,6 +34,7 @@
 | part_selection_helper.py / kicad_sexpr.py | 原理图属性/BOM 处理、通用解析 |
 | part_selection_overrides.py | 配置、主料及覆盖记录兼容 |
 | part_selection_paths.py | 共享显式工程/配置 CLI 解析，随包分发 |
+| part_selection_settings.py / web/path-settings.* | 菜单路径表单、版本校验、任务互斥、备份复制与保存回滚 |
 | start_part_selection_tool.vbs / launch_part_selection.py | 隐藏启动桥，完整转发 --project/--config，未指定目标时选择工程 |
 | part_stock_lookup.py / part_selection_search.py | 库存、参数、分批候选、缓存与请求竞态 |
 | part_selection_library.py | 转换器发现、隐藏有界 CLI、库注册与回滚 |

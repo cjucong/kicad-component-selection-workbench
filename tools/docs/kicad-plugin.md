@@ -2,6 +2,50 @@
 
 [工具首页](../README.md) | [使用与配置](part-selection.md) | [转换器](easykiconverter.md) | [故障排查](troubleshooting.md)
 
+## 从仓库链接手动安装
+
+适用于只有仓库链接、没有安装包的 Windows 用户。以下目录是示例，源码应放在 KiCad 工程之外。
+
+1. 安装 Windows 版 KiCad 10、64 位 Python 3.10 或更高版本，以及 Microsoft Edge WebView2 Runtime。Python 安装时勾选“Add python.exe to PATH”。打开 PowerShell，运行 `python --version` 确认版本；若只有 `py` 命令可用，下面的 `python` 替换为 `py -3`。KiCad IPC 入口还需在首选项中启用 IPC API。
+2. 获取源码，下面两种方法任选一种。
+
+**不用 Git：**打开 https://github.com/cjucong/kicad- ，点击 **Code → Download ZIP**，完整解压到例如 `D:\KiCadTools\kicad-main`。不要直接在 ZIP 内运行，也不要只下载 `tools` 中的单个文件。在解压目录空白处打开 PowerShell，确认 `Get-ChildItem` 能看到 `README.md`、`tools`、`tests`。
+
+**使用 Git：**先安装 Git for Windows，再在 PowerShell 执行：
+
+```powershell
+git clone https://github.com/cjucong/kicad-.git D:\KiCadTools\kicad-part-selection
+Set-Location D:\KiCadTools\kicad-part-selection
+```
+
+3. 在仓库根目录执行安装命令。打包器使用 Python 标准库，会生成 ZIP 并安装到当前用户 KiCad 10 插件目录：
+
+```powershell
+python -B tools/kicad_plugin/package_plugin.py --install
+```
+
+默认安装位置是 Windows 实际“文档”目录下的 `KiCad\10.0\plugins\com_smu_part-selection`，文档重定向到 OneDrive 等位置时随实际目录解析。终端最后打印的路径为准。**安装进去的是生成的插件，不要把整个 Git 仓库手动复制进 plugins。**
+
+4. 关闭并重新打开 KiCad；从工程管理器打开已保存的 `.kicad_pro`，进入原理图或 PCB 编辑器，点击“器件选料助手”。直接安装不会出现在 PCM 已安装列表中。IPC 基础依赖由 KiCad 管理；首次启动桌面窗口可能下载独立运行环境，需要网络且耗时较长。若入口未出现或依赖下载失败，先看下文“启动与工程隔离”和 [故障排查](troubleshooting.md)，不要重复安装两份副本。
+5. 若要手动安装依赖并独立打开助手，在同一仓库根目录执行：
+
+```powershell
+python -m pip install -r tools/kicad_plugin/desktop-requirements.txt
+python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro"
+```
+
+把示例工程路径换成自己的真实工程。没有插件入口也可用这条命令，或双击 `tools/启动器件选料助手.bat` 选择工程。首次进入后用顶部“文件 → 工程与路径配置…”核对数据位置；正式数据默认保存在自己的工程 `BOM/` 下，而不是此源码目录。
+
+### 转换器是否需要另装
+
+以上命令安装的是**轻量版**：搜索、选料、数据导出、现有库封装选择等可以使用，但不会从 GitHub 源码自动下载转换器。需要“替换立创封装”时，另行获取 [EasyKiConverter v3.1.11](https://github.com/EasyKiconverter/EasyKiConverter/releases/tag/v3.1.11) 的 Windows 运行包，完整解压并保留 DLL 等依赖；在顶部“文件 → 工程与路径配置… → 转换与运行”选择其中的 `easykiconverter.exe`，保存后使用。完整分发包的构建、版本校验及许可材料见 [转换器说明](easykiconverter.md)。不要把外部转换器安装目录误选为工程数据输出目录。
+
+### 手动更新和卸载
+
+Git 安装：关闭助手与对应后台、退出 KiCad，进入源码目录运行 `git pull --ff-only`（本地有改动先保留处理），然后重新运行 `python -B tools/kicad_plugin/package_plugin.py --install`。Download ZIP 安装：将新 ZIP 解压到新的源码目录，在其中运行同一安装命令。安装器备份旧插件，轻量更新保留已安装的转换器，随后重新打开 KiCad。
+
+源码目录与安装目录是两份副本，普通保存源码不会自动更新插件；此仓库开发维护流程要求每轮验证后重新安装。**卸载时只移除实际安装的 `com_smu_part-selection` 插件目录，不删除工程的 BOM、Libraries、配置或选料记录。** 正式库仍可能被设计使用；PCM 安装的副本通过 PCM 卸载，不要同时保留两种安装来源。
+
 ## 环境与安装
 
 Windows 10/11、KiCad 10、Python 3.10+，独立窗口使用 WebView2 Runtime。KiCad IPC 入口需要在首选项启用 IPC API；基础依赖由 KiCad 管理，WebView2 宿主依赖使用独立桌面环境，首次安装可能需要网络。
@@ -52,7 +96,7 @@ python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selecti
 
 隐藏启动桥由 start_part_selection_tool.vbs 和 launch_part_selection.py 提供，完整保留上述参数；未指定目标时选择工程。共享 part_selection_paths.py 随安装包提供，不依赖工程 tools。
 
-每个工程保持自己的配置、人工记录、库存和库文件；插件升级不替换这些内容。服务仅监听本机，复用时核验工程与配置身份，8765 被其他工程占用时选择工程隔离端口，不终止他人的服务。“文件 → 路径配置文件…”可用记事本打开当前 JSON，不提供 UI 路径编辑或实时应用。关闭窗口不等于关闭后端；修改 JSON 后应停止并重启对应后端，详见 [配置说明](part-selection.md)。
+每个工程保持自己的配置、人工记录、库存和库文件；插件升级不替换这些内容。服务仅监听本机，复用时核验工程与配置身份，8765 被其他工程占用时选择工程隔离端口，不终止他人的服务。顶部“文件 → 工程与路径配置…”支持输入或浏览选择路径，数据路径保存后立即应用；运行环境路径修改需重启助手及对应后台。关闭窗口不等于关闭后端；直接手改 JSON 后仍应停止并重启对应后端，详见 [配置说明](part-selection.md)。
 
 ## 窗口与日志
 

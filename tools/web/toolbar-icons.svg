@@ -1,5 +1,8 @@
 <!-- Lucide 0.468.0, ISC license. See LUCIDE-LICENSE. -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+<symbol id="toolbar-icon-folder-open" viewBox="0 0 24 24">
+  <path d="m6 14 1.5-3a2 2 0 0 1 1.8-1H20a2 2 0 0 1 1.9 2.6l-2.4 7a2 2 0 0 1-1.9 1.4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2" />
+</symbol>
 <symbol id="toolbar-icon-x" viewBox="0 0 24 24">
   <path d="M18 6 6 18M6 6l12 12" />
 </symbol>

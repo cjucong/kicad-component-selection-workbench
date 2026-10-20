@@ -332,6 +332,11 @@ def main(argv=None) -> int:
                     return 0
                 root = validate_project(path)
         config = ensure_config(root, args.config) if args.config else ensure_config(root)
+        sys.path.insert(0, str(CORE))
+        from part_selection_overrides import load_config
+        from part_selection_settings import apply_runtime_settings
+        apply_runtime_settings(load_config(config))
+        log_base = cache_directory()
         if log_base.resolve().is_relative_to(root.resolve()):
             raise ValueError("Desktop runtime must be outside the KiCad project")
         logs = log_base / project_key(root)

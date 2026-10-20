@@ -26,6 +26,10 @@ class CandidateSearchJobs:
                 self._cancel(job)
         self._pool.shutdown(wait=True, cancel_futures=True)
 
+    def busy(self):
+        with self._lock:
+            return any(job.get('future') and not job['future'].done() for job in self._jobs.values())
+
     def _snapshot(self, job):
         state = deepcopy(job["state"])
         state["elapsed_ms"] = round((self._clock() - job["started"]) * 1000)

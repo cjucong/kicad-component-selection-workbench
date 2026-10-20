@@ -2214,7 +2214,20 @@ class PartSelectionOverridesTest(unittest.TestCase):
 
             html = render_index(PartSelectionApp(config_path))
 
-            self.assertNotIn("<header>", html)
+            from html.parser import HTMLParser
+
+            class HeaderParser(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.headers = []
+
+                def handle_starttag(self, tag, attrs):
+                    if tag == 'header':
+                        self.headers.append(dict(attrs))
+
+            parser = HeaderParser()
+            parser.feed(html)
+            self.assertEqual(parser.headers, [{'class': 'workbench-chrome'}])
             self.assertIn('class="project-path-link"', html)
             self.assertIn('data-action="open-project-path"', html)
             self.assertLess(html.index('class="app-menubar"'), html.index('class="project-path-link"'))

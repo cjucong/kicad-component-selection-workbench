@@ -1,0 +1,33 @@
+.path-settings-dialog { box-sizing: border-box; width: 760px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 0; border: 1px solid #a5afb8; border-radius: 6px; background: #fff; color: #25313b; box-shadow: 0 8px 30px #0003; font-size: 13px; letter-spacing: 0; }
+.path-settings-dialog::backdrop { background: #15191e66; }
+.path-settings-dialog form { margin: 0; display: flex; flex-direction: column; max-height: calc(100dvh - 26px); }
+.path-settings-dialog header, .path-settings-dialog footer { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: #f3f5f6; flex-shrink: 0; }
+.path-settings-dialog header { border-bottom: 1px solid #d8dfe4; }
+.path-settings-dialog h2 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
+.path-settings-dialog button { margin: 0; font: inherit; white-space: normal; }
+.path-settings-dialog footer { justify-content: flex-end; border-top: 1px solid #d8dfe4; }
+.path-settings-dialog footer button { padding: 5px 12px; }
+.path-settings-dialog #savePathSettings { background: #236b53; color: #fff; border-color: #236b53; }
+.path-settings-body { padding: 10px 14px; overflow-y: auto; }
+.path-identity { display: grid; grid-template-columns: 105px minmax(0, 1fr); gap: 6px 8px; margin: 0 0 12px; font-size: 12px; }
+.path-identity dt { color: #65717d; }
+.path-identity dd { margin: 0; overflow-wrap: anywhere; user-select: text; }
+.path-tabs { display: flex; gap: 4px; border-bottom: 1px solid #cbd3d9; margin-bottom: 12px; }
+.path-tabs button { padding: 6px 12px; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; }
+.path-tabs [aria-selected=true] { border-bottom-color: #236b53; color: #236b53; font-weight: 600; }
+.path-settings-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.path-settings-tools button { font-size: 12px; padding: 3px 8px; }
+.path-fields { display: grid; gap: 9px; margin-bottom: 14px; }
+.path-field { display: grid; grid-template-columns: 175px minmax(0, 1fr); align-items: center; gap: 8px; }
+.path-field-control { display: flex; gap: 4px; min-width: 0; }
+.path-field-control input { box-sizing: border-box; width: 100%; min-width: 0; height: 30px; padding: 4px 7px; font: inherit; border: 1px solid #b6c1c9; border-radius: 3px; background: #fff; color: #25313b; user-select: text; }
+.path-field-control input:focus { outline: 2px solid #68ad93; outline-offset: 1px; }
+.path-settings-dialog .path-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: 0 0 30px; padding: 4px; border: 1px solid #c0c9ce; border-radius: 3px; background: transparent; font-size: 22px; }
+.path-icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.path-migration { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.6; }
+.path-migration input { width: auto; margin-top: 3px; }
+.path-settings-note { font-size: 12px; line-height: 1.65; color: #65717d; }
+#pathSettingsStatus { margin: 10px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 12px; color: #236b53; }
+#pathSettingsStatus:empty { display: none; }
+#pathSettingsStatus.path-error { color: #b02d33; }
+@media (max-width: 560px) { .path-field { grid-template-columns: minmax(0, 1fr); gap: 3px; } .path-identity { grid-template-columns: 80px minmax(0, 1fr); } }

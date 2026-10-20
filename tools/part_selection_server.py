@@ -30,6 +30,7 @@ from uuid import uuid4
 from functools import partial
 
 from part_selection_search import CandidateSearchJobs
+from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings
 from part_selection_library import LibraryImporter, SelectionJobs
 from part_selection_footprints import FootprintChoices
 
@@ -1411,6 +1412,8 @@ def group_parts_for_review(parts, overrides: dict[str, dict[str, object]]) -> li
 class PartSelectionApp:
     def __init__(self, config_path: Path):
         self.config = load_config(config_path)
+        apply_runtime_settings(self.config)
+        self.settings_gate = SettingsGate()
         self.project_root = self.config["project_root"]
         self.bom_dir = self.config["bom_dir"]
         self.overrides_path = self.config["output_overrides"]
@@ -1419,6 +1422,26 @@ class PartSelectionApp:
         self.selection_jobs = SelectionJobs(self.select_candidate)
         self.footprint_choices = FootprintChoices(self.project_root, self.config.get("converter_executable"))
         self.selection_save_lock = threading.RLock()
+
+    def save_path_settings(self, payload):
+        with self.settings_gate.editing(), self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
+            if self.search_jobs.busy() or self.selection_jobs.busy():
+                raise ValueError("搜索或转换尚未完成，请结束任务后保存路径配置")
+            result = save_settings(self.config, payload)
+            updated = result.pop('config')
+            # Runtime processes keep their current cache/home until a fresh launch.
+            for key in ('runtime_cache', 'desktop_home'):
+                if key in self.config:
+                    updated[key] = self.config[key]
+                else:
+                    updated.pop(key, None)
+            self.config = updated
+            self.bom_dir = updated['bom_dir']
+            self.overrides_path = updated['output_overrides']
+            self.stock_cache_path = updated['stock_cache']
+            self.footprint_choices = FootprintChoices(self.project_root, updated.get('converter_executable'))
+            result['settings'] = settings_snapshot(self.config)
+            return result
 
     def source_bom(self) -> Path:
         return self.config["source_bom"]
@@ -3013,6 +3036,7 @@ def make_handler(app: PartSelectionApp):
         def log_message(self, format: str, *args) -> None:
             return
 
+        @app.settings_gate.request
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
@@ -3070,18 +3094,28 @@ def make_handler(app: PartSelectionApp):
                 config["backend_directory"] = str(Path(__file__).resolve().parent)
                 json_response(self, config)
                 return
+            if parsed.path == "/api/path_settings":
+                json_response(self, settings_snapshot(app.config))
+                return
             if parsed.path == "/favicon.ico":
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self.end_headers()
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
+        @app.settings_gate.request
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
             try:
                 payload = json.loads(body)
+                if parsed.path == "/api/path_settings":
+                    json_response(self, app.save_path_settings(payload))
+                    return
+                if parsed.path == "/api/path_picker":
+                    json_response(self, choose_path(app.config, payload))
+                    return
                 if parsed.path == "/api/lcsc_search_cancel":
                     client = str(payload.get("client", ""))
                     if not client or len(client) > 100:
@@ -3182,6 +3216,8 @@ def render_index(app: PartSelectionApp) -> str:
     footprint_css = (Path(__file__).resolve().parent / "web" / "footprint-compare.css").read_text(encoding="utf-8")
     footprint_js = (Path(__file__).resolve().parent / "web" / "footprint-compare.js").read_text(encoding="utf-8")
     row_edits_js = (Path(__file__).resolve().parent / "web" / "row-edits.js").read_text(encoding="utf-8")
+    path_settings_js = (Path(__file__).resolve().parent / "web" / "path-settings.js").read_text(encoding="utf-8")
+    path_settings_css = (Path(__file__).resolve().parent / "web" / "path-settings.css").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3494,6 +3530,7 @@ tr.hidden-row {{ display: none; }}
 .ref-context-menu button:hover {{ background: #eaf5ff; }}
 </style>
 <style>{footprint_css}</style>
+<style>{path_settings_css}</style>
 </head>
 <body>
 {icon_sprite}
@@ -3506,7 +3543,7 @@ tr.hidden-row {{ display: none; }}
       <button type="button" data-command="exportChanges">导出改动表</button>
       <button type="button" data-command="saveDefaultView">保存当前列表配置为默认</button>
       <button type="button" data-command="loadDefaultView">加载默认列表配置</button>
-      <button type="button" id="openPathConfig">路径配置文件…</button>
+      <button type="button" id="openPathConfig">工程与路径配置…</button>
     </div>
   </div>
   <div class="app-menu">
@@ -7143,10 +7180,8 @@ document.getElementById("saveDefaultView").addEventListener("click", () => {{
 document.getElementById("openPathConfig").addEventListener("click", async () => {{
   closeToolbarMenus();
   try {{
-    const response = await fetch("/api/open_path_config", {{method: "POST", headers: {{"Content-Type": "application/json"}}, body: "{{}}"}});
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || "打开失败");
-    setState("已打开路径配置文件；修改前请备份，保存后重启后台生效", "status");
+    await flushRowEdits();
+    await window.openPathSettings();
   }} catch (error) {{ setState(error.message || String(error), "error"); }}
 }});
 document.getElementById("loadDefaultView").addEventListener("click", () => {{
@@ -7273,6 +7308,7 @@ loadBomOptions().then(() => {{
 }});
 </script>
 <script>{footprint_js}</script>
+<script>{path_settings_js}</script>
 </body>
 </html>"""
 
