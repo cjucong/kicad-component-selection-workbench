@@ -47,7 +47,7 @@ class WorkbenchToolbarTest(unittest.TestCase):
             "库存查询": ["queryMissingStock", "queryAllStock"],
             "写入原理图": ["syncSelectedSchematic", "syncAllSchematic"],
             "表格导出": ["exportPumpMenu", "pumpExportMode", "exportPumpTable", "exportChanges"],
-            "列表视图": ["toggleColumns", "columnPanel", "columnList", "defaultViewMenu", "saveDefaultView", "loadDefaultView"],
+            "列表视图": ["toggleColumns", "columnPanel", "autoSizeColumns", "columnList", "defaultViewMenu", "saveDefaultView", "loadDefaultView"],
         }
         self.assertEqual(markup.groups, expected)
 

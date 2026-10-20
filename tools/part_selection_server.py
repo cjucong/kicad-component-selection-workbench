@@ -3634,7 +3634,7 @@ tr.hidden-row {{ display: none; }}
   <span class="section-title">列表视图</span><div class="section-actions">
   <div class="view-wrap">
     <button id="toggleColumns" type="button" class="tool-button" aria-expanded="false" aria-label="列显示配置" data-tooltip="选择显示列、调整列顺序及列宽。修改后自动记忆，下次打开继续使用。">{toolbar_content('columns-3', '列设置')}</button>
-    <div id="columnPanel" class="view-panel"><h2>自定义视图配置</h2><div id="columnList"></div></div>
+    <div id="columnPanel" class="view-panel"><h2>自定义视图配置</h2><button id="autoSizeColumns" type="button">自动调整列宽</button><div id="columnList"></div></div>
   </div>
   <div class="app-menu">
     <button type="button" id="defaultViewMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="默认视图配置" data-tooltip="保存当前列表配置为默认，或加载已保存的默认配置。">{toolbar_content('save', '默认配置')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
@@ -7167,6 +7167,9 @@ bomSelect.addEventListener("change", () => {{
   loadRows();
 }});
 
+document.getElementById("autoSizeColumns").addEventListener("click", () => {{
+  autoSizeColumns(false);
+}});
 document.getElementById("toggleColumns").addEventListener("click", () => {{
   closeToolbarMenus();
   hideToolbarTooltip();

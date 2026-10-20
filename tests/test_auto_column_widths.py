@@ -21,14 +21,39 @@ class AutoColumnWidthsTest(unittest.TestCase):
         result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_both_tables_auto_size_without_buttons_and_keep_double_click_handles(self):
-        for token in ('id="autoSizeColumns"', 'id="autoSizeCandidateColumns"'):
-            self.assertTrue(token not in self.html, token)
+    def test_manual_auto_size_is_inside_view_settings_and_keeps_double_click_handles(self):
+        panel = re.search(r'<div id="columnPanel".*?<div id="columnList">', self.html, re.S)
+        self.assertIsNotNone(panel)
+        self.assertIn('id="autoSizeColumns"', panel.group())
+        self.assertIn('自动调整列宽', panel.group())
+        self.assertEqual(self.html.count('id="autoSizeColumns"'), 1)
+        self.assertNotIn('id="autoSizeCandidateColumns"', self.html)
         for token in (
                       'autoSizeColumns(candidate)',
                       'autoSizeColumns(false, th.dataset.col)',
                       'autoSizeColumns(true, th.dataset.candidateCol)', 'fitDefaultColumnWidths(true)'):
             self.assertTrue(token in self.html, token)
+
+    def test_view_settings_button_resizes_only_the_workbench(self):
+        listener = re.search(
+            r'document.getElementById\("autoSizeColumns"\).addEventListener\("click",.*?\n\}\);',
+            self.html, re.S,
+        )
+        self.assertIsNotNone(listener)
+        self.run_js('''
+const assert = require('node:assert/strict');
+let callback = null, calls = [];
+const document = {getElementById(id) {
+  assert.equal(id, 'autoSizeColumns');
+  return {addEventListener(event, handler) {
+    assert.equal(event, 'click'); callback = handler;
+  }};
+}};
+function autoSizeColumns(...args) {calls.push(args);}
+LISTENER
+callback();
+assert.deepEqual(calls, [[false]]);
+'''.replace('LISTENER', listener.group()))
 
     def test_width_budget_respects_minimums_caps_and_narrow_screens(self):
         function = re.search(r'function fitColumnWidthBudget\(.*?(?=\nfunction )', self.html, re.S)

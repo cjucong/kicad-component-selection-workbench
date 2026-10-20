@@ -1,5 +1,9 @@
 # 使用与路径配置
 
+## 列表视图
+
+顶部“列表视图 → 列设置”面板中的“自动调整列宽”按当前可见内容重新计算列宽并记忆设置，不改变列顺序或隐藏列；也可双击表头右侧边缘只调整该列。
+
 [工具首页](../README.md) | [插件安装](kicad-plugin.md) | [开发接手](ai-handoff.md) | [故障排查](troubleshooting.md)
 
 命令从独立插件仓库根目录执行，工程位于仓库之外。Windows 10/11、Python 3.10+、openpyxl 为基础环境；独立窗口另需 WebView2 Runtime，外部商城快捷页面使用 Edge 或 Chrome。

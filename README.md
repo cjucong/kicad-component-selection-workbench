@@ -4,6 +4,8 @@
 
 ## 安装与启动
 
+列表列宽可在“列表视图 → 列设置 → 自动调整列宽”中重新适配，列设置会自动记忆。
+
 第一次拿到仓库链接，按 [从 GitHub 下载到手动安装](tools/docs/kicad-plugin.md#从仓库链接手动安装) 操作；不需要原作者的工程、BOM 或 tools 副本。支持 Git 克隆和网页 Download ZIP 两种获取方式。
 
 支持 Windows 10/11、Python 3.10+；独立窗口使用 WebView2 Runtime。网络查询需要联网，外部商城快捷页面使用 Edge 或 Chrome。KiCad 插件入口需要启用 IPC API。安装包不含工程文件，也不依赖 FPGA 或 PCB 3D 工具。

@@ -16,6 +16,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 
 | 测试类别 | 范围 |
 | --- | --- |
+| `test_auto_column_widths.py`、`test_workbench_toolbar.py` | 自动列宽按钮仅位于列设置面板，复用主表列宽计算与持久化，隐藏列及候选表配置不受影响 |
 | `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 搜索、筛选、库存、订货与请求竞态 |
 | `test_*selection*`、`test_selected_schematic_sync.py` | 配置、主料一致性、记录及同步范围 |
 | `test_footprint_choices.py`、`test_part_selection_library.py` | 封装对比、库事务与回滚 |
