@@ -23,6 +23,33 @@ PRODUCT = {"productCode": "C4283613", "productModel": "P2TC0805D5002LNTA", "stoc
 
 
 class ProgressiveSourceTest(unittest.TestCase):
+    def test_fallback_reports_its_progress_and_result_source(self):
+        snapshots = []
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {"code": 200, "result": {"dataList": [PRODUCT]}}
+        ).encode()
+        with patch.object(stock.urllib.request, "urlopen", return_value=response):
+            result = stock.search_lcsc_candidates(
+                "capacitor 4.7uF 0805", domestic_fetcher=lambda *_: [],
+                partner_fetcher=lambda *_: [], on_partial=snapshots.append)
+        self.assertTrue(result["items"])
+        self.assertTrue(any(state["sources"].get("fallback") == "querying" for state in snapshots))
+        self.assertEqual(result["sources"].get("fallback"), "ready")
+
+    def test_empty_and_failed_fallback_are_distinct(self):
+        for payload, expected in (({"code": 200, "result": {"dataList": []}}, "empty"),
+                                  ({"code": 503, "msg": "busy"}, "failed")):
+            with self.subTest(expected=expected):
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+                with patch.object(stock.urllib.request, "urlopen", return_value=response), \
+                     patch.object(stock, "domestic_exact_candidate_items", return_value=[]):
+                    result = stock.search_lcsc_candidates(
+                        "capacitor 4.7uF 0805", domestic_fetcher=lambda *_: [], partner_fetcher=lambda *_: [])
+                self.assertEqual(result["sources"]["fallback"], expected)
+                self.assertEqual(result["ok"], expected == "empty")
+
     def test_domestic_result_is_published_while_partner_is_still_waiting(self):
         release = threading.Event()
         partial = threading.Event()
@@ -295,8 +322,17 @@ const fetch=(url,options)=>{
  candidateKeyword.value='NEW'; invalidateCandidateSearch();
  const recent=searchCandidates(true);
  assert.ok(pending[1].url.includes('force=1'));
- pending[1].resolve({ok:true,json:async()=>({ok:true,done:true,revision:1,items:[{model:'NEW',stock:1},{model:'EMPTY',stock:0}]})});
+ pending[1].resolve({ok:true,json:async()=>({ok:true,done:false,job_id:'new',revision:1,items:[],sources:{domestic:'empty',partner:'empty'}})});
+ await new Promise(resolve=>setTimeout(resolve,300));
+ assert.doesNotMatch(candidateSearchProgress.textContent,/无结果|查询完成/,'A running search must not claim no results');
+ pending[2].resolve({ok:true,json:async()=>({ok:true,done:true,revision:2,items:[{model:'NEW',stock:1},{model:'EMPTY',stock:0}],sources:{domestic:'empty',partner:'empty',fallback:'ready'}})});
  await recent;
+ assert.match(candidateSearchProgress.textContent,/补充检索：已返回/);
+ assert.match(candidateSearchStatusText({done:true,items:[]}),/未找到匹配器件/);
+ assert.doesNotMatch(candidateSearchStatusText({done:false,items:[]}),/未找到|无结果|完成/);
+ assert.match(candidateSearchStatusText({done:false,items:[{}]}),/部分结果/);
+ assert.match(candidateSearchStatusText({done:false,cached:true,items:[{}]}),/显示缓存，正在更新/);
+ assert.match(candidateSearchStatusText({done:true,cached:true,stale:true,items:[{}],error:'offline'}),/offline/);
  pending[0].resolve({ok:true,json:async()=>({ok:true,done:true,revision:1,items:[{model:'OLD',stock:1}]})});
  await old;
  assert.equal(rendered[0].model,'NEW');
@@ -310,7 +346,7 @@ const fetch=(url,options)=>{
  console.log('race, force, invalidation and local stock filter: OK');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
-        completed = subprocess.run([shutil.which("node"), "-e", harness + functions + verify], capture_output=True, text=True)
+        completed = subprocess.run([shutil.which("node"), "-e", harness + functions + verify], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 

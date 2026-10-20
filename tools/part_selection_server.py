@@ -3424,9 +3424,10 @@ tr.hidden-row {{ display: none; }}
 .modal.fullscreen {{ position: fixed !important; inset: 12px !important; width: auto !important; height: auto !important; min-width: 0; min-height: 0; max-width: none; max-height: none; border-radius: 4px; }}
 #candidateWindow {{ flex-direction: column; }}
 #candidateModal:not(.minimized) #candidateWindow {{ display: flex; }}
-#candidateWindow > .modal-head, #candidateWindow > .modal-query, #candidateWindow > .candidate-search-progress {{ flex: 0 0 auto; }}
+#candidateWindow > .modal-head, #candidateWindow > .modal-query, #candidateWindow > .candidate-status-bar {{ flex: 0 0 auto; }}
 #candidateWindow > .candidate-body-wrap {{ flex: 1 1 auto; min-height: 0; }}
-.candidate-search-progress {{ padding: 4px 12px; font-size: 12px; color: #59636b; min-height: 22px; overflow-wrap: anywhere; }}
+.candidate-status-bar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 5px 12px; min-height: 28px; box-sizing: border-box; border-bottom: 1px solid #d9e2ec; }}
+.candidate-search-progress {{ flex: 1 1 300px; font-size: 12px; line-height: 18px; color: #59636b; min-width: 0; overflow-wrap: anywhere; }}
 .modal-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; background: #eaf5ff; border-bottom: 1px solid #d4e5f5; font-weight: 700; min-width: 0; cursor: move; user-select: none; touch-action: none; }}
 .modal-head:active {{ cursor: grabbing; }}
 .modal-controls {{ display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }}
@@ -3473,7 +3474,7 @@ tr.hidden-row {{ display: none; }}
 .candidate-filter-trigger {{ display: inline-flex; align-items: center; justify-content: center; margin-left: 6px; padding: 1px 5px; min-width: 25px; color: inherit; border-color: #91abc2; background: transparent; font-size: 12px; }}
 .candidate-filter-trigger[aria-pressed="true"] {{ color: #173b59; background: #d7f0ff; border-color: #fff; }}
 .candidate-stock-filter {{ display: inline-flex; align-items: center; gap: 3px; margin-left: 7px; cursor: pointer; font-weight: normal; white-space: nowrap; }}
-.candidate-filter-bar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; padding: 5px 12px; border-bottom: 1px solid #d9e2ec; font-size: 12px; min-width: 0; }}
+.candidate-filter-bar {{ display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 5px 8px; font-size: 12px; min-width: 0; max-width: 100%; }}
 .candidate-filter-bar[hidden], .candidate-filter-panel[hidden] {{ display: none; }}
 .candidate-filter-tags {{ display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 160px; min-width: 0; }}
 .candidate-filter-tag {{ display: inline-flex; align-items: center; gap: 4px; color: #075985; border: 1px solid #b3d7ec; background: #f0f9ff; border-radius: 3px; max-width: 100%; padding-left: 5px; }}
@@ -3716,11 +3717,13 @@ tr.hidden-row {{ display: none; }}
       </div>
       <button id="openOfficialSearch" type="button">网页搜索</button>
     </div>
-    <div id="candidateSearchProgress" class="candidate-search-progress" role="status"></div>
-    <div id="candidateFilterBar" class="candidate-filter-bar" hidden>
-      <div id="candidateFilterTags" class="candidate-filter-tags" aria-label="已选候选筛选条件"></div>
-      <button id="clearCandidateFilters" class="candidate-filter-clear" type="button" hidden>清空筛选</button>
-      <output id="candidateFilterCount" class="candidate-filter-count" aria-live="polite"></output>
+    <div class="candidate-status-bar">
+      <div id="candidateSearchProgress" class="candidate-search-progress" role="status"></div>
+      <div id="candidateFilterBar" class="candidate-filter-bar" hidden>
+        <div id="candidateFilterTags" class="candidate-filter-tags" aria-label="已选候选筛选条件"></div>
+        <button id="clearCandidateFilters" class="candidate-filter-clear" type="button" hidden>清空筛选</button>
+        <output id="candidateFilterCount" class="candidate-filter-count" aria-live="polite"></output>
+      </div>
     </div>
     <section id="candidateFilterPanel" class="candidate-filter-panel" aria-label="候选结果筛选" hidden>
       <div class="candidate-filter-tools">
@@ -6473,6 +6476,18 @@ function renderCandidateResults() {{
   renderCandidateRows(visible.filter(entry => !entry.channel).map(entry => entry.item), visible.filter(entry => entry.channel));
 }}
 
+function candidateSearchStatusText(data) {{
+  const names = {{domestic: "商城", partner: "订货渠道", overseas: "海外渠道", fallback: "补充检索"}};
+  const statuses = {{querying: "查询中", ready: "已返回", empty: data.done ? "暂无匹配" : "暂未匹配", failed: "失败"}};
+  const sources = Object.entries(data.sources || {{}}).filter(([,state]) => state !== "skipped")
+    .map(([name,state]) => `${{names[name] || name}}：${{statuses[state] || state}}`).join(" · ");
+  let summary = data.done ? (data.items?.length ? "查询完成" : "查询完成，未找到匹配器件") : "查询中";
+  if (data.cached) summary = data.done ? "缓存结果" : "显示缓存，正在更新";
+  else if (!data.done && data.items?.length) summary = "已返回部分结果，继续查询";
+  const stamp = data.checked_at ? ` · 数据时间 ${{data.checked_at.replace("T", " ")}}` : "";
+  return `${{summary}}${{sources ? " · " + sources : ""}}${{stamp}}${{data.error ? " · " + data.error : ""}}`;
+}}
+
 async function searchCandidates(forceRefresh = false) {{
   invalidateCandidateSearch();
   const requestToken = ++candidateSearchToken;
@@ -6482,6 +6497,7 @@ async function searchCandidates(forceRefresh = false) {{
     return;
   }}
   candidateRows.innerHTML = `<tr><td colspan="8">正在搜索：${{esc(keyword)}}</td></tr>`;
+  candidateSearchProgress.textContent = "查询中…";
   const compactCode = String(keyword || "").replace(/\s+/g, "").toUpperCase();
   const exactCCode = /^C\d+$/.test(compactCode);
   const controller = new AbortController();
@@ -6495,11 +6511,7 @@ async function searchCandidates(forceRefresh = false) {{
       const res = await fetch(url, {{signal: controller.signal, cache: "no-store"}});
       const data = await res.json();
       if (!current() || data.cancelled) return;
-      const names = {{domestic: "商城", partner: "订货渠道", overseas: "海外渠道"}};
-      const statuses = {{querying: "查询中", ready: "已返回", empty: "无结果", failed: "失败", skipped: ""}};
-      const sources = Object.entries(data.sources || {{}}).filter(([,state]) => state !== "skipped").map(([name,state]) => `${{names[name] || name}}：${{statuses[state] || state}}`).join(" · ");
-      const stamp = data.checked_at ? ` · 数据时间 ${{data.checked_at.replace("T", " ")}}` : "";
-      candidateSearchProgress.textContent = `${{data.cached ? (data.stale ? "缓存结果，待更新" : "缓存结果") : (data.done ? "查询完成" : "查询中")}}${{stamp}}${{sources ? " · " + sources : ""}}${{data.error ? " · " + data.error : ""}}`;
+      candidateSearchProgress.textContent = candidateSearchStatusText(data);
       if (data.revision !== revision) {{
         revision = data.revision;
         candidateRawItems = data.items || [];

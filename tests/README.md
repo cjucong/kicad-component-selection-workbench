@@ -61,6 +61,8 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 
 ## 真实冒烟
 
+`python -B tests/run_candidate_search_smoke.py` 使用真实 Chromium 和一次性合成工程，模拟上游分阶段响应，验证查询中不误报无结果、部分返回、补充来源、最终空结果与失败、筛选交互，以及 1475 / 800 / 390 像素宽度的状态栏布局。可设置工程外目录 `CANDIDATE_SCREENSHOTS` 保存截图。此测试不访问真实商城、不选择主料、不改生产记录，不代表真实网络时延验证。
+
 生命周期冒烟还注入退出脚本缺失、列表未加载的场景，验证空白窗口可正常关闭；失败时输出页面地址、加载状态、行数及桥接可用性。测试子进程固定 UTF-8，避免 Windows 输出解码错误掩盖实际故障。
 
 安装桌面依赖后运行 `python -B tests/run_desktop_lifecycle_smoke.py`，或通过 `--python "C:/path/to/desktop-runtime/Scripts/python.exe"` 指定已准备好依赖的解释器。它在外部临时合成工程打开隐藏的真实 WebView2 窗口，验证原生叉号触发行编辑保存、所属后台端口释放、重开数据保持、菜单重启及退出；正常清理测试宿主和工程，不触碰生产服务或 CAD。它不验证实际 KiCad 插件按钮、网络转换或真实工程同步。

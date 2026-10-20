@@ -1309,6 +1309,8 @@ def search_lcsc_candidates(
             "sources": sources,
         }
     check_cancelled()
+    sources["fallback"] = "querying"
+    publish()
     payload = {
         "keyword": keyword,
         "globalKeyword": keyword,
@@ -1344,6 +1346,7 @@ def search_lcsc_candidates(
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         check_cancelled()
         fallback_items = run_source(lambda: domestic_exact_candidate_items(keyword, timeout, domestic_fetcher))
+        sources["fallback"] = "ready" if fallback_items else "failed"
         if fallback_items:
             enrich_candidate_order_channels(fallback_items, partner_products)
             if exact_c_code_keyword(keyword) and overseas_fetcher:
@@ -1354,6 +1357,7 @@ def search_lcsc_candidates(
     check_cancelled()
     if data.get("code") != 200:
         fallback_items = run_source(lambda: domestic_exact_candidate_items(keyword, timeout, domestic_fetcher))
+        sources["fallback"] = "ready" if fallback_items else "failed"
         if fallback_items:
             enrich_candidate_order_channels(fallback_items, partner_products)
             if exact_c_code_keyword(keyword) and overseas_fetcher:
@@ -1384,6 +1388,7 @@ def search_lcsc_candidates(
     exact_items = [item for item in items if int_value(item["match_rank"]) <= 1]
     if not include_substitutes and exact_items:
         items = exact_items
+    sources["fallback"] = "ready" if items else "empty"
     return {
         "ok": True,
         "error": "",
