@@ -46,3 +46,7 @@ python -B tools/part_selection_server.py --project "E:/path/to/project/project.k
 - [协作规则](AGENTS.md)
 
 本仓库仅包含插件源码、资源、打包入口和测试，不携带 CAD、生产 BOM、工程专用规则或 Git 数据快照。测试通过不代表实际 KiCad 按钮、跨机器窗口自动化或网络转换已验证；真实冒烟需另行在隔离工程执行并记录结果。
+
+仓库地址：https://github.com/cjucong/kicad-.git 。源码每轮修改后按协作规则备份、测试、提交推送并更新本机安装；源码文件的普通保存不会直接改动运行中的安装副本。
+
+未指定开源许可证；公开托管不等于授予 MIT 等开源授权，后续许可由仓库所有者决定。

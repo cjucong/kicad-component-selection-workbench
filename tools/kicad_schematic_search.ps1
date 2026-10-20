@@ -156,6 +156,12 @@ public static class NativeMethods {
     [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", SetLastError=true)]
     public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
 
+    [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern IntPtr SendMessageTimeoutText(IntPtr hWnd, uint msg, IntPtr wParam, string text, uint flags, uint timeout, out UIntPtr result);
+
+    [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern IntPtr SendMessageTimeoutRead(IntPtr hWnd, uint msg, IntPtr wParam, StringBuilder text, uint flags, uint timeout, out UIntPtr result);
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetMenu(IntPtr hWnd);
 
@@ -1145,40 +1151,22 @@ function Move-CursorToSchematicCanvas {
 }
 
 function Set-SearchText {
-    param([string]$Text)
+    param(
+        [string]$Text,
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
 
-    if ($Text -match "^[A-Za-z]+\d+[A-Za-z]?$") {
-        [System.Windows.Forms.SendKeys]::SendWait("^a")
-        [System.Windows.Forms.SendKeys]::SendWait($Text)
-        Write-Log "SEARCH_TEXT method=keyboard value=$Text"
-        return
+    Ensure-UiAutomation
+    $edit = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($null -eq $edit -or $edit.Current.ProcessId -ne $ProcessId -or
+        ($edit.Current.ControlType.ProgrammaticName -ne "ControlType.Edit" -and $edit.Current.ClassName -ne "Edit")) {
+        throw "KiCad search box is not focused in the target process. No search text was sent."
     }
-
-    $oldClipboard = $null
-    $hadClipboardText = $false
-    try {
-        $oldClipboard = Get-Clipboard -Raw -ErrorAction Stop
-        $hadClipboardText = $true
-    } catch {
-        $hadClipboardText = $false
+    if (-not (Set-EditControlText -EditElement $edit -Text $Text)) {
+        throw "KiCad search text could not be verified. Search was aborted."
     }
-
-    try {
-        if (-not (Set-ClipboardTextWithRetry -Text $Text)) {
-            throw "Clipboard is busy."
-        }
-        Start-Sleep -Milliseconds 120
-        [System.Windows.Forms.SendKeys]::SendWait("^a")
-        Start-Sleep -Milliseconds 80
-        [System.Windows.Forms.SendKeys]::SendWait("^v")
-        Start-Sleep -Milliseconds 160
-    } finally {
-        if ($hadClipboardText) {
-            if (-not (Set-ClipboardTextWithRetry -Text $oldClipboard)) {
-                Write-Log "CLIPBOARD_RESTORE_FAILED"
-            }
-        }
-    }
+    Write-Log "SEARCH_TEXT method=verified_control value=$Text"
 }
 
 function Set-EditControlText {
@@ -1187,77 +1175,41 @@ function Set-EditControlText {
         [string]$Text
     )
 
-    Ensure-NativeMethods
     $hwnd = [IntPtr]$EditElement.Current.NativeWindowHandle
     if ($hwnd -ne [IntPtr]::Zero) {
-        [NativeMethods]::SendMessage($hwnd, 0x000C, [IntPtr]::Zero, $Text) | Out-Null
-        for ($i = 0; $i -lt 6; $i++) {
-            Start-Sleep -Milliseconds 25
-            if ($EditElement.Current.Name -eq $Text) {
-                Write-Log ("SEARCH_PANEL_VALUE method=WM_SETTEXT_FAST value={0}" -f $EditElement.Current.Name)
-                return $true
-            }
-        }
-        Write-Log ("SEARCH_PANEL_VALUE_WM_SETTEXT_FALLBACK current={0}" -f $EditElement.Current.Name)
-
-        $oldClipboard = $null
-        $hadClipboardText = $false
-        try {
-            $oldClipboard = Get-Clipboard -Raw -ErrorAction Stop
-            $hadClipboardText = $true
-        } catch {
-            $hadClipboardText = $false
-        }
-        try {
-            [NativeMethods]::SendMessage($hwnd, 0x000C, [IntPtr]::Zero, "") | Out-Null
-            if (-not (Set-ClipboardTextWithRetry -Text $Text)) {
-                throw "Clipboard is busy."
-            }
-            [NativeMethods]::SendMessage($hwnd, 0x0302, [IntPtr]::Zero, $null) | Out-Null
-            for ($i = 0; $i -lt 8; $i++) {
-                Start-Sleep -Milliseconds 25
-                if ($EditElement.Current.Name -eq $Text) {
-                    Write-Log ("SEARCH_PANEL_VALUE method=WM_PASTE_FAST value={0}" -f $EditElement.Current.Name)
-                    return $true
-                }
-            }
-            Write-Log ("SEARCH_PANEL_VALUE_PASTE_FALLBACK current={0}" -f $EditElement.Current.Name)
-        } catch {
-            Write-Log ("SEARCH_PANEL_VALUE_PASTE_FAILED " + $_.Exception.Message)
-        } finally {
-            if ($hadClipboardText) {
-                if (-not (Set-ClipboardTextWithRetry -Text $oldClipboard)) {
-                    Write-Log "CLIPBOARD_RESTORE_FAILED"
-                }
-            }
-        }
-
-        [NativeMethods]::SendMessage($hwnd, 0x000C, [IntPtr]::Zero, "") | Out-Null
-        foreach ($ch in $Text.ToCharArray()) {
-            [NativeMethods]::SendMessageInt($hwnd, 0x0102, [IntPtr]([int][char]$ch), [IntPtr]::Zero) | Out-Null
-        }
-        for ($i = 0; $i -lt 8; $i++) {
-            Start-Sleep -Milliseconds 30
-            if ($EditElement.Current.Name -eq $Text) {
-                Write-Log ("SEARCH_PANEL_VALUE method=WM_CHAR value={0}" -f $EditElement.Current.Name)
-                return $true
-            }
-        }
-        Write-Log ("SEARCH_PANEL_VALUE_FALLBACK current={0}" -f $EditElement.Current.Name)
-        return ($EditElement.Current.Name -eq $Text)
+        return (Set-EditWindowText -EditHwnd $hwnd -Text $Text)
     }
 
     try {
         $valuePattern = $EditElement.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($valuePattern.Current.IsReadOnly) { return $false }
         $valuePattern.SetValue($Text)
-        Start-Sleep -Milliseconds 250
-        Write-Log ("SEARCH_PANEL_VALUE method=ValuePattern value={0}" -f $valuePattern.Current.Value)
-        return $true
+        for ($i = 0; $i -lt 6; $i++) {
+            Start-Sleep -Milliseconds 25
+            $current = $valuePattern.Current.Value
+            if ([string]::Equals($current, $Text, [StringComparison]::Ordinal)) {
+                Write-Log ("SEARCH_PANEL_VALUE method=ValuePattern value={0}" -f $current)
+                return $true
+            }
+        }
+        Write-Log ("SEARCH_PANEL_VALUE_MISMATCH expected={0} current={1}" -f $Text, $current)
     } catch {
         Write-Log ("SEARCH_PANEL_SETVALUE_FAILED " + $_.Exception.Message)
-        Set-SearchText -Text $Text
-        return $true
     }
+    return $false
+}
+
+function Get-EditWindowText {
+    param([IntPtr]$EditHwnd, [int]$Capacity = 512)
+
+    # GetWindowText cannot read another process's edit value. Use WM_GETTEXT,
+    # with room for an extra character so a longer value cannot match a prefix.
+    $buffer = New-Object System.Text.StringBuilder $Capacity
+    $result = [UIntPtr]::Zero
+    if ([NativeMethods]::SendMessageTimeoutRead($EditHwnd, 0x000D, [IntPtr]$buffer.Capacity, $buffer, 0x22, 750, [ref]$result) -eq [IntPtr]::Zero) {
+        throw "KiCad search text read timed out."
+    }
+    return $buffer.ToString()
 }
 
 function Set-EditWindowText {
@@ -1271,29 +1223,47 @@ function Set-EditWindowText {
         return $false
     }
     try {
-        Ensure-UiAutomation
-        $editElement = [System.Windows.Automation.AutomationElement]::FromHandle($EditHwnd)
-        if ($null -ne $editElement) {
-            Write-Log ("SEARCH_PANEL_FAST_FROM_HANDLE class={0} name={1}" -f $editElement.Current.ClassName, $editElement.Current.Name)
-            return (Set-EditControlText -EditElement $editElement -Text $Text)
+        $className = New-Object System.Text.StringBuilder 256
+        [NativeMethods]::GetClassName($EditHwnd, $className, $className.Capacity) | Out-Null
+        if ($className.ToString() -ne "Edit") { return $false }
+        $capacity = [Math]::Max(512, $Text.Length + 2)
+        $result = [UIntPtr]::Zero
+        if ([NativeMethods]::SendMessageTimeoutText($EditHwnd, 0x000C, [IntPtr]::Zero, $Text, 0x22, 750, [ref]$result) -eq [IntPtr]::Zero) {
+            return $false
         }
-    } catch {
-        Write-Log ("SEARCH_PANEL_FAST_FROM_HANDLE_FAILED " + $_.Exception.Message)
-    }
+        for ($i = 0; $i -lt 6; $i++) {
+            Start-Sleep -Milliseconds 25
+            $current = Get-EditWindowText -EditHwnd $EditHwnd -Capacity $capacity
+            if ([string]::Equals($current, $Text, [StringComparison]::Ordinal)) {
+                Write-Log ("SEARCH_PANEL_VALUE method=WM_SETTEXT value={0}" -f $current)
+                return $true
+            }
+        }
+        Write-Log ("SEARCH_PANEL_VALUE_WM_SETTEXT_MISMATCH expected={0} current={1}" -f $Text, $current)
 
-    [NativeMethods]::SendMessage($EditHwnd, 0x000C, [IntPtr]::Zero, "") | Out-Null
-    foreach ($ch in $Text.ToCharArray()) {
-        [NativeMethods]::SendMessageInt($EditHwnd, 0x0102, [IntPtr]([int][char]$ch), [IntPtr]::Zero) | Out-Null
-    }
-    for ($i = 0; $i -lt 6; $i++) {
-        Start-Sleep -Milliseconds 20
-        $current = Get-WindowTextFast -WindowHandle $EditHwnd
-        if ($current -eq $Text) {
-            Write-Log ("SEARCH_PANEL_VALUE method=WIN32_WM_CHAR value={0}" -f $current)
-            return $true
+        # Some wx controls require character notifications. These messages go
+        # directly to the edit HWND, bypassing IME and global keyboard focus.
+        if ([NativeMethods]::SendMessageTimeoutText($EditHwnd, 0x000C, [IntPtr]::Zero, "", 0x22, 750, [ref]$result) -eq [IntPtr]::Zero) {
+            return $false
         }
+        if ((Get-EditWindowText -EditHwnd $EditHwnd -Capacity $capacity) -cne "") { return $false }
+        foreach ($ch in $Text.ToCharArray()) {
+            if ([NativeMethods]::SendMessageTimeout($EditHwnd, 0x0102, [IntPtr]([int][char]$ch), [IntPtr]::Zero, 0x22, 750, [ref]$result) -eq [IntPtr]::Zero) {
+                return $false
+            }
+        }
+        for ($i = 0; $i -lt 6; $i++) {
+            Start-Sleep -Milliseconds 25
+            $current = Get-EditWindowText -EditHwnd $EditHwnd -Capacity $capacity
+            if ([string]::Equals($current, $Text, [StringComparison]::Ordinal)) {
+                Write-Log ("SEARCH_PANEL_VALUE method=WM_CHAR value={0}" -f $current)
+                return $true
+            }
+        }
+        Write-Log ("SEARCH_PANEL_VALUE_MISMATCH expected={0} current={1}" -f $Text, $current)
+    } catch {
+        Write-Log ("SEARCH_PANEL_VALUE_FAILED " + $_.Exception.Message)
     }
-    Write-Log ("SEARCH_PANEL_VALUE_WIN32_FALLBACK current={0}" -f (Get-WindowTextFast -WindowHandle $EditHwnd))
     return $false
 }
 
@@ -1742,7 +1712,6 @@ function Invoke-SearchPanelFirstResult {
         }
     }
     Start-Sleep -Milliseconds 60
-    Set-SearchText -Text $Ref
     Start-Sleep -Milliseconds 260
     $localFirstResultX = [int]($gridRect.Left + 32)
     $localFirstResultY = [int]($gridRect.Top + 36)
@@ -1906,7 +1875,7 @@ try {
         throw $message
     }
 
-    Set-SearchText -Text $ref
+    Set-SearchText -Text $ref -ProcessId $target.Id
     Start-Sleep -Milliseconds 100
     [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
     Start-Sleep -Milliseconds 350

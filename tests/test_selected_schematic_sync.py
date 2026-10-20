@@ -231,16 +231,19 @@ function updateSyncSelection() {}
 function resetQueryAllButton() {}
 function restoreRowAnchor() {}
 function renderRows(rows) {rendered = rows;}
+async function flushRowEdits() {}
 function fetch(url) {return new Promise((resolve, reject) => pending.push({url,resolve,reject}));}
 FUNCTIONS
 (async () => {
   const b = loadRows();
+  await Promise.resolve();
   assert.equal(rowsEl.innerHTML, '');
   assert.deepEqual(currentRows, []);
   assert.equal(rowsLoading, true);
   assert.equal(syncAllButton.disabled, true);
   bomSelect.value = 'C';
   const c = loadRows();
+  await Promise.resolve();
   pending[1].resolve({ok:true,json:async()=>({rows:[{ref:'R3'}]})});
   await c;
   assert.equal(loadedRowsBom, 'C');
@@ -250,12 +253,15 @@ FUNCTIONS
   assert.equal(rowsLoading, false);
   bomSelect.value = 'D';
   const d = loadRows();
+  await Promise.resolve();
   pending[2].reject(new Error('offline'));
   await d;
   assert.equal(syncAllButton.disabled, true);
   assert.equal(rowsEl.innerHTML, '');
   bomSelect.value = 'E'; const e = loadRows();
+  await Promise.resolve();
   bomSelect.value = 'F'; const f = loadRows();
+  await Promise.resolve();
   pending[4].resolve({ok:true,json:async()=>({rows:[{ref:'R6'}]})}); await f;
   pending[3].reject(new Error('stale error')); await e;
   assert.equal(loadedRowsBom, 'F');

@@ -28,7 +28,7 @@ CORE_FILES = (
     "part_stock_lookup.py", "part_selection_search.py", "kicad_sexpr.py", "kicad_schematic_search.ps1",
     "kicad_ipc_action.py", "kicad_schematic_search_launcher.vbs",
     "install_kicad_schematic_search_protocol.ps1",
-    "web/toolbar-icons.svg", "web/LUCIDE-LICENSE", "web/footprint-compare.js", "web/footprint-compare.css",
+    "web/toolbar-icons.svg", "web/LUCIDE-LICENSE", "web/footprint-compare.js", "web/footprint-compare.css", "web/row-edits.js",
 )
 
 

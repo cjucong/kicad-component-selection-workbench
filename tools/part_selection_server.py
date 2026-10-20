@@ -1810,8 +1810,9 @@ class PartSelectionApp:
                 for key in EDITABLE_FIELDS
                 if key in raw_fields
             },
-            "note": payload.get("note", ""),
         }
+        if "note" in payload:
+            update["note"] = payload["note"]
         if not update["field_overrides"]:
             raise ValueError("no editable fields were provided")
         preserve_unchanged_notes(update, refs, load_overrides(self.overrides_path))
@@ -3180,6 +3181,7 @@ def render_index(app: PartSelectionApp) -> str:
     icon_sprite = (Path(__file__).resolve().parent / "web" / "toolbar-icons.svg").read_text(encoding="utf-8")
     footprint_css = (Path(__file__).resolve().parent / "web" / "footprint-compare.css").read_text(encoding="utf-8")
     footprint_js = (Path(__file__).resolve().parent / "web" / "footprint-compare.js").read_text(encoding="utf-8")
+    row_edits_js = (Path(__file__).resolve().parent / "web" / "row-edits.js").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3691,6 +3693,7 @@ tr.hidden-row {{ display: none; }}
     <span class="candidate-minimized-icon" aria-hidden="true">&#9633;</span>
   </button>
 </div>
+<script>{row_edits_js}</script>
 <script>
 const state = document.getElementById("state");
 const syncProgress = document.getElementById("syncProgress");
@@ -4399,6 +4402,7 @@ function makeCandidateColumnsConfigurable() {{
 
 async function jump(url) {{
   try {{
+    await flushRowEdits();
     const response = await fetch('/api/kicad_jump', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{url}})}});
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.message || data.error || 'KiCad jump failed');
@@ -4413,14 +4417,20 @@ function refButton(item) {{
 
 function renderMultiSplitPicker(row) {{
   const links = row.ref_links || [];
-  const options = links.map(item => `<label class="ref-multi-option"><input type="checkbox" data-multi-split-ref="${{esc(item.ref)}}" ${{multiSplitRefs.has(item.ref) ? "checked" : ""}}><span class="mono">${{esc(item.ref)}}</span></label>`).join("");
+  const byPage = new Map();
+  for (const item of links) {{
+    const page = item.page || "Unknown";
+    if (!byPage.has(page)) byPage.set(page, []);
+    byPage.get(page).push(item);
+  }}
+  const options = Array.from(byPage, ([page, items]) => `<div class="ref-split-page"><label class="ref-multi-option"><input type="checkbox" data-multi-split-page="${{esc(page)}}" ${{items.every(item => multiSplitRefs.has(item.ref)) ? "checked" : ""}}><strong>${{esc(page)}}</strong></label><div>${{items.map(item => `<label class="ref-multi-option"><input type="checkbox" data-multi-split-ref="${{esc(item.ref)}}" ${{multiSplitRefs.has(item.ref) ? "checked" : ""}}><span class="mono">${{esc(item.ref)}}</span></label>`).join("")}}</div></div>`).join("");
   return `<div class="ref-multi-picker"><strong>选择要拆出的位号</strong>${{options}}<div class="ref-multi-actions"><button type="button" data-action="split-selected-refs" data-group-id="${{esc(row.group_id || row.ref)}}">拆出所选</button><button type="button" data-action="cancel-multi-split">取消</button></div></div>`;
 }}
 
 function renderRefButtons(row) {{
   const links = row.ref_links || [];
   if (links.length && multiSplitSource === "refs" && multiSplitGroupId === (row.group_id || row.ref)) return renderMultiSplitPicker(row);
-  if (links.length) return `${{links.map(refButton).join(", ")}}${{links.length > 1 ? ` <button type="button" class="small action-link" data-action="start-multi-split" data-split-source="refs" title="选择多个位号并分别拆成独立行">多选拆行</button>` : ""}}`;
+  if (links.length) return `${{links.map(refButton).join(", ")}}${{links.length > 1 ? ` <button type="button" class="small action-link" data-action="start-multi-split" data-split-source="refs" title="选中的位号拆到同一行">多选拆行</button>` : ""}}`;
   return `<button type="button" class="ref-link" onclick="jump('${{esc(row.kicad_jump_url)}}')">${{esc(row.ref)}}</button>`;
 }}
 
@@ -4433,10 +4443,10 @@ function renderPageRefButtons(row) {{
   }}
   const links = row.ref_links || [];
   if (links.length && multiSplitSource === "page" && multiSplitGroupId === (row.group_id || row.ref)) return renderMultiSplitPicker(row);
-  const splitButton = links.length > 1 ? ` <button type="button" class="small action-link page-split-button" data-action="start-multi-split" data-split-source="page" title="按页面位号选择多个器件并分别拆成独立行">多选拆行</button>` : "";
+  const splitButton = links.length > 1 ? ` <button type="button" class="small action-link page-split-button" data-action="start-multi-split" data-split-source="page" title="按页面或位号勾选，所选器件拆到同一行">按页面拆分</button>` : "";
   if (!byPage.size) return `${{esc(row.page_refs || "")}}${{splitButton}}`;
   return `${{Array.from(byPage.entries())
-    .map(([page, items]) => `<div><span class="mono">${{esc(page)}}</span>: ${{items.map(refButton).join(", ")}}</div>`)
+    .map(([page, items]) => `<div><label class="ref-multi-option"><input type="checkbox" data-start-split-page="${{esc(page)}}" aria-label="拆分页面 ${{esc(page)}}"><span class="mono">${{esc(page)}}</span></label>: ${{items.map(refButton).join(", ")}}</div>`)
     .join("")}}${{splitButton}}`;
 }}
 
@@ -4457,23 +4467,36 @@ function buildPageRefs(refLinks) {{
     .join("; ");
 }}
 
-function rowForSingleRef(row, ref) {{
-  const link = (row.ref_links || []).find(item => item.ref === ref) || {{ref, page: row.page || "", url: row.kicad_jump_url || ""}};
+function rowForRefs(row, refs) {{
+  const selected = new Set(refs);
+  const links = refs.map(ref => (row.ref_links || []).find(item => item.ref === ref) || {{ref, page: row.page || "", url: row.kicad_jump_url || ""}});
   const clone = Object.assign({{}}, row);
-  clone.group_id = `${{row.group_id || row.ref || "G"}}_split_${{ref}}`;
-  clone.ref = ref;
-  clone.refs = ref;
-  clone.refs_list = [ref];
-  clone.ref_links = [link];
-  clone.page = link.page || row.page || "";
+  clone.group_id = `${{row.group_id || row.ref || "G"}}_split_${{refs.join("_")}}`;
+  clone.ref = refs[0];
+  clone.refs = refs.join(",");
+  clone.refs_list = [...refs];
+  clone.ref_links = links;
+  clone.page = links[0]?.page || row.page || "";
   clone.page_refs = buildPageRefs(clone.ref_links);
-  clone.quantity = 1;
+  clone.quantity = refs.length;
   clone.temp_split = true;
-  clone.field_changed_refs = "";
-  clone.field_edit_status = "";
-  clone.field_diffs = {{}};
+  for (const key of ["per_ref_sync_fields", "per_ref_selection", "description_by_ref", "notes_by_ref", "field_diffs_by_ref", "external_schematic_updates", "schematic_field_conflicts", "stock_by_ref"]) {{
+    if (row[key]) clone[key] = Object.fromEntries(Object.entries(row[key]).filter(([ref]) => selected.has(ref)));
+  }}
+  if (row.notes_by_ref) {{
+    const notes = refs.filter(ref => clone.notes_by_ref[ref]).map(ref => clone.notes_by_ref[ref]);
+    clone.note = new Set(notes).size <= 1 ? notes[0] || "" : refs.filter(ref => clone.notes_by_ref[ref]).map(ref => `${{ref}}: ${{clone.notes_by_ref[ref]}}`).join("\\n");
+  }}
+  clone.missing_schematic_refs = String(row.missing_schematic_refs || "").split(",").filter(ref => selected.has(ref.trim())).join(",");
+  clone.field_changed_refs = String(row.field_changed_refs || "").split(",").filter(ref => selected.has(ref.trim())).join(",");
+  clone.field_diffs = Object.fromEntries(Object.entries(row.field_diffs || {{}}).flatMap(([key, diff]) => {{
+    const affected = String(diff.refs || "").split(",").filter(ref => selected.has(ref.trim()));
+    return affected.length ? [[key, {{...diff, refs: affected.join(",")}}]] : [];
+  }}));
   return clone;
 }}
+
+function rowForSingleRef(row, ref) {{ return rowForRefs(row, [ref]); }}
 
 function splitRefToStandaloneRow(ref) {{
   for (let index = 0; index < currentRows.length; index += 1) {{
@@ -4485,18 +4508,9 @@ function splitRefToStandaloneRow(ref) {{
       return;
     }}
     const remainingRefs = refsWithout(refs, ref);
-    const remainingLinks = (row.ref_links || []).filter(item => item.ref !== ref);
-    const originalLinks = row.ref_links || [];
-    row.refs_list = remainingRefs;
-    row.refs = remainingRefs.join(",");
-    row.ref = remainingRefs[0] || row.ref;
-    row.ref_links = remainingLinks;
-    row.quantity = remainingRefs.length;
-    row.page_refs = buildPageRefs(remainingLinks);
-    const splitRow = rowForSingleRef(Object.assign({{}}, row, {{ref_links: originalLinks}}), ref);
-    currentRows.splice(index + 1, 0, splitRow);
+    currentRows.splice(index, 1, rowForRefs(row, remainingRefs), rowForSingleRef(row, ref));
     renderRows(currentRows);
-    setState(`${{ref}} 已拆出临时单独行；修改 Comment/Value/Footprint 后按 Enter 保存并合并`, "saved");
+    setState(`${{ref}} 已拆出临时单独行`, "saved");
     return;
   }}
   setState(`没有在当前表格中找到 ${{ref}}`, "error");
@@ -4541,16 +4555,9 @@ function splitSelectedRefs(groupId) {{
     ref_links: [...(row.ref_links || [])],
     refs_list: [...refs]
   }});
-  const splitRows = selectedRefs.map(ref => rowForSingleRef(originalRow, ref));
+  const splitRows = [rowForRefs(originalRow, selectedRefs)];
   if (remainingRefs.length) {{
-    const remainingLinks = (row.ref_links || []).filter(item => remainingRefs.includes(item.ref));
-    row.refs_list = remainingRefs;
-    row.refs = remainingRefs.join(",");
-    row.ref = remainingRefs[0] || row.ref;
-    row.ref_links = remainingLinks;
-    row.quantity = remainingRefs.length;
-    row.page_refs = buildPageRefs(remainingLinks);
-    currentRows.splice(index + 1, 0, ...splitRows);
+    currentRows.splice(index, 1, rowForRefs(originalRow, remainingRefs), ...splitRows);
   }} else {{
     currentRows.splice(index, 1, ...splitRows);
   }}
@@ -4558,7 +4565,7 @@ function splitSelectedRefs(groupId) {{
   multiSplitSource = "refs";
   multiSplitRefs = new Set();
   renderRows(currentRows);
-  setState(`已拆出 ${{selectedRefs.length}} 个独立位号；修改字段后按 Enter 保存`, "saved");
+  setState(`已将 ${{selectedRefs.length}} 个位号拆到同一行`, "saved");
 }}
 
 function stockCode(row) {{
@@ -5146,6 +5153,7 @@ async function saveRow(tr, decision, acceptedCode) {{
 }}
 
 async function saveFieldEdits(tr) {{
+  await flushRowEdits();
   const anchor = rowAnchor(tr);
   const payload = fieldPayload(tr);
   const res = await fetch("/api/field_override", {{ method: "POST", headers: {{"Content-Type": "application/json"}}, body: JSON.stringify(payload) }});
@@ -5519,7 +5527,7 @@ function renderRows(rows) {{
       <td data-col="footprint"><textarea class="edit field-edit mono" data-field="footprint" title="原始 Footprint: ${{esc(row.original_footprint_values || row.footprint || "")}}">${{esc(row.footprint)}}</textarea>${{fieldDiff(row, "footprint")}}</td>
       <td data-col="c_code">
         <div>主料: <span class="mono" data-effective-code>${{esc(effective || "未选料")}}</span></div>
-        <input class="edit mono" data-field="replacement_c_code" placeholder="替换C编码，回车确认" value="${{esc(replacement)}}">
+        <input class="edit mono" data-field="replacement_c_code" placeholder="替换C编码" value="${{esc(replacement)}}">
         <select class="edit" data-field="status">
           ${{[
             ["Original", "当前主料"],
@@ -5537,6 +5545,8 @@ function renderRows(rows) {{
       <td data-col="note"><textarea class="edit note" data-field="note">${{esc(note)}}</textarea></td>
     </tr>`;
   }}).join("");
+  rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
+  updateSplitPageChecks();
   applyColumnOrder();
   applyColumnVisibility();
   applyActiveFilter();
@@ -6537,6 +6547,8 @@ async function queryAllStockFromTable(mode = "missing") {{
 async function loadRows(anchor = null) {{
   const version = ++rowsLoadVersion;
   const bom = bomSelect.value || "";
+  try {{ await flushRowEdits(); }} catch (error) {{ setState(error.message, "error"); return; }}
+  if (version !== rowsLoadVersion || bom !== (bomSelect.value || "")) return;
   rowsLoading = true;
   if (loadedRowsBom !== bom) {{
     rowsEl.innerHTML = "";
@@ -6581,9 +6593,103 @@ async function loadBomOptions() {{
   if (selectedBom !== savedBom) updateUiSettings({{selectedBom}});
 }}
 
+const rowEditQueue = createRowEditQueue({{
+  save: persistRowInput,
+  onError: error => setState(`自动保存失败，编辑内容已保留：${{error.message}}`, "error")
+}});
+
+function rowInputKey(input) {{
+  return `${{loadedRowsBom}}|${{input.closest("tr")?.dataset.refs}}|${{input.dataset.field}}`;
+}}
+
+function queueRowInput(input) {{
+  if (!input.matches("textarea[data-field], input[data-field]")) return;
+  const tr = input.closest("tr");
+  if (!tr || input.dataset.composing === "1" || (input.value === input.dataset.savedValue && !rowEditQueue.has(rowInputKey(input)))) return;
+  tr.classList.add("changed");
+  rowEditQueue.schedule(rowInputKey(input), {{tr, input, refs: tr.dataset.refs, field: input.dataset.field, value: input.value}});
+}}
+
+async function flushRowEdits() {{
+  await rowEditQueue.flush();
+  if (rowEditQueue.pending) throw new Error("请先完成输入法编辑，再继续操作");
+}}
+
+async function persistRowInput(entry) {{
+  const {{tr, input, refs, field}} = entry;
+  const value = entry.value.trim();
+  const payload = {{refs}};
+  let endpoint = "/api/field_override";
+  if (field === "replacement_c_code") {{
+    if (value && !/^C[0-9]+$/i.test(value)) throw new Error("请输入完整 C 编码，例如 C49678");
+    const code = value.toUpperCase();
+    Object.assign(payload, {{decision: code ? "AcceptManual" : "ClearSelection", accepted_c_code: code,
+      manual_c_code: code, stock_c_code: code, status: code ? "ChangedToNewCode" : "Rejected", review_status: "Pending"}});
+    endpoint = "/api/override";
+  }} else if (field === "note") {{
+    payload.note = value;
+    endpoint = "/api/override";
+  }} else {{ payload.field_overrides = {{[field]: value}}; }}
+  const response = await fetch(endpoint, {{method: "POST", headers: {{"Content-Type": "application/json"}}, body: JSON.stringify(payload)}});
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || "保存失败");
+  input.dataset.savedValue = entry.value;
+  const row = currentRows.find(row => row.refs === refs);
+  if (row) {{
+    if (field === "note") {{
+      if (value !== String(row.note || "").trim()) {{
+        row.notes_by_ref = Object.fromEntries(refs.split(",").map(ref => [ref, value]));
+        for (const selection of Object.values(row.per_ref_selection || {{}})) selection.note = value;
+      }}
+      row.note = value;
+    }}
+    else if (field === "replacement_c_code") {{
+      const code = value.toUpperCase();
+      row.effective_c_code = row.stock_c_code = row.manual_c_code = code;
+      row.override = {{...row.override, ...payload}};
+      row.review_status = "Pending";
+      row.stock = {{c_code: code, status: "待查询"}};
+      for (const fields of Object.values(row.per_ref_sync_fields || {{}})) {{ fields.lcsc_c_code = code; fields.lcsc_url = lcscUrl(code); }}
+      if (document.body.contains(tr)) {{
+        tr.dataset.originalCode = "";
+        tr.dataset.stockCode = code;
+        tr.dataset.stockQueried = "0";
+        tr.querySelector("[data-effective-code]").textContent = code || "未选料";
+        tr.querySelector("[data-field='status']").value = payload.status;
+        tr.querySelector("[data-field='review_status']").value = "Pending";
+        tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(row.stock);
+        tr.querySelector("[data-stock-param]").innerHTML = "";
+        tr.querySelector("[data-stock-param]").dataset.stockParamText = "";
+        tr.querySelector("[data-stock-order]").textContent = "";
+        tr.querySelector("[data-stock-price]").textContent = "";
+        const pill = tr.querySelector("[data-review-state]");
+        if (pill) {{ pill.className = `review-pill ${{reviewStatusClass("Pending")}}`; pill.textContent = reviewStatusText("Pending"); }}
+        setCodeState(tr, payload.status);
+      }}
+    }} else {{
+      row[field] = value;
+      for (const fields of Object.values(row.per_ref_sync_fields || {{}})) fields[field] = value;
+    }}
+    if (field !== "note") {{ row.field_changed_refs = refs; row.field_edit_status = "NeedsSchematicUpdate"; }}
+  }}
+  if (field !== "note" && document.body.contains(tr)) markRowNeedsSchematicSync(tr, refs);
+  if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");
+  setState(`已自动保存 ${{refs}} 的 ${{field}}`, "saved");
+}}
+
 rowsEl.addEventListener("input", event => {{
-  const tr = event.target.closest("tr");
-  if (tr) tr.classList.add("changed");
+  if (!event.isComposing) queueRowInput(event.target);
+}});
+rowsEl.addEventListener("compositionstart", event => {{
+  if (event.target.dataset.field) {{ event.target.dataset.composing = "1"; rowEditQueue.pause(rowInputKey(event.target)); }}
+}});
+rowsEl.addEventListener("compositionend", event => {{ delete event.target.dataset.composing; queueRowInput(event.target); }});
+rowsEl.addEventListener("focusout", event => {{
+  queueRowInput(event.target);
+  rowEditQueue.flush().catch(error => setState(error.message, "error"));
+}});
+window.addEventListener("beforeunload", event => {{
+  if (rowEditQueue.pending) {{ event.preventDefault(); event.returnValue = ""; }}
 }});
 
 bomSearch.addEventListener("input", applyActiveFilter);
@@ -6609,13 +6715,14 @@ document.addEventListener("keydown", event => {{
 }});
 
 rowsEl.addEventListener("keydown", async event => {{
-  if (event.key !== "Enter") return;
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
   const tr = event.target.closest("tr");
   if (!tr) return;
   try {{
     if (event.target.matches("[data-field='replacement_c_code']")) {{
       event.preventDefault();
-      await acceptReplacement(tr);
+      queueRowInput(event.target);
+      await flushRowEdits();
       return;
     }}
     if (event.target.matches(".field-edit") && !event.shiftKey) {{
@@ -6630,7 +6737,10 @@ rowsEl.addEventListener("keydown", async event => {{
 rowsEl.addEventListener("change", async event => {{
   if (!event.target.matches("[data-field='status'], [data-field='review_status']")) return;
   const tr = event.target.closest("tr");
+  const selectedValue = event.target.value;
   try {{
+    await flushRowEdits();
+    event.target.value = selectedValue;
     if (event.target.matches("[data-field='review_status']")) {{
       await saveReviewStatus(tr);
       return;
@@ -6647,6 +6757,7 @@ rowsEl.addEventListener("click", async event => {{
   const tr = button.closest("tr");
   const action = button.dataset.action;
   try {{
+    await flushRowEdits();
     if (action === "eng") await saveRow(tr, "AcceptEngineering", tr.dataset.engineering);
     if (action === "lcsc") await saveRow(tr, "AcceptLCSC", tr.dataset.lcsc);
     if (action === "query-stock") await queryRowStock(tr);
@@ -6673,13 +6784,45 @@ rowsEl.addEventListener("click", async event => {{
   }}
 }});
 
-rowsEl.addEventListener("change", event => {{
+rowsEl.addEventListener("change", async event => {{
+  const pageStart = event.target.closest("input[data-start-split-page]");
+  if (pageStart) {{
+    try {{ await flushRowEdits(); }} catch (error) {{ pageStart.checked = false; setState(error.message, "error"); return; }}
+    const tr = pageStart.closest("tr");
+    const row = rowDataForElement(tr);
+    startMultiSplit(row, "page");
+    for (const item of row.ref_links || []) if ((item.page || "Unknown") === pageStart.dataset.startSplitPage) multiSplitRefs.add(item.ref);
+    renderRows(currentRows);
+    return;
+  }}
+  const pageCheck = event.target.closest("input[data-multi-split-page]");
+  if (pageCheck) {{
+    const row = rowDataForElement(pageCheck.closest("tr"));
+    for (const item of row?.ref_links || []) {{
+      if ((item.page || "Unknown") !== pageCheck.dataset.multiSplitPage) continue;
+      if (pageCheck.checked) multiSplitRefs.add(item.ref); else multiSplitRefs.delete(item.ref);
+    }}
+    pageCheck.closest("tr").querySelectorAll("[data-multi-split-ref]").forEach(input => {{ input.checked = multiSplitRefs.has(input.dataset.multiSplitRef); }});
+    updateSplitPageChecks();
+    return;
+  }}
   const checkbox = event.target.closest("input[data-multi-split-ref]");
   if (!checkbox) return;
   const ref = checkbox.dataset.multiSplitRef || "";
   if (checkbox.checked) multiSplitRefs.add(ref);
   else multiSplitRefs.delete(ref);
+  updateSplitPageChecks();
 }});
+
+function updateSplitPageChecks() {{
+  rowsEl.querySelectorAll("[data-multi-split-page]").forEach(input => {{
+    const row = rowDataForElement(input.closest("tr"));
+    const refs = (row?.ref_links || []).filter(item => (item.page || "Unknown") === input.dataset.multiSplitPage).map(item => item.ref);
+    const count = refs.filter(ref => multiSplitRefs.has(ref)).length;
+    input.checked = count === refs.length && count > 0;
+    input.indeterminate = count > 0 && count < refs.length;
+  }});
+}}
 
 function closeRefContextMenu() {{
   refContextMenu.classList.remove("open");
@@ -6850,6 +6993,7 @@ updateFilterButtons();
 document.getElementById("reloadRows")?.addEventListener("click", loadRows);
 async function startStockQuery(mode) {{
   try {{
+    await flushRowEdits();
     await queryAllStockFromTable(mode);
   }} catch (err) {{
     resetQueryAllButton();
@@ -6862,6 +7006,7 @@ document.getElementById("queryMissingStock").addEventListener("click", () => sta
 document.getElementById("queryAllStock").addEventListener("click", () => startStockQuery("all"));
 syncAllButton.addEventListener("click", async () => {{
   try {{
+    await flushRowEdits();
     await syncAllSchematic();
   }} catch (err) {{
     setState(err.message, "error");
@@ -6870,6 +7015,7 @@ syncAllButton.addEventListener("click", async () => {{
 }});
 syncSelectedButton.addEventListener("click", async () => {{
   try {{
+    await flushRowEdits();
     await syncAllSchematicWithProgress(true);
   }} catch (err) {{
     setState(err.message, "error");
@@ -6877,6 +7023,7 @@ syncSelectedButton.addEventListener("click", async () => {{
 }});
 document.getElementById("exportChanges").addEventListener("click", async () => {{
   try {{
+    await flushRowEdits();
     await exportChanges();
   }} catch (err) {{
     setState(err.message, "error");
@@ -6885,6 +7032,7 @@ document.getElementById("exportChanges").addEventListener("click", async () => {
 document.getElementById("exportPumpTable").addEventListener("click", async () => {{
   closeToolbarMenus();
   try {{
+    await flushRowEdits();
     await exportPumpTable();
   }} catch (err) {{
     setState(err.message, "error");

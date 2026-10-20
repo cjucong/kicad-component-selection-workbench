@@ -18,7 +18,7 @@ class KiCadSaveFallbackTests(unittest.TestCase):
 $ErrorActionPreference = 'Stop'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:TEST_SEARCH_SCRIPT, [ref]$tokens, [ref]$errors)
-$names = @('Invoke-KiCadApi', 'Wait-KiCadEditorSaved', 'Save-KiCadActiveFrame', 'Find-KiCadMenuCommand', 'Find-KiCadCloseCommand', 'Save-AndCloseKiCadEditorFrame', 'Set-SearchText', 'Get-KiCadTopLevelWindows')
+$names = @('Invoke-KiCadApi', 'Wait-KiCadEditorSaved', 'Save-KiCadActiveFrame', 'Find-KiCadMenuCommand', 'Find-KiCadCloseCommand', 'Save-AndCloseKiCadEditorFrame', 'Get-KiCadTopLevelWindows')
 foreach ($node in $ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]}, $true)) {
     if ($node.Name -in $names) { Invoke-Expression $node.Extent.Text.Replace('$PSScriptRoot', '$env:TEST_IPC_ROOT') }
 }
@@ -256,17 +256,6 @@ catch { if ($_.Exception.Message -notmatch 'did not close') { throw }; Write-Out
         script = SCRIPT.read_text(encoding="utf-8-sig")
         entry = script[script.index('    Ensure-NativeMethods\n    $target = $windows[0]'):]
         self.assertLess(entry.index('Save-AndCloseKiCadEditorFrame'), entry.index('Set-KiCadForeground'))
-
-    def test_designator_search_never_uses_clipboard(self):
-        output = self.run_functions('''
-Add-Type 'namespace System.Windows.Forms { public class SendKeys { public static string Sent = ""; public static void SendWait(string text) { Sent += text; } } }'
-function Get-Clipboard { throw 'clipboard must not be used' }
-function Set-ClipboardTextWithRetry { throw 'clipboard must not be used' }
-Set-SearchText -Text 'C173'
-Write-Output ([System.Windows.Forms.SendKeys]::Sent)
-''')
-        self.assertEqual(output, "^aC173")
-
 
 if __name__ == "__main__":
     unittest.main()

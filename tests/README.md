@@ -23,6 +23,15 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_test_artifacts.py` | 临时产物清理 |
 | `run_*_smoke.py` | 按需真实窗口、安装包或联网转换冒烟 |
 
+位号输入专项（Windows PowerShell 5.1）：
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+python -B -m pytest tests/test_kicad_search_text.py tests/test_kicad_busy_guard.py tests/test_kicad_manager_open.py tests/test_kicad_save_fallback.py -p no:cacheprovider
+```
+
+`test_kicad_search_text.py` 仅加载搜索脚本函数，模拟 Win32/UIA 边界并注入 `C103 → C03`、读写超时、非目标焦点和不支持的控件等故障；另用一次性隐藏原生 Edit 控件验证实际消息写入、完整值读取与文本变化通知。位号写入不经过 SendKeys 或剪贴板，搜索面板不再重复键入已校验的值；无法读回完整值时停止跳转。该专项不启动 KiCad、不保存或关闭真实原理图，也不能替代实际 KiCad/wx 控件、输入法环境和搜索结果刷新的人工冒烟。
+
 ## 隔离与清理
 
 ```python
@@ -39,6 +48,8 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 临时 ZIP、解压文件、截图、报告、下载、字节码和测试缓存不得写入源码或正式工程，不得提交。稳定夹具应最小化并说明用途，禁止为测试复制真实工程或其 `.git`。
 
 ## 真实冒烟
+
+`python -B tests/run_row_editing_smoke.py` 使用 Node Playwright 启动无头 Chromium，在自动清理的合成工程验证页面多选合行、字段/备注/C 编码自动保存、输入法事件、失败重试和请求期间回改。Node 应能解析已安装的 playwright 包（可设置 NODE_PATH）；不对生产工程写入，也不执行真实 KiCad 保存关闭。
 
 查看 `python -B tests/run_kicad_plugin_smoke.py --help` 和 `python -B tests/run_easykiconverter_smoke.py --help` 后按需执行，只使用自动清理的隔离工程。桌面冒烟另需 `tools/kicad_plugin/desktop-requirements.txt` 与 `jsonschema`，部分步骤会联网。可复用的依赖运行时允许保留在外部缓存，并与一次性测试结果区分。
 

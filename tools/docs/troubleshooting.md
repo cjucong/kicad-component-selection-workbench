@@ -55,6 +55,10 @@ KICAD_BUSY 或窗口归属不明时应停止本次同步，等待 KiCad 响应�
 
 位号跳转需核对实际窗口、搜索结果刷新和版本/语言/缩放环境。缺符号时先按 UUID、引脚和网络比较历史数据，不用历史整页覆盖当前其他修改。
 
+位号文本由目标控件直接写入并完整回读验证，避免 SendKeys 受输入法或焦点变化影响；C103 等丢字符时停止跳转并记录 expected/current，不继续点击不确定的结果。真实 KiCad wx 控件仍需在实际版本中核验。
+
+CLI 的 `--bulk-sync-no-notify --bulk-sync-no-prepare` 不是只读模式：没有 `--bulk-sync-dry-run` 仍会写原理图。仅评估可使用 `python -B tools/part_selection_server.py --config "E:/work/Board/BOM/part_selection_config.json" --bulk-sync-bom __schematic__ --bulk-sync-dry-run --bulk-sync-no-notify --bulk-sync-no-prepare`，仅对已保存数据计算差异。
+
 ## 转换失败
 
 轻量 ZIP 不含转换器，可使用完整版或设置 converter_executable / PART_SELECTION_CONVERTER。轻量直接更新保留已有 third_party 转换器。检查错误中的外部日志绝对路径，区分网络/CAD 数据不足、180 秒超时、本地权限和库冲突。

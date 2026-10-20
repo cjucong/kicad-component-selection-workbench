@@ -59,6 +59,8 @@
 
 ## 安装与验证
 
+每轮修复按根目录 AGENTS 执行非破坏式备份、回归、提交推送插件 origin、重新安装并核对。不要把本插件推到工程仓库；不强推，不监视普通保存直接发布未验证文件。行编辑使用 web/row-edits.js 串行自动保存，按字段发送部分更新；新增输入需接入自动保存并尊重输入法组合事件。拆分的选中位号合到同一临时行，逐位号元数据不能越过拆分范围。
+
 KiCad 管理的 requirements.txt 仅放适用的 wheel 依赖；pywebview 通过 desktop-requirements.txt 装入独立桌面环境，不污染 KiCad Python。轻量直接安装保留已有 third_party 转换器，完整包须携带固定版本源码与许可。--plugin-dir 可覆盖默认的实际 Windows 文档目录，不能固定某台开发机路径。
 
 从仓库根目录执行：
