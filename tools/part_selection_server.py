@@ -30,7 +30,7 @@ from uuid import uuid4
 from functools import partial
 
 from part_selection_search import CandidateSearchJobs
-from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings
+from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings, open_settings_directory
 from part_selection_library import LibraryImporter, SelectionJobs
 from part_selection_footprints import FootprintChoices
 
@@ -1461,7 +1461,7 @@ class PartSelectionApp:
             candidate = self.project_root / candidate
         candidate = candidate.resolve()
         roots = (self.project_root.resolve(), self.bom_dir.resolve())
-        if not any(candidate.is_relative_to(root) for root in roots):
+        if candidate != self.source_bom().resolve() and not any(candidate.is_relative_to(root) for root in roots):
             raise ValueError("selected BOM must be inside the project directory or configured BOM directory")
         if not candidate.exists():
             raise FileNotFoundError(f"selected BOM not found: {candidate}")
@@ -1471,6 +1471,8 @@ class PartSelectionApp:
         files: list[Path] = []
         for pattern in ("*.csv", "*.xlsx", "*.xlsm"):
             files.extend(self.bom_dir.glob(pattern))
+        if self.source_bom().is_file():
+            files.append(self.source_bom())
         result: list[dict[str, str]] = [{"name": "原理图当前数据", "path": SCHEMATIC_SOURCE_BOM}]
         for path in sorted(set(files), key=lambda item: item.name.lower()):
             if path.name == SCHEMATIC_SYNC_LOG or path.name.lower().startswith(GENERATED_REVIEW_BOM_PREFIXES):
@@ -3062,7 +3064,7 @@ def make_handler(app: PartSelectionApp):
                 )
                 return
             if parsed.path == "/api/boms":
-                json_response(self, {"boms": app.available_boms(), "default_bom": SCHEMATIC_SOURCE_BOM})
+                json_response(self, {"boms": app.available_boms(), "default_bom": SCHEMATIC_SOURCE_BOM, "project_root": str(app.project_root)})
                 return
             if parsed.path == "/api/stock":
                 c_code = parse_qs(parsed.query).get("code", [""])[0]
@@ -3122,6 +3124,9 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/path_picker":
                     json_response(self, choose_path(app.config, payload))
+                    return
+                if parsed.path == "/api/open_settings_directory":
+                    json_response(self, open_settings_directory(app.config, payload))
                     return
                 if parsed.path == "/api/lcsc_search_cancel":
                     client = str(payload.get("client", ""))
@@ -3551,7 +3556,6 @@ tr.hidden-row {{ display: none; }}
       <button type="button" data-command="exportChanges">导出改动表</button>
       <button type="button" data-command="saveDefaultView">保存当前列表配置为默认</button>
       <button type="button" data-command="loadDefaultView">加载默认列表配置</button>
-      <button type="button" id="openPathConfig">工程与路径配置…</button>
       <button type="button" id="restartWorkbench">重启工作台</button>
       <button type="button" id="exitWorkbench">退出工作台</button>
     </div>
@@ -3572,6 +3576,10 @@ tr.hidden-row {{ display: none; }}
       <button type="button" data-command="toggleColumns">列显示配置</button>
       <button type="button" data-command="loadDefaultView">加载默认列表配置</button>
     </div>
+  </div>
+  <div class="app-menu">
+    <button type="button" data-menu-trigger aria-expanded="false">设置</button>
+    <div class="menu-popup"><button type="button" id="openPathConfig">工程设置…</button></div>
   </div>
   <span class="menubar-spacer" aria-hidden="true"></span>
   <button type="button" class="project-path-link" data-action="open-project-path" title="点击打开工程目录">{html.escape(str(app.project_root))}</button>
@@ -6634,10 +6642,14 @@ async function loadRows(anchor = null) {{
 async function loadBomOptions() {{
   const res = await fetch("/api/boms");
   const data = await res.json();
-  const savedBom = loadUiSettings().selectedBom || "";
-  const selectedBom = data.boms.some(item => item.path === savedBom) ? savedBom : data.default_bom;
+  let selectedBom = data.default_bom;
+  try {{
+    const intent = JSON.parse(sessionStorage.getItem("partSelectionSourceOnce") || "null");
+    sessionStorage.removeItem("partSelectionSourceOnce");
+    if (intent?.project === data.project_root && data.boms.some(item => item.path === intent.source)) selectedBom = intent.source;
+  }} catch (error) {{ /* A stale or unavailable session store must not change the startup source. */ }}
   bomSelect.innerHTML = data.boms.map(item => `<option value="${{esc(item.path)}}" ${{item.path === selectedBom ? "selected" : ""}}>${{esc(item.name)}}</option>`).join("");
-  if (selectedBom !== savedBom) updateUiSettings({{selectedBom}});
+  updateUiSettings({{selectedBom}});
 }}
 
 const rowEditQueue = createRowEditQueue({{

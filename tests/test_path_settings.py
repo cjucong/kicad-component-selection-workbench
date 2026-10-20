@@ -1,6 +1,9 @@
 """Safe path configuration and migration against disposable engineering data."""
 import json
 import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 import threading
 from http.server import ThreadingHTTPServer
@@ -12,6 +15,82 @@ import pytest
 
 from part_selection_server import PartSelectionApp, make_handler
 from part_selection_settings import save_settings, settings_snapshot, SettingsGate, apply_runtime_settings
+
+
+def test_snapshot_reports_converter_and_detected_schematic_without_rewriting_legacy_settings(app):
+    config = app.config['config_path']
+    original = config.read_bytes()
+    with patch('part_selection_settings.find_converter', return_value=Path('C:/converter/easykiconverter.exe')):
+        view = settings_snapshot(app.config)
+    assert view['converter_path'].endswith('easykiconverter.exe')
+    assert view['schematic_default'] == '.'
+    assert config.read_bytes() == original
+
+
+def test_snapshot_handles_missing_optional_converter(app):
+    with patch('part_selection_settings.find_converter', side_effect=FileNotFoundError()):
+        assert settings_snapshot(app.config)['converter_path'] == ''
+
+
+def test_settings_directory_opener_only_opens_registered_directories(app):
+    from part_selection_settings import open_settings_directory
+    with patch('part_selection_settings.os.startfile', create=True) as open_path:
+        assert open_settings_directory(app.config, {'target':'project'})['ok']
+        open_path.assert_called_once_with(app.project_root)
+        with pytest.raises(ValueError):
+            open_settings_directory(app.config, {'target':'C:/Windows'})
+    missing = app.project_root / 'not-created'
+    with pytest.raises(ValueError, match='不存在'):
+        open_settings_directory({**app.config,'bom_dir':missing}, {'target':'data'})
+    assert not missing.exists()
+
+
+def test_configured_external_bom_is_available_for_explicit_import(app):
+    source = app.project_root.parent / 'external.csv'
+    source.write_text('Designator,Value\nR1,100R\n')
+    app.config['source_bom'] = source
+    assert any(Path(item['path']) == source for item in app.available_boms())
+    assert app.resolve_bom_path(str(source)) == source
+    assert settings_snapshot(app.config)['import_source'] == str(source)
+    with pytest.raises(ValueError):
+        app.resolve_bom_path(str(source.parent / 'unconfigured.csv'))
+
+
+def test_snapshot_normalizes_browsed_project_bom_for_one_shot_selection(app):
+    source = app.project_root / 'inside.csv'
+    source.write_text('Designator,Value\nR1,100R\n')
+    app.save_path_settings(payload(app, source_bom=str(source)))
+    assert settings_snapshot(app.config)['import_source'] == 'inside.csv'
+
+
+def test_startup_ignores_remembered_bom_but_consumes_explicit_import_once(app):
+    from part_selection_server import render_index
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js required')
+    function = re.search(r'async function loadBomOptions\(.*?(?=const rowEditQueue)', render_index(app), re.S).group()
+    script = r"""
+const vm=require('vm'),assert=require('assert');
+const store=new Map(), selected=[];
+const data={project_root:'project',default_bom:'__schematic__',boms:[
+ {path:'__schematic__',name:'schematic'},{path:'old.csv',name:'csv'}]};
+const c={fetch:async()=>({json:async()=>data}),esc:x=>x,
+ loadUiSettings:()=>({selectedBom:'old.csv'}),updateUiSettings:x=>selected.push(x.selectedBom),
+ bomSelect:{innerHTML:''},sessionStorage:{getItem:k=>store.get(k)||null,removeItem:k=>store.delete(k)}};
+vm.runInNewContext(process.argv[1],c);
+(async()=>{
+ await c.loadBomOptions(); assert(c.bomSelect.innerHTML.includes('value="__schematic__" selected'));
+ store.set('partSelectionSourceOnce',JSON.stringify({project:'project',source:'old.csv'}));
+ await c.loadBomOptions(); assert(c.bomSelect.innerHTML.includes('value="old.csv" selected'));
+ await c.loadBomOptions(); assert(c.bomSelect.innerHTML.includes('value="__schematic__" selected'));
+ store.set('partSelectionSourceOnce',JSON.stringify({project:'other',source:'old.csv'}));
+ await c.loadBomOptions(); assert(c.bomSelect.innerHTML.includes('value="__schematic__" selected'));
+ store.set('partSelectionSourceOnce','invalid json');
+ await c.loadBomOptions(); assert(c.bomSelect.innerHTML.includes('value="__schematic__" selected'));
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+    result = subprocess.run([node,'-e',script,function],capture_output=True,text=True,encoding='utf-8',timeout=15)
+    assert result.returncode==0, result.stderr
 
 
 @pytest.fixture
@@ -83,7 +162,7 @@ def test_requires_copy_instead_of_silently_losing_existing_selection(app):
     record(app)
     change = payload(app, output_overrides='new.json')
     change['copy_existing'] = False
-    with pytest.raises(ValueError, match='勾选复制'):
+    with pytest.raises(ValueError, match='确认复制'):
         app.save_path_settings(change)
     assert not (app.project_root / 'new.json').exists()
 

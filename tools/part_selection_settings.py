@@ -9,11 +9,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 
 from part_selection_overrides import DEFAULT_CONFIG, load_config
 from part_selection_runtime import runtime_directory
+from part_selection_library import find_converter
 
 
 PATH_FIELDS = (
@@ -68,6 +70,15 @@ def _revision(path):
 def settings_snapshot(config):
     path, root = config['config_path'], config['project_root'].resolve()
     values = {**DEFAULT_CONFIG, **_raw(path)}
+    try:
+        converter = str(find_converter(config.get('converter_executable')))
+    except OSError:
+        converter = ''
+    schematic_default = 'DOC' if any((root / 'DOC').glob('*.kicad_sch')) else (
+        '.' if any(root.glob('*.kicad_sch')) else str(values['schematic_dir']))
+    imported = config['source_bom']
+    import_source = '' if imported.name == '__schematic__' else (
+        imported.relative_to(root).as_posix() if imported.is_relative_to(root) else str(imported))
     return {
         'ok': True, 'revision': _revision(path), 'config_path': str(path), 'project_root': str(root),
         'values': {key: str(values.get(key) or '') for key in EDITABLE_FIELDS},
@@ -76,7 +87,26 @@ def settings_snapshot(config):
         'desktop_home_effective': str(Path(os.environ.get('KICAD_PART_SELECTION_HOME') or
             str(Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.cache'))) / 'KiCadPartSelection'))),
         'plugin_directory': str(Path(__file__).resolve().parent),
+        'converter_path': converter, 'schematic_default': schematic_default, 'import_source': import_source,
     }
+
+
+def open_settings_directory(config, payload):
+    directories = {
+        'project': config['project_root'], 'data': config['bom_dir'],
+        'temporary': runtime_directory(config['project_root']),
+        'desktop': settings_snapshot(config)['desktop_home_effective'],
+    }
+    if payload.get('target') not in directories:
+        raise ValueError('请选择已配置的目录')
+    path = Path(directories[payload['target']]).resolve()
+    if not path.is_dir():
+        raise ValueError(f'目录不存在：{path}')
+    if os.name == 'nt':
+        os.startfile(path)
+    else:
+        subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', str(path)])
+    return {'ok': True, 'path': str(path)}
 
 
 def _path(root, value):
@@ -177,7 +207,7 @@ def _validate(root, config_path, values):
         raise ValueError('原理图目录不存在')
     if 'source_bom' in resolved and (not resolved['source_bom'].is_file() or
             resolved['source_bom'].suffix.lower() not in ('.csv', '.xlsx', '.xlsm')):
-        raise ValueError('默认 BOM 必须为 __schematic__ 或已有 CSV/XLSX 文件')
+        raise ValueError('导入 BOM 必须为 __schematic__ 或已有 CSV/XLSX 文件')
     files = [config_path.resolve()]
     for key in DATA_FIELDS:
         path = resolved[key]
@@ -261,7 +291,7 @@ def save_settings(config, payload):
             copies.extend((old, new_bom / old.name) for old in old_bom.glob(pattern) if old.is_file())
     # Never silently open an empty record set in place of existing selections.
     if copies and payload.get('copy_existing') is not True:
-        raise ValueError('这些路径已有数据，请勾选复制已有数据；原文件会保留')
+        raise ValueError('这些路径已有数据，请确认复制已有数据；原文件会保留')
     planned = {}
     for old, new in copies:
         data = old.read_bytes()

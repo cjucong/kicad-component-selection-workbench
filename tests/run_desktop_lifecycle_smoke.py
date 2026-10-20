@@ -32,6 +32,13 @@ def child(root, phase):
                         raise RuntimeError('Workbench did not load')
                     time.sleep(0.1)
                 if phase=='close':
+                    window.evaluate_js("window.openPathSettings(); null")
+                    while not window.evaluate_js("document.querySelector('#pathSettingsDialog').open"):
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Project settings did not open')
+                        time.sleep(0.1)
+                    assert window.evaluate_js("document.querySelector('#pathSourceSchematic').checked && !document.querySelector('#pathAdvanced').open"), 'Unexpected settings defaults'
+                    window.evaluate_js("document.querySelector('#pathSettingsDialog [data-close-paths]').click()")
                     window.evaluate_js("const input=document.querySelector('#rows [data-field=value]'); input.value='220nF'; input.dispatchEvent(new Event('input',{bubbles:true}));")
                     # Real WinForms Closing must defer, flush JS edits and release the port.
                     window.destroy()

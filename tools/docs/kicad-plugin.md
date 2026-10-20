@@ -34,11 +34,11 @@ python -m pip install -r tools/kicad_plugin/desktop-requirements.txt
 python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro"
 ```
 
-把示例工程路径换成自己的真实工程。没有插件入口也可用这条命令，或双击 `tools/启动器件选料助手.bat` 选择工程。首次进入后用顶部“文件 → 工程与路径配置…”核对数据位置；正式数据默认保存在自己的工程 `BOM/` 下，而不是此源码目录。
+把示例工程路径换成自己的真实工程。没有插件入口也可用这条命令，或双击 `tools/启动器件选料助手.bat` 选择工程。首次进入后用顶部“设置 → 工程设置…”核对数据位置；正式数据默认保存在自己的工程 `BOM/` 下，而不是此源码目录。
 
 ### 转换器是否需要另装
 
-以上命令安装的是**轻量版**：搜索、选料、数据导出、现有库封装选择等可以使用，但不会从 GitHub 源码自动下载转换器。需要“替换立创封装”时，另行获取 [EasyKiConverter v3.1.11](https://github.com/EasyKiconverter/EasyKiConverter/releases/tag/v3.1.11) 的 Windows 运行包，完整解压并保留 DLL 等依赖；在顶部“文件 → 工程与路径配置… → 转换与运行”选择其中的 `easykiconverter.exe`，保存后使用。完整分发包的构建、版本校验及许可材料见 [转换器说明](easykiconverter.md)。不要把外部转换器安装目录误选为工程数据输出目录。
+以上命令安装的是**轻量版**：搜索、选料、数据导出、现有库封装选择等可以使用，但不会从 GitHub 源码自动下载转换器。需要“替换立创封装”时，另行获取 [EasyKiConverter v3.1.11](https://github.com/EasyKiconverter/EasyKiConverter/releases/tag/v3.1.11) 的 Windows 运行包，完整解压并保留 DLL 等依赖；在顶部“设置 → 工程设置…”选择其中的 `easykiconverter.exe`，保存后使用。完整分发包的构建、版本校验及许可材料见 [转换器说明](easykiconverter.md)。不要把外部转换器安装目录误选为工程数据输出目录。
 
 ### 手动更新和卸载
 
@@ -95,7 +95,7 @@ python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selecti
 
 隐藏启动桥由 start_part_selection_tool.vbs 和 launch_part_selection.py 提供，完整保留上述参数；未指定目标时选择工程。共享 part_selection_paths.py 随安装包提供，不依赖工程 tools。
 
-每个工程保持自己的配置、人工记录、库存和库文件；插件升级不替换这些内容。服务仅监听本机，核验程序、工程、配置及本次宿主身份，8765 被其他工程占用时选择工程隔离端口，不终止他人的服务。顶部“文件 → 工程与路径配置…”支持输入或浏览选择路径，数据路径保存后立即应用；运行环境路径修改后使用“文件 → 重启工作台”。直接手改 JSON 前先关闭工作台并备份，详见 [配置说明](part-selection.md)。
+每个工程保持自己的配置、人工记录、库存和库文件；插件升级不替换这些内容。服务仅监听本机，核验程序、工程、配置及本次宿主身份，8765 被其他工程占用时选择工程隔离端口，不终止他人的服务。顶部“设置 → 工程设置…”支持输入或浏览选择路径，数据路径保存后立即应用；运行环境路径修改后使用“文件 → 重启工作台”。直接手改 JSON 前先关闭工作台并备份，详见 [配置说明](part-selection.md)。
 
 ## 关闭与重启
 
@@ -110,7 +110,7 @@ python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selecti
 
 桌面基目录默认 `%LOCALAPPDATA%/KiCadPartSelection/`，可通过绝对、工程外的 KICAD_PART_SELECTION_HOME 修改；desktop.log 为入口日志，pcb-launch.log 为 PCB 兼容入口日志。工程哈希目录保存 server.log、window.log、runtime-install.log、desktop-runtime 和 webview 数据。
 
-临时转换、预览、下载与备份使用 runtime_directory(project_root)，默认工程外同盘缓存；KICAD_PART_SELECTION_CACHE 可指定绝对、同盘、工程外父目录，程序追加工程哈希子目录。正式记录路径依配置，工程库仍是设计依赖。菜单保存按显式勾选复制已有正式数据；直接手改 JSON 不自动迁移，运行环境不自动搬迁。
+临时转换、预览、下载与备份使用 runtime_directory(project_root)，默认工程外同盘缓存；KICAD_PART_SELECTION_CACHE 可指定绝对、同盘、工程外父目录，程序追加工程哈希子目录。正式记录路径依配置，工程库仍是设计依赖。菜单保存按保存前确认复制已有正式数据；直接手改 JSON 不自动迁移，运行环境不自动搬迁。
 
 窗口支持选择文字、原生复制粘贴和右键菜单；只读结果不变为可编辑字段。列布局保存在独立窗口 localStorage，重启保留；旧浏览器布局不自动迁入。宿主设置升级后重启工作台，插件注册变化后重启 KiCad。
 
