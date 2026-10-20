@@ -34,6 +34,8 @@ WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（sta
 
 更新清单优先使用固定仓库 releases/latest/download/workbench-update.json，只有 HTTP 404 才回退旧版 REST API，不在解析/校验失败时降级绕过。缓存 release-cache.json 位于 updater.home，仍重做字段校验；启动缓存 6 小时，手动最短 60 秒。检查时保留同版本已校验的 pending 下载，查询失败不丢失待安装包。发布工作流先上传 ZIP 和清单到草稿，完成后公开。
 
+更新 UI 的 prepare 与 restart 分开；downloadPluginUpdate 只暂存并校验，installPluginUpdate 仅在 ready 时显示，沿用 requestDesktopExit(true,true) 保存并退出，不重复 prepare。busy 状态共享于打开/关闭面板，使用原生不确定 progress；失败从原生 status 刷新并恢复已保存 mode，错误仍明确显示；源码模式不能被“已是最新”文案覆盖。403/429 在 rate-limit.json 持久保存 retry_at，状态只公开剩余秒数；默认 60 秒，读取 Retry-After / X-RateLimit-Reset，防御性上限 3600 秒，等待不阻止本地偏好/已校验包安装。该缓存不能参与包身份或完整性校验。参考与后续检查见 update-design-review.md。
+
 ```text
 显式工程/配置
   -> 配置 + 当前原理图/BOM + overrides + stock_cache

@@ -266,3 +266,75 @@ def test_rechecking_keeps_an_already_verified_pending_download(installed, monkey
     installed.prepare()
     assert installed.check()['ready']
     assert installed.apply()['version']=='9.0.0'
+
+
+@pytest.mark.parametrize('code', [403, 429])
+def test_rate_limit_backoff_survives_restart_without_more_network(installed, monkeypatch, code):
+    from urllib.error import HTTPError
+    import updater
+    now = [100000.0]
+    monkeypatch.setattr(updater.time, 'time', lambda: now[0])
+    calls = []
+    def limited(url):
+        calls.append(url)
+        raise HTTPError(url, code, 'limited', {'Retry-After':'120'}, None)
+    monkeypatch.setattr(installed, '_json', limited)
+    with pytest.raises(ValueError, match='访问频率限制'):
+        installed.check()
+    assert installed.status()['retry_after_seconds'] == 120
+    reopened = PluginUpdater(installed.target, installed.home)
+    monkeypatch.setattr(reopened, '_json', lambda url: pytest.fail('Cooldown must not query GitHub'))
+    for force in (True, False):
+        with pytest.raises(ValueError, match='访问频率限制'):
+            reopened.check(force=force)
+    assert len(calls)==1
+    now[0] += 121
+    monkeypatch.setattr(reopened, '_json', lambda url: release())
+    assert reopened.check()['available']
+    assert reopened.status()['retry_after_seconds']==0
+
+
+@pytest.mark.parametrize('headers,expected', [({},60),({'Retry-After':'invalid'},60),
+    ({'Retry-After':'999999'},3600),({'X-RateLimit-Reset':'100090'},90),
+    ({'X-RateLimit-Reset':'9'*1000},60)])
+def test_rate_limit_wait_is_bounded_and_defensive(installed, monkeypatch, headers, expected):
+    from urllib.error import HTTPError
+    import updater
+    monkeypatch.setattr(updater.time, 'time', lambda:100000.0)
+    def limited(url):
+        raise HTTPError(url,429,'limited',headers,None)
+    monkeypatch.setattr(installed,'_json',limited)
+    with pytest.raises(ValueError):
+        installed.check()
+    assert installed.status()['retry_after_seconds']==expected
+
+
+def test_failed_recheck_preserves_verified_update_and_cooldown_does_not_block_preferences(installed, monkeypatch):
+    from urllib.error import HTTPError
+    import updater
+    now = [1800000000.0]
+    monkeypatch.setattr(updater.time,'time',lambda:now[0])
+    prepare_release(installed,monkeypatch)
+    installed.prepare()
+    previous = installed.pending
+    now[0] += 61
+    def limited(url):
+        raise HTTPError(url,429,'limited',{},None)
+    monkeypatch.setattr(installed,'_json',limited)
+    with pytest.raises(ValueError):
+        installed.check()
+    assert installed.pending is previous
+    assert installed.status()['ready']
+    assert installed.preferences('off')['mode']=='off'
+    assert installed.apply()['version']=='9.0.0'
+
+
+@pytest.mark.parametrize('contents',['not json','null','{"retry_at":"tomorrow"}','{"retry_at":true}',
+                                     '{"retry_at":NaN}','{"retry_at":1e100}',
+                                     '{"retry_at":'+'9'*1000+'}'])
+def test_bad_cooldown_cache_does_not_break_status_or_checks(installed,monkeypatch,contents):
+    installed.home.mkdir(parents=True)
+    (installed.home / 'rate-limit.json').write_text(contents,encoding='utf-8')
+    assert installed.status()['retry_after_seconds']==0
+    monkeypatch.setattr(installed,'_json',lambda url:release())
+    assert installed.check()['available']

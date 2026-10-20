@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -19,6 +20,7 @@ VERSION = '0.1.5'
 REPOSITORY = 'cjucong/kicad-component-selection-workbench'
 IDENTIFIER = 'com.smu.part-selection'
 MAX_DOWNLOAD = 40 * 1024 * 1024
+RATE_LIMIT_MESSAGE = 'GitHub 暂时拒绝请求或已达到访问频率限制，请稍后重试；当前版本不受影响'
 
 
 def version_tuple(value):
@@ -51,6 +53,7 @@ class PluginUpdater:
         self.pending = None
         self.last_error = ''
         self.last_checked = ''
+        self._retry_until = 0
         self.current = VERSION
         marker = self.target / 'build-info.json'
         if marker.is_file():
@@ -75,13 +78,40 @@ class PluginUpdater:
         return self.status()
 
     def status(self):
+        retry = self._retry_seconds()
         return {'ok':True, 'installed':self.installed, 'current_version':self.current,
                 'mode':self._preferences(), 'available':bool(self.offer),
                 'latest_version':self.offer['version'] if self.offer else '',
                 'notes':self.offer['notes'] if self.offer else '',
                 'release_url':self.offer['release_url'] if self.offer else '',
-                'ready':bool(self.pending), 'last_error':self.last_error,
-                'last_checked':self.last_checked}
+                'ready':bool(self.pending), 'last_error':self.last_error or (RATE_LIMIT_MESSAGE if retry else ''),
+                'last_checked':self.last_checked, 'retry_after_seconds':retry}
+
+    def _retry_seconds(self):
+        if not self._retry_until:
+            try:
+                with (self.home / 'rate-limit.json').open(encoding='utf-8') as stream:
+                    value = json.loads(stream.read(4096))['retry_at']
+                if type(value) in (int, float) and math.isfinite(value):
+                    self._retry_until = value
+            except (OSError, ValueError, KeyError, TypeError, OverflowError):
+                pass
+        remaining = self._retry_until - time.time()
+        return math.ceil(remaining) if 0 < remaining <= 3600 else 0
+
+    def _remember_rate_limit(self, headers):
+        wait = 60
+        for key in ('Retry-After', 'X-RateLimit-Reset'):
+            try:
+                value = int((headers or {}).get(key, ''))
+                wait = max(wait, value if key == 'Retry-After' else value - time.time())
+            except (ValueError, TypeError, OverflowError):
+                pass
+        self._retry_until = time.time() + min(3600, wait)
+        try:
+            atomic_json(self.home / 'rate-limit.json', {'retry_at':self._retry_until})
+        except OSError:
+            pass  # Keep this session's cooldown even if the external cache is read-only.
 
     def _request(self, url, limit):
         request = Request(url, headers={'Accept':'application/octet-stream' if url.endswith('.zip') else 'application/json',
@@ -127,6 +157,10 @@ class PluginUpdater:
         if type(force) is not bool:
             raise ValueError('检查更新参数无效')
         with self.lock:
+            retry = self._retry_seconds()
+            if retry:
+                self.last_error = RATE_LIMIT_MESSAGE
+                raise ValueError(f'{RATE_LIMIT_MESSAGE}；约 {retry} 秒后可重试')
             self.last_error = ''
             previous_offer, previous_pending = self.offer, self.pending
             self.offer = None
@@ -136,7 +170,8 @@ class PluginUpdater:
                     release = cached['release'] if cached else self._latest_release()
                 except HTTPError as exc:
                     if exc.code in (403, 429):
-                        raise ValueError('GitHub 暂时拒绝请求或已达到访问频率限制，请稍后重试；当前版本不受影响') from exc
+                        self._remember_rate_limit(exc.headers)
+                        raise ValueError(RATE_LIMIT_MESSAGE) from exc
                     if exc.code != 404:
                         raise
                     self.offer = None

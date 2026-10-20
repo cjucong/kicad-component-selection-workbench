@@ -25,7 +25,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_footprint_choices.py`、`test_part_selection_library.py` | 封装对比、库事务与回滚 |
 | `test_kicad_*`、`test_start_part_selection_tool.py` | 桌面/安装入口、工程归属和忙碌保护 |
 | `test_desktop_lifecycle.py` | 退出授权、并发保护、真实宿主进程退出监视及前端保存失败/重试 |
-| `test_plugin_updates.py` | 正式发布清单、匿名额度规避与检查缓存、版本/哈希/ZIP 安全、转换器保留、安装回滚及多宿主保护 |
+| `test_plugin_updates.py` | 正式发布清单、匿名额度规避与检查缓存、403/429 等待持久化/过期/损坏缓存、已校验包保留、版本/哈希/ZIP 安全、转换器保留、安装回滚及多宿主保护 |
 | `test_test_artifacts.py` | 临时产物清理 |
 | `run_*_smoke.py` | 按需真实窗口、安装包或联网转换冒烟 |
 
@@ -62,6 +62,8 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 临时 ZIP、解压文件、截图、报告、下载、字节码和测试缓存不得写入源码或正式工程，不得提交。稳定夹具应最小化并说明用途，禁止为测试复制真实工程或其 `.git`。
 
 ## 真实冒烟
+
+`python -B tests/run_plugin_updates_smoke.py` 用真实 Chromium 驱动实际更新面板脚本，原生桥接为合成模拟：检查模式保存失败回退、已校验包不重复下载、独立下载后稍后重启、下载失败/重试、忙碌时关闭重开、源码模式不误报最新、自动下载不强制退出、未保存工程设置阻止重启、更新内容不执行 HTML。无后端、GitHub 请求或安装操作，不调用真实 KiCad；可设置工程外绝对目录 `PLUGIN_UPDATE_SCREENSHOTS` 留存桌面/390 像素宽截图。运行环境同其他 Node Playwright 脚本。
 
 `python -B tests/run_workbench_interactions_smoke.py` 使用 Chromium 与自动清理的合成工程，验证菜单方向键/Home/End/Enter/空格/Tab/Esc、执行后焦点恢复、BOM 原生下拉框、启动 503 失败后重新读取、空筛选提示与清除、隐藏行不计入所选同步且取消筛选后勾选保留。可设置工程外已存在的 `WORKBENCH_AUDIT_SCREENSHOTS` 目录保存桌面和 800 像素宽截图；Node 需要能解析 playwright（可设置 NODE_PATH）。不访问商城、不调用真实同步、不打开用户 KiCad；localhost 仅为隔离测试传输。
 
