@@ -136,6 +136,14 @@ const row={refs:'C101,C102',field_changed_refs:'C101,C102',field_diffs_by_ref:{
 const text=schematicSyncMarker(row,true);
 assert.equal((text.match(/C123 → C456/g)||[]).length,1);
 assert.doesNotMatch(text,/https:|C编码链接|C101|C102/);
+row.field_diffs_by_ref.C101.description={old:'CAP CER 100nF 50V X7R 0603',new:'型号: CGA0603X7R104J250JT 100nF 25V'};
+row.field_diffs_by_ref.C102.description={old:'Another long description',new:'Another updated description'};
+const compact=schematicSyncMarker(row,true);
+assert.equal((compact.match(/<div>物料参数更新<\/div>/g)||[]).length,1);
+assert.doesNotMatch(compact,/CAP CER|CGA0603|Another|物料参数:/);
+assert.match(compact,/C123 → C456/);
+assert.match(schematicSyncMarker({field_diffs:{description:{old:'old',new:'new'}}},true),/物料参数更新/);
+assert.doesNotMatch(schematicSyncMarker({field_diffs:{description:{old:'same',new:'same'}}},true),/物料参数更新/);
 row.field_diffs_by_ref.C102.lcsc_c_code={old:'C789',new:'C456'};
 assert.match(schematicSyncMarker(row,true),/C789 → C456/);
 row.missing_schematic_refs='C103,C104';

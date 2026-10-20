@@ -5209,6 +5209,10 @@ function schematicSyncMarker(row, syncNeeded) {{
     for (const [field, values] of Object.entries(fields || {{}})) {{
       if (field === "lcsc_url" || field === "procurement_url") continue;
       if (String(values.old || "") === String(values.new || "")) continue;
+      if (field === "description") {{
+        changes.set(field, "物料参数更新");
+        continue;
+      }}
       const key = JSON.stringify([field, values.old, values.new]);
       changes.set(key, `${{SYNC_FIELD_LABELS[field] || field}}: ${{values.old || "(空)"}} → ${{values.new || "(空)"}}`);
     }}
