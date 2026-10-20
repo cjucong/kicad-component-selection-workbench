@@ -3341,6 +3341,9 @@ tr.hidden-row {{ display: none; }}
 .links button {{ display: inline-block; margin: 0 8px 4px 0; }}
 .edit {{ width: 100%; box-sizing: border-box; min-height: 28px; }}
 .field-edit {{ min-height: 34px; resize: vertical; }}
+.footprint-library-summary {{ display: block; margin-top: 3px; font-size: 11px; font-weight: 400; color: #52606d; overflow-wrap: anywhere; }}
+.footprint-library {{ display: block; margin-bottom: 3px; font-size: 11px; color: #52606d; overflow-wrap: anywhere; }}
+.footprint-library[hidden] {{ display: none; }}
 .field-changed {{ color: #9a5b00; font-size: 11px; margin-top: 3px; }}
 .field-diff {{ color: #9a5b00; font-size: 11px; line-height: 1.35; margin-top: 3px; }}
 .sync-summary {{ color: #0f6b3f; font-size: 11px; line-height: 1.35; margin: 4px 0; overflow-wrap: anywhere; }}
@@ -3681,7 +3684,7 @@ tr.hidden-row {{ display: none; }}
 <table>
 <thead>
 <tr>
-<th data-col="row_no" style="width:64px"><input type="checkbox" id="selectVisibleRows" aria-label="选择当前筛选结果" title="选择当前筛选结果">行号</th><th data-col="review" style="width:240px">确认料 / 同步差异</th><th data-col="refs" style="width:150px">位号</th><th data-col="page_refs" style="width:220px">页面位号</th><th data-col="quantity" style="width:70px">单套用量</th><th data-col="comment" style="width:110px">Comment</th><th data-col="value" style="width:110px">Value</th><th data-col="footprint" style="width:95px">Footprint</th>
+<th data-col="row_no" style="width:64px"><input type="checkbox" id="selectVisibleRows" aria-label="选择当前筛选结果" title="选择当前筛选结果">行号</th><th data-col="review" style="width:240px">确认料 / 同步差异</th><th data-col="refs" style="width:150px">位号</th><th data-col="page_refs" style="width:220px">页面位号</th><th data-col="quantity" style="width:70px">单套用量</th><th data-col="comment" style="width:110px">Comment</th><th data-col="value" style="width:110px">Value</th><th data-col="footprint" style="width:95px">Footprint<span id="footprintLibrarySummary" class="footprint-library-summary"></span></th>
 <th data-col="c_code" style="width:180px">C编码</th><th data-col="stock" style="width:220px">库存</th><th data-col="order" style="width:90px">MOQ/MPQ</th><th data-col="price" style="width:100px">价格</th><th data-col="param" style="width:320px">物料参数</th><th data-col="alternates" style="width:360px">备选料</th><th data-col="note" style="width:220px">备注</th>
 </tr>
 </thead>
@@ -5041,9 +5044,39 @@ function rowPayload(tr, decision, acceptedCode) {{
   }};
 }}
 
+function footprintParts(value) {{
+  const full = String(value || "").trim(), separator = full.indexOf(":");
+  return separator < 0 ? {{library: "", name: full}}
+    : {{library: full.slice(0, separator), name: full.slice(separator + 1)}};
+}}
+
+function footprintFieldValue(input, raw = input?.value || "") {{
+  const value = raw.trim(), library = input?.dataset.footprintLibrary || "";
+  return value && !value.includes(":") && library ? `${{library}}:${{value}}` : value;
+}}
+
+function footprintEditor(row) {{
+  const parts = footprintParts(row.footprint);
+  return `<span class="footprint-library" data-footprint-library-label hidden></span><textarea class="edit field-edit mono" data-field="footprint" data-footprint-library="${{esc(parts.library)}}" title="完整封装: ${{esc(row.footprint || "")}}；可输入 库名:封装名 切换库">${{esc(parts.name)}}</textarea>`;
+}}
+
+function refreshFootprintLibraries() {{
+  const inputs = Array.from(rowsEl.querySelectorAll("[data-field='footprint']"));
+  const libraries = new Set(inputs.map(input => footprintParts(footprintFieldValue(input)).library));
+  const common = libraries.size === 1 ? [...libraries][0] : "";
+  const summary = document.getElementById("footprintLibrarySummary");
+  if (summary) summary.textContent = libraries.size > 1 ? "封装库：多库（见各行）" : common ? `封装库：${{common}}` : "";
+  for (const input of inputs) {{
+    const label = input.parentElement.querySelector("[data-footprint-library-label]");
+    if (!label) continue;
+    label.hidden = libraries.size <= 1;
+    label.textContent = footprintParts(footprintFieldValue(input)).library || "未指定库";
+  }}
+}}
+
 function fieldValue(tr, field) {{
   const input = tr.querySelector(`[data-field="${{field}}"]`);
-  return input ? input.value.trim() : "";
+  return input ? (field === "footprint" ? footprintFieldValue(input) : input.value.trim()) : "";
 }}
 
 function currentLcscCode(tr) {{
@@ -5114,13 +5147,16 @@ function fieldPayload(tr) {{
 function fieldDiff(row, field) {{
   const diff = (row.field_diffs || {{}})[field];
   if (!diff) return "";
-  const oldText = String(diff.old ?? "");
-  const newText = String(diff.new ?? "");
+  let oldText = String(diff.old ?? "");
+  let newText = String(diff.new ?? "");
   if (oldText === newText) return "";
-  const refs = diff.refs ? ` ${{diff.refs}}` : "";
+  if (field === "footprint" && footprintParts(oldText).library === footprintParts(newText).library) {{
+    oldText = footprintParts(oldText).name;
+    newText = footprintParts(newText).name;
+  }}
   const oldLabel = oldText || "(空)";
   const newLabel = newText || "(空)";
-  return `<div class="field-diff" title="${{esc(diff.refs || "")}} 未同步原理图">${{esc(oldLabel)}} -&gt; ${{esc(newLabel)}}${{esc(refs)}}</div>`;
+  return `<div class="field-diff" title="未同步原理图">${{esc(oldLabel)}} -&gt; ${{esc(newLabel)}}</div>`;
 }}
 
 function schematicSyncSummary(row) {{
@@ -5141,18 +5177,20 @@ const SYNC_FIELD_LABELS = {{
 
 function schematicSyncMarker(row, syncNeeded) {{
   if (!syncNeeded) return "";
-  const refs = String(row.field_changed_refs || row.refs || "").trim();
-  const label = refs ? `有改动，请同步原理图：${{refs}}` : "有改动，请同步原理图";
-  const details = Object.entries(row.field_diffs_by_ref || {{}}).map(([ref, fields]) => {{
-    const changes = Object.entries(fields || {{}}).map(([field, values]) =>
-      `${{SYNC_FIELD_LABELS[field] || field}}: ${{values.old || "(空)"}} → ${{values.new || "(空)"}}`);
-    return changes.length ? `<div><strong>${{esc(ref)}}</strong>：${{esc(changes.join("；"))}}</div>` : "";
-  }});
-  for (const ref of String(row.missing_schematic_refs || "").split(",").map(value => value.trim()).filter(Boolean)) {{
-    details.push(`<div><strong>${{esc(ref)}}</strong>：原理图缺失，未写入</div>`);
+  const changes = new Map();
+  const perRef = Object.values(row.field_diffs_by_ref || {{}});
+  for (const fields of perRef.length ? perRef : [row.field_diffs || {{}}]) {{
+    for (const [field, values] of Object.entries(fields || {{}})) {{
+      if (field === "lcsc_url" || field === "procurement_url") continue;
+      if (String(values.old || "") === String(values.new || "")) continue;
+      const key = JSON.stringify([field, values.old, values.new]);
+      changes.set(key, `${{SYNC_FIELD_LABELS[field] || field}}: ${{values.old || "(空)"}} → ${{values.new || "(空)"}}`);
+    }}
   }}
-  const detail = details.filter(Boolean).join("");
-  return `<div class="schematic-sync-marker" data-sync-marker title="${{esc(refs)}}"><strong>${{esc(label)}}</strong><div class="sync-row-diff">${{detail || "尚无逐位号字段差异"}}</div></div>`;
+  const details = [...changes.values()].map(change => `<div>${{esc(change)}}</div>`);
+  const missing = String(row.missing_schematic_refs || "").split(",").map(value => value.trim()).filter(Boolean);
+  if (missing.length) details.push(`<div>${{missing.length}} 个器件在原理图中缺失，未写入</div>`);
+  return `<div class="schematic-sync-marker" data-sync-marker><strong>有改动，请同步原理图</strong><div class="sync-row-diff">${{details.join("") || "物料信息已更新"}}</div></div>`;
 }}
 
 function schematicFieldReconcileNotice(row) {{
@@ -5634,7 +5672,7 @@ function renderRows(rows) {{
       <td data-col="quantity">${{esc(row.quantity || "")}}</td>
       <td data-col="comment"><textarea class="edit field-edit" data-field="comment" title="原始 Comment: ${{esc(row.original_comment_values || row.comment || "")}}">${{esc(row.comment)}}</textarea>${{fieldDiff(row, "comment")}}</td>
       <td data-col="value"><textarea class="edit field-edit mono" data-field="value" title="原始 Value: ${{esc(row.original_value_values || row.value || "")}}">${{esc(row.value)}}</textarea>${{fieldDiff(row, "value")}}</td>
-      <td data-col="footprint"><textarea class="edit field-edit mono" data-field="footprint" title="原始 Footprint: ${{esc(row.original_footprint_values || row.footprint || "")}}">${{esc(row.footprint)}}</textarea>${{fieldDiff(row, "footprint")}}</td>
+      <td data-col="footprint">${{footprintEditor(row)}}${{fieldDiff(row, "footprint")}}</td>
       <td data-col="c_code">
         <div>主料: <span class="mono" data-effective-code>${{esc(effective || "未选料")}}</span></div>
         <input class="edit mono" data-field="replacement_c_code" placeholder="替换C编码" value="${{esc(replacement)}}">
@@ -5656,6 +5694,7 @@ function renderRows(rows) {{
     </tr>`;
   }}).join("");
   rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
+  refreshFootprintLibraries();
   updateSplitPageChecks();
   applyColumnOrder();
   applyColumnVisibility();
@@ -6721,7 +6760,8 @@ function queueRowInput(input) {{
   const tr = input.closest("tr");
   if (!tr || input.dataset.composing === "1" || (input.value === input.dataset.savedValue && !rowEditQueue.has(rowInputKey(input)))) return;
   tr.classList.add("changed");
-  rowEditQueue.schedule(rowInputKey(input), {{tr, input, refs: tr.dataset.refs, field: input.dataset.field, value: input.value}});
+  rowEditQueue.schedule(rowInputKey(input), {{tr, input, refs: tr.dataset.refs, field: input.dataset.field, value: input.value,
+    resolvedValue: input.dataset.field === "footprint" ? footprintFieldValue(input) : input.value}});
 }}
 
 async function flushRowEdits() {{
@@ -6731,7 +6771,7 @@ async function flushRowEdits() {{
 
 async function persistRowInput(entry) {{
   const {{tr, input, refs, field}} = entry;
-  const value = entry.value.trim();
+  const value = (entry.resolvedValue ?? entry.value).trim();
   const payload = {{refs}};
   let endpoint = "/api/field_override";
   if (field === "replacement_c_code") {{
@@ -6748,6 +6788,12 @@ async function persistRowInput(entry) {{
   const data = await response.json();
   if (!response.ok || !data.ok) throw new Error(data.error || "保存失败");
   input.dataset.savedValue = entry.value;
+  if (field === "footprint" && input.value === entry.value) {{
+    const parts = footprintParts(value);
+    input.dataset.footprintLibrary = parts.library;
+    input.value = input.dataset.savedValue = parts.name;
+    input.title = `完整封装: ${{value}}；可输入 库名:封装名 切换库`;
+  }}
   const row = currentRows.find(row => row.refs === refs);
   if (row) {{
     if (field === "note") {{
@@ -6795,6 +6841,7 @@ async function persistRowInput(entry) {{
     }}
   }}
   if (field !== "note" && document.body.contains(tr)) markRowNeedsSchematicSync(tr, refs);
+  if (field === "footprint") refreshFootprintLibraries();
   if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");
   setState(`已自动保存 ${{refs}} 的 ${{field}}`, "saved");
 }}

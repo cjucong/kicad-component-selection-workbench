@@ -121,6 +121,37 @@ updateSavedFieldDiffs(row,['value']);
 assert.equal(row.field_changed_refs,'C3');
 ''')
 
+    def test_compact_sync_marker_and_qualified_footprint_values(self):
+        html = render_index(SimpleNamespace(config={}, project_root=ROOT))
+        helpers = html[html.index('function footprintParts'):html.index('function currentLcscCode')]
+        diffs = html[html.index('function fieldDiff'):html.index('function schematicFieldReconcileNotice')]
+        self.run_js("const assert=require('node:assert/strict'); const esc=s=>String(s).replaceAll('<','&lt;');"
+                    + helpers + diffs + r'''
+const code={old:'C123',new:'C456'}, url={old:'https://old.example',new:'https://new.example'};
+const row={refs:'C101,C102',field_changed_refs:'C101,C102',field_diffs_by_ref:{
+ C101:{lcsc_c_code:code,lcsc_url:url},C102:{lcsc_c_code:code,lcsc_url:url}}};
+const text=schematicSyncMarker(row,true);
+assert.equal((text.match(/C123 → C456/g)||[]).length,1);
+assert.doesNotMatch(text,/https:|C编码链接|C101|C102/);
+row.field_diffs_by_ref.C102.lcsc_c_code={old:'C789',new:'C456'};
+assert.match(schematicSyncMarker(row,true),/C789 → C456/);
+row.missing_schematic_refs='C103,C104';
+assert.match(schematicSyncMarker(row,true),/2 个器件在原理图中缺失/);
+assert.equal(schematicSyncMarker(row,false),'');
+assert.match(schematicSyncMarker({field_diffs_by_ref:{C1:{lcsc_url:url}}},true),/物料信息已更新/);
+assert.deepEqual(footprintParts('DSMU:1206'),{library:'DSMU',name:'1206'});
+let input={value:'0201',dataset:{footprintLibrary:'DSMU'}};
+assert.equal(fieldValue({querySelector:()=>input},'footprint'),'DSMU:0201');
+input.value='Other:0402';assert.equal(footprintFieldValue(input),'Other:0402');
+input.value='';assert.equal(footprintFieldValue(input),'');
+input={value:'0603',dataset:{}};assert.equal(footprintFieldValue(input),'0603');
+assert.match(footprintEditor({footprint:'DSMU:1206'}),/data-footprint-library="DSMU"/);
+assert.match(footprintEditor({footprint:'DSMU:1206'}),/>1206<\/textarea>/);
+assert.doesNotMatch(fieldDiff({field_diffs:{value:{old:'1',new:'2',refs:'C101'}}},'value'),/C101/);
+assert.doesNotMatch(fieldDiff({field_diffs:{footprint:{old:'DSMU:0603',new:'DSMU:0402'}}},'footprint'),/DSMU/);
+assert.match(fieldDiff({field_diffs:{footprint:{old:'DSMU:0603',new:'Other:0603'}}},'footprint'),/Other:0603/);
+''')
+
     def test_partial_field_save_preserves_notes_and_other_fields(self):
         from part_selection_server import PartSelectionApp
         from part_selection_overrides import save_overrides, load_overrides

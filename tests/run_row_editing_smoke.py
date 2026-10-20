@@ -40,6 +40,8 @@ const assert = require('node:assert/strict');
     assert.equal(await page.locator('#rows tr').count(),2);
     const selected = page.locator('#rows tr[data-refs="C103,C104,C105"]');
     assert.equal(await selected.count(),1);
+    assert.equal(await page.locator('#footprintLibrarySummary').innerText(),'封装库：Library');
+    assert.equal(await selected.locator('[data-field="footprint"]').inputValue(),'0603');
     await selected.evaluate(el=>window.originalEditedRow=el);
     await selected.locator('[data-field="value"]').fill('220nF');
     await page.waitForTimeout(1000);
@@ -61,7 +63,7 @@ const assert = require('node:assert/strict');
     assert.equal(await selected.locator('[data-col="value"] .field-diff').innerText(),beforeEnter);
     assert.equal(await selected.evaluate(el=>el===window.originalEditedRow),true);
     assert.equal(await page.locator('#rows tr[data-refs="C106"] [data-field="value"]').inputValue(),'100nF');
-    await selected.locator('[data-field="footprint"]').fill('Library:0805');
+    await selected.locator('[data-field="footprint"]').fill('0805');
     await selected.locator('[data-field="comment"]').fill('capacitor');
     await page.waitForTimeout(900);
     // Notes are hidden by default; type directly into the real control and dispatch input.
@@ -73,7 +75,15 @@ const assert = require('node:assert/strict');
     await page.reload();
     await page.waitForSelector('#rows tr[data-refs="C103,C104,C105"]');
     assert.equal(await selected.locator('[data-field="value"]').inputValue(),'220nF');
-    assert.equal(await selected.locator('[data-field="footprint"]').inputValue(),'Library:0805');
+    assert.equal(await selected.locator('[data-field="footprint"]').inputValue(),'0805');
+    assert.equal(await selected.evaluate(el=>fieldValue(el,'footprint')),'Library:0805');
+    const marker=await selected.locator('[data-sync-marker]').innerText();
+    assert.doesNotMatch(marker,/https?:|C编码链接|C103|C104|C105/);
+    assert.equal((marker.match(/C编码:.*C123456/g)||[]).length,1);
+    if (process.env.ROW_EDIT_SCREENSHOT) {
+      await selected.locator('[data-col="review"]').scrollIntoViewIfNeeded();
+      await page.screenshot({path:process.env.ROW_EDIT_SCREENSHOT});
+    }
     assert.equal(await selected.locator('[data-field="note"]').inputValue(),'已核对耐压');
     assert.match(await selected.locator('[data-effective-code]').innerText(),/C123456/);
     // IME composition must not save intermediate content or treat Enter as submit.
@@ -94,6 +104,22 @@ const assert = require('node:assert/strict');
     await page.reload();
     await page.waitForSelector('#rows tr[data-refs="C103,C104,C105"]');
     assert.equal(await value.inputValue(),'330nF');
+    // Mixed libraries remain explicit; editing another field never changes a footprint library.
+    const other=page.locator('#rows tr[data-refs="C106"]');
+    await other.locator('[data-field="footprint"]').fill('Other:0402');
+    await page.waitForTimeout(900);
+    assert.equal(await other.locator('[data-field="footprint"]').inputValue(),'0402');
+    await other.locator('[data-field="footprint"]').fill('0201');
+    await page.waitForTimeout(900);
+    assert.equal(await other.evaluate(el=>fieldValue(el,'footprint')),'Other:0201');
+    await page.reload();
+    await page.waitForSelector('#rows tr[data-refs="C106"]');
+    assert.match(await page.locator('#footprintLibrarySummary').innerText(),/多库/);
+    assert.equal(await other.locator('[data-footprint-library-label]').innerText(),'Other');
+    assert.equal(await selected.locator('[data-footprint-library-label]').innerText(),'Library');
+    await other.locator('[data-field="comment"]').fill('other capacitor');
+    await page.waitForTimeout(900);
+    assert.equal(await other.evaluate(el=>fieldPayload(el).field_overrides.footprint),'Other:0201');
     let failed = false;
     await page.route('**/api/field_override', async route=>{
       if (!failed) { failed=true; await route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({ok:false,error:'simulated disk failure'})}); }
@@ -184,6 +210,8 @@ def main():
                 assert all(records[ref]['field_overrides']['value'] == '330nF' for ref in ('C103','C104','C105'))
                 assert records['C106']['field_overrides']['value'] == '100nF'
                 assert all(records[ref]['review_status'] == 'Confirmed' for ref in ('C103','C104','C105'))
+                assert all(records[ref]['field_overrides']['footprint'] == 'Library:0805' for ref in ('C103','C104','C105'))
+                assert records['C106']['field_overrides']['footprint'] == 'Other:0201'
             finally:
                 process.terminate()
                 process.wait(timeout=10)
