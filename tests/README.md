@@ -62,7 +62,7 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 
 安装桌面依赖后运行 `python -B tests/run_desktop_lifecycle_smoke.py`，或通过 `--python "C:/path/to/desktop-runtime/Scripts/python.exe"` 指定已准备好依赖的解释器。它在外部临时合成工程打开隐藏的真实 WebView2 窗口，验证原生叉号触发行编辑保存、所属后台端口释放、重开数据保持、菜单重启及退出；正常清理测试宿主和工程，不触碰生产服务或 CAD。它不验证实际 KiCad 插件按钮、网络转换或真实工程同步。
 
-`python -B tests/run_row_editing_smoke.py` 使用 Node Playwright 启动无头 Chromium，在自动清理的合成工程验证页面多选合行、字段/备注/C 编码自动保存、输入法事件、失败重试和请求期间回改。Node 应能解析已安装的 playwright 包（可设置 NODE_PATH）；不对生产工程写入，也不执行真实 KiCad 保存关闭。
+`python -B tests/run_row_editing_smoke.py` 使用 Node Playwright 启动无头 Chromium，在自动清理的合成工程验证页面多选合行、字段/备注/C 编码自动保存、无 Enter 的自动分组/合行、输入法事件、失败重试和请求期间回改。Node 应能解析已安装的 playwright 包（可设置 NODE_PATH）；不对生产工程写入，也不执行真实 KiCad 保存关闭。
 
 `test_path_settings.py` 持续回归路径默认值、转换器检测、原子保存、版本冲突、复制保留、目标冲突、失败回滚及启动来源；`python -B tests/run_path_settings_smoke.py` 用真实 Chromium 和临时工程验证设置菜单、默认折叠、取消、浏览按钮、保存前迁移确认、显式单次 BOM 导入、原理图启动默认值及桌面/窄屏布局。可设置工程外绝对目录 `PATH_SETTINGS_SCREENSHOTS` 留存截图。浏览选择接口在浏览器测试中模拟，不会弹出真实 Windows 对话框，不代表已验证 WebView2 或 KiCad 原生窗口。
 

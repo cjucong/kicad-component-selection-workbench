@@ -1,5 +1,5 @@
 /* Serialize writes and retain edits made while an earlier request is in flight. */
-function createRowEditQueue({save, onError = () => {}, delay = 650}) {
+function createRowEditQueue({save, onError = () => {}, onIdle = () => {}, delay = 650}) {
   const edits = new Map(), paused = new Set();
   let timer = null, running = null;
   function stopTimer() { clearTimeout(timer); timer = null; }
@@ -10,7 +10,9 @@ function createRowEditQueue({save, onError = () => {}, delay = 650}) {
       if (!next) {
         const remaining = [...failed].find(([key, failure]) => edits.get(key) === failure.entry);
         if (remaining) throw remaining[1].error;
-        return;
+        await onIdle();
+        if (![...edits.keys()].some(key => !paused.has(key))) return;
+        continue;
       }
       const [key, entry] = next;
       try {

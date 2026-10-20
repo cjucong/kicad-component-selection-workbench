@@ -60,22 +60,25 @@ const assert = require('node:assert/strict');
 const {createRowEditQueue} = require('./tools/web/row-edits.js');
 (async () => {
   const writes = [], errors = [];
+  let idle = 0;
   let release;
   const q = createRowEditQueue({delay:5, save:async item => {
     writes.push(item.value);
     if (item.value==='first') await new Promise(r=>release=r);
     if (item.value==='fail') throw Error('disk full');
-  }, onError:e=>errors.push(e.message)});
+  }, onIdle:async()=>{ idle += 1; }, onError:e=>errors.push(e.message)});
   q.schedule('value',{value:'100'});
   q.schedule('value',{value:'100nF'});
   await new Promise(r=>setTimeout(r,20));
   assert.deepEqual(writes,['100nF']);
+  assert.equal(idle,1);
   q.schedule('value',{value:'first'});
   const pending = q.flush();
   await Promise.resolve();
   q.schedule('value',{value:'newer'});
   release(); await pending;
   assert.deepEqual(writes,['100nF','first','newer']);
+  assert.equal(idle,2);
   q.pause('comment');
   q.schedule('note',{value:'memo'});
   await q.flush();

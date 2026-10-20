@@ -5303,6 +5303,34 @@ async function saveFieldEdits(tr) {{
   setState(`字段已保存 ${{anchor.refs}}`, "saved");
 }}
 
+let rowsNeedRegroup = false;
+let rowGroupRefreshAnchor = null;
+
+async function regroupRowsAfterAutosave() {{
+  if (!rowsNeedRegroup) return;
+  if (rowEditQueue.pending) return;
+  const anchor = rowGroupRefreshAnchor;
+  rowsNeedRegroup = false;
+  rowGroupRefreshAnchor = null;
+  const version = rowsLoadVersion, bom = bomSelect.value || "";
+  try {{
+    const res = await fetch(`/api/rows?refs=${{encodeURIComponent(refsInput.value.trim())}}&bom=${{encodeURIComponent(bom)}}&stock=0`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "重新整理分组失败");
+    if (version !== rowsLoadVersion || bom !== (bomSelect.value || "") || rowEditQueue.pending) {{
+      if (rowEditQueue.pending) {{ rowsNeedRegroup = true; rowGroupRefreshAnchor ||= anchor; }}
+      return;
+    }}
+    const signature = rows => rows.map(row => row.refs).sort().join("|");
+    if (signature(data.rows) !== signature(currentRows)) {{
+      renderRows(data.rows);
+      restoreRowAnchor(anchor);
+    }}
+  }} catch (error) {{
+    setState(`自动保存成功，但刷新分组失败：${{error.message || String(error)}}`, "error");
+  }}
+}}
+
 async function adoptSchematicFields(tr, button) {{
   const anchor = rowAnchor(tr);
   const fields = String(button?.dataset.fields || "").split(",").map(item => item.trim()).filter(Boolean);
@@ -6748,6 +6776,7 @@ async function loadBomOptions() {{
 
 const rowEditQueue = createRowEditQueue({{
   save: persistRowInput,
+  onIdle: regroupRowsAfterAutosave,
   onError: error => setState(`自动保存失败，编辑内容已保留：${{error.message}}`, "error")
 }});
 
@@ -6760,6 +6789,10 @@ function queueRowInput(input) {{
   const tr = input.closest("tr");
   if (!tr || input.dataset.composing === "1" || (input.value === input.dataset.savedValue && !rowEditQueue.has(rowInputKey(input)))) return;
   tr.classList.add("changed");
+  if (["comment", "value", "footprint"].includes(input.dataset.field)) {{
+    rowsNeedRegroup = true;
+    rowGroupRefreshAnchor ||= rowAnchor(tr);
+  }}
   rowEditQueue.schedule(rowInputKey(input), {{tr, input, refs: tr.dataset.refs, field: input.dataset.field, value: input.value,
     resolvedValue: input.dataset.field === "footprint" ? footprintFieldValue(input) : input.value}});
 }}
