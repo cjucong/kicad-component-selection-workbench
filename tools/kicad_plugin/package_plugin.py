@@ -21,7 +21,7 @@ ROOT = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
 from part_selection_runtime import runtime_directory
 IDENTIFIER = "com.smu.part-selection"
-from updater import VERSION
+from updater import VERSION, REPOSITORY
 CORE_FILES = (
     "part_selection_server.py", "part_selection_helper.py", "part_selection_overrides.py",
     "part_selection_library.py", "part_selection_footprints.py", "part_selection_runtime.py", "part_selection_paths.py", "part_selection_settings.py", "part_selection_lifecycle.py",
@@ -169,6 +169,26 @@ def build_package(output: Path, **bundle_options) -> Path:
     return output
 
 
+def build_update_manifest(archive_path: Path) -> Path:
+    archive_path = Path(archive_path).resolve()
+    filename = f'kicad-component-selection-workbench-v{VERSION}.zip'
+    if archive_path.name != filename:
+        raise ValueError('Release ZIP name must match the current version')
+    with zipfile.ZipFile(archive_path) as archive:
+        if json.loads(archive.read('plugins/build-info.json'))['version'] != VERSION:
+            raise ValueError('Release ZIP version differs from the manifest')
+        if any(name.startswith('plugins/third_party/') for name in archive.namelist()):
+            raise ValueError('Online update ZIP must not contain the converter')
+    data = archive_path.read_bytes()
+    manifest = {'identifier':IDENTIFIER, 'tag_name':'v'+VERSION, 'draft':False, 'prerelease':False,
+        'body':'KiCad Component Selection Workbench '+VERSION,
+        'assets':[{'name':filename, 'size':len(data), 'digest':'sha256:'+hashlib.sha256(data).hexdigest(),
+            'browser_download_url':f'https://github.com/{REPOSITORY}/releases/download/v{VERSION}/{filename}'}]}
+    output = archive_path.parent / 'workbench-update.json'
+    output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+    return output
+
+
 def install_plugin(plugin_directory: Path, backup_directory: Path, **bundle_options) -> Path:
     directory = Path(plugin_directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -232,6 +252,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--update-manifest", action="store_true", help="Write the official release update manifest alongside --output")
     parser.add_argument("--plugin-dir", type=Path, help="Custom KiCad user plugin directory for --install")
     parser.add_argument("--kicad-version", choices=["10.0"], default="10.0")
     parser.add_argument("--converter-runtime", type=Path, help="Pinned Windows converter runtime directory (full bundle)")
@@ -241,6 +262,8 @@ def main() -> int:
     bundle = {"converter_runtime": args.converter_runtime, "converter_source": args.converter_source, "converter_notices": args.converter_notices}
     output = args.output or runtime_directory(ROOT) / f"part-selection-{VERSION}.zip"
     print(build_package(output, **bundle))
+    if args.update_manifest:
+        print(build_update_manifest(output))
     if args.install:
         print(install_plugin(args.plugin_dir or user_plugin_directory(args.kicad_version), runtime_directory(ROOT) / "plugin_install_backups", **bundle))
     return 0

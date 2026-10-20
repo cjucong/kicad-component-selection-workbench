@@ -50,9 +50,11 @@ python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro
 
 更新首选项按本机插件安装位置保存，不放进具体工程。下载、暂存与安装备份位于 `%LOCALAPPDATA%/KiCadPartSelection/plugin-updates/<安装路径哈希>/`。更新仅替换已安装的插件，不修改源码仓库、原理图、PCB、选料记录、配置、工程库或既有转换器；原工程和配置参数在重启时保留。多工程共用安装时，请先关闭其他工作台再安装，不结束 KiCad。下载或校验失败保留当前窗口和安装；文件发布失败恢复旧目录并保留完整备份。已安装成功但启动失败时，可退出工作台后用备份目录或上一版本包手动恢复。
 
-只接收本仓库 GitHub Releases 的正式版本，不跟随每次 main 提交，不下载预发布或降级版本。发布 ZIP 名称必须为 `kicad-component-selection-workbench-v<版本号>.zip`，GitHub 资产 SHA-256、ZIP 内容和 build-info 版本须一致；校验缺失、路径越界或尝试覆盖转换器/工程文件时拒绝安装。网络或代理不可达会提示重试，不改系统代理。源码窗口可查看版本，但须用 Git 更新后运行安装器。首次安装本更新功能仍需手动更新一次。
+只接收本仓库 GitHub Releases 的正式版本，不跟随每次 main 提交，不下载预发布或降级版本。优先读取正式发布资产 `workbench-update.json`，不依赖 GitHub REST API 的匿名额度；旧版本没有清单时才兼容查询 API。启动检查结果在工程外缓存 6 小时，手动检查至少间隔 1 分钟，重复打开工作台不会连续消耗请求。无需配置 GitHub Token，也不读取用户凭据。
 
-维护者修改 `tools/kicad_plugin/updater.py` 的 `VERSION`，测试通过、提交并推送后创建对应 `vX.Y.Z` 标签；`.github/workflows/release.yml` 在 Windows 运行回归、打包并发布同名 ZIP。包含第三方转换器的完整分发包仍按转换器文档准备，本在线代码更新包不重复分发或升级转换器。
+发布 ZIP 名称必须为 `kicad-component-selection-workbench-v<版本号>.zip`，发布清单或旧版 API 提供的 SHA-256、ZIP 内容和 build-info 版本须一致；校验缺失、路径越界或尝试覆盖转换器/工程文件时拒绝安装。网络或代理不可达会提示重试，不改系统代理。若仍显示 GitHub 拒绝访问，先确认 GitHub 发布页是否能正常打开，不要连续重试；也可按下节手动安装。源码窗口可查看版本，但须用 Git 更新后运行安装器。首次安装本更新功能仍需手动更新一次。
+
+维护者修改 `tools/kicad_plugin/updater.py` 的 `VERSION`，测试通过、提交并推送后创建对应 `vX.Y.Z` 标签；`.github/workflows/release.yml` 在 Windows 运行回归，生成同名 ZIP 和更新清单，上传草稿后一起公开发布。包含第三方转换器的完整分发包仍按转换器文档准备，本在线代码更新包不重复分发或升级转换器。
 
 ### 手动更新和卸载
 

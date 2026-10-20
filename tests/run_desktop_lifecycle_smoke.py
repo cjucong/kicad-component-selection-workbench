@@ -33,7 +33,7 @@ def child(root, phase):
                     time.sleep(0.1)
                 if phase=='close':
                     window.evaluate_js("document.querySelector('#openPluginUpdates').click(); null")
-                    while not window.evaluate_js("document.querySelector('#pluginVersion').textContent.includes('0.1.4')"):
+                    while not window.evaluate_js("document.querySelector('#pluginVersion').textContent.includes('0.1.5')"):
                         if time.monotonic()>deadline:
                             raise RuntimeError('Native update bridge did not respond')
                         time.sleep(0.1)

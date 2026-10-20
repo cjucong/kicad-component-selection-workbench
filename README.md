@@ -27,6 +27,8 @@ python -B tools/kicad_plugin/desktop.py --config "E:/path/to/project/BOM/part_se
 
 通过“设置 → 插件更新…”检查 GitHub 正式发布版本、选择“更新并重启”，或启用“自动下载，退出工作台后更新”。默认仅启动时检查提醒，不自动安装；也可关闭自动检查。更新校验下载包 SHA-256、版本及插件标识，保留转换器与工程数据，目录切换失败恢复旧安装。源码运行使用 Git 更新，不通过菜单覆盖。[更新说明](tools/docs/kicad-plugin.md#在线更新)
 
+更新检查优先读取 GitHub 正式发布下载清单，不依赖 REST API 匿名额度，无需 Token；启动检查缓存 6 小时，手动检查间隔至少 1 分钟。
+
 ## 工程数据与路径
 
 保留已有 `BOM/part_selection_config.json`，无需把工程复制到插件仓库。命令显式指定工程或配置；同时指定时两者解析出的工程根目录必须一致。后端不从插件源码父目录猜测工程。

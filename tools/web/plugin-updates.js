@@ -51,9 +51,9 @@
       mode.disabled = !state?.installed;
     }
   }
-  const check = async () => {
+  const check = async (force = true) => {
     notify('正在检查正式发布版本…');
-    const result = await call('check');
+    const result = await call('check', force);
     render(result);
     if (!result.available && !result.message) notify('已是最新正式版本。');
     return result;
@@ -64,7 +64,7 @@
     busy(async () => render(await call('status')));
   });
   dialog.querySelectorAll('[data-close-update]').forEach(button => button.addEventListener('click', () => dialog.close()));
-  checkButton.addEventListener('click', () => busy(check));
+  checkButton.addEventListener('click', () => busy(() => check(true)));
   mode.addEventListener('change', () => busy(async () => {
     const result = await call('preferences', mode.value);
     render(result);
@@ -91,7 +91,7 @@
       const current = await call('status');
       render(current);
       if (!current.installed || current.mode === 'off') return;
-      const update = await check();
+      const update = await check(false);
       if (update.available && update.mode === 'auto') {
         render(await call('prepare'));
         setState('新版插件已下载，正常退出工作台后自动安装', 'status');

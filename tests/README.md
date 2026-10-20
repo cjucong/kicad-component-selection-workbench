@@ -21,7 +21,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_footprint_choices.py`、`test_part_selection_library.py` | 封装对比、库事务与回滚 |
 | `test_kicad_*`、`test_start_part_selection_tool.py` | 桌面/安装入口、工程归属和忙碌保护 |
 | `test_desktop_lifecycle.py` | 退出授权、并发保护、真实宿主进程退出监视及前端保存失败/重试 |
-| `test_plugin_updates.py` | 正式发布检查、版本/哈希/ZIP 安全、转换器保留、安装回滚及多宿主保护 |
+| `test_plugin_updates.py` | 正式发布清单、匿名额度规避与检查缓存、版本/哈希/ZIP 安全、转换器保留、安装回滚及多宿主保护 |
 | `test_test_artifacts.py` | 临时产物清理 |
 | `run_*_smoke.py` | 按需真实窗口、安装包或联网转换冒烟 |
 

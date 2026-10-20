@@ -14,7 +14,7 @@ from updater import PluginUpdater, REPOSITORY, VERSION
 
 def release(version='9.0.0'):
     name = f'kicad-component-selection-workbench-v{version}.zip'
-    return {'tag_name': 'v'+version, 'draft': False, 'prerelease': False,
+    return {'identifier':'com.smu.part-selection', 'tag_name': 'v'+version, 'draft': False, 'prerelease': False,
         'html_url': f'https://github.com/{REPOSITORY}/releases/tag/v{version}',
         'body': 'Verified test release', 'assets': [{'name': name,
         'browser_download_url': f'https://github.com/{REPOSITORY}/releases/download/v{version}/{name}',
@@ -189,3 +189,80 @@ def test_rate_limit_is_not_misreported_as_no_release(installed, monkeypatch, cod
         installed.check()
     assert '访问频率限制' in installed.status()['last_error']
     assert not installed.status()['available']
+
+
+def test_release_manifest_avoids_the_api_when_its_quota_is_exhausted(installed, monkeypatch):
+    calls = []
+    def fetch(url):
+        calls.append(url)
+        assert 'api.github.com' not in url, 'The public API quota is exhausted'
+        return release()
+    monkeypatch.setattr(installed, '_json', fetch)
+    assert installed.check()['available']
+    assert calls==[f'https://github.com/{REPOSITORY}/releases/latest/download/workbench-update.json']
+
+
+def test_successful_check_is_cached_across_workbench_restarts(installed, monkeypatch):
+    calls = []
+    def fetch(url):
+        calls.append(url)
+        return release()
+    monkeypatch.setattr(installed, '_json', fetch)
+    installed.check()
+    reopened = PluginUpdater(installed.target, installed.home)
+    monkeypatch.setattr(reopened, '_json', lambda url: pytest.fail('Cached startup must not query GitHub'))
+    assert reopened.check(force=False)['available']
+    assert len(calls)==1
+
+
+def test_manual_repeated_click_uses_short_cache_then_can_refresh(installed, monkeypatch):
+    import updater
+    now = [100000.0]
+    monkeypatch.setattr(updater.time, 'time', lambda: now[0])
+    calls = []
+    monkeypatch.setattr(installed, '_json', lambda url: calls.append(url) or release())
+    installed.check()
+    installed.check(force=True)
+    assert len(calls)==1
+    now[0] += 61
+    installed.check(force=True)
+    assert len(calls)==2
+
+
+def test_manifest_failure_does_not_fall_back_to_unverified_update(installed, monkeypatch):
+    info = release()
+    info['identifier']='other.plugin'
+    monkeypatch.setattr(installed, '_json', lambda url: info)
+    with pytest.raises(ValueError, match='标识'):
+        installed.check()
+
+
+def test_old_release_without_manifest_falls_back_to_api(installed, monkeypatch):
+    from urllib.error import HTTPError
+    calls = []
+    def fetch(url):
+        calls.append(url)
+        if 'api.github.com' not in url:
+            raise HTTPError(url,404,'missing',{},None)
+        return release()
+    monkeypatch.setattr(installed, '_json', fetch)
+    assert installed.check()['available']
+    assert len(calls)==2 and 'api.github.com' in calls[1]
+
+
+def test_built_release_manifest_matches_the_actual_archive(installed):
+    from package_plugin import build_package, build_update_manifest
+    archive = build_package(installed.home / f'kicad-component-selection-workbench-v{VERSION}.zip')
+    manifest = json.loads(build_update_manifest(archive).read_text(encoding='utf-8'))
+    asset = manifest['assets'][0]
+    assert asset['digest']=='sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert asset['size']==archive.stat().st_size
+    assert manifest['identifier']=='com.smu.part-selection'
+    assert asset['browser_download_url']==f'https://github.com/{REPOSITORY}/releases/download/v{VERSION}/{archive.name}'
+
+
+def test_rechecking_keeps_an_already_verified_pending_download(installed, monkeypatch):
+    prepare_release(installed, monkeypatch)
+    installed.prepare()
+    assert installed.check()['ready']
+    assert installed.apply()['version']=='9.0.0'

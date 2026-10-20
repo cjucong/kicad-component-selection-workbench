@@ -9,12 +9,13 @@ import re
 import shutil
 import stat
 import threading
+import time
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import zipfile
 
-VERSION = '0.1.4'
+VERSION = '0.1.5'
 REPOSITORY = 'cjucong/kicad-component-selection-workbench'
 IDENTIFIER = 'com.smu.part-selection'
 MAX_DOWNLOAD = 40 * 1024 * 1024
@@ -83,7 +84,7 @@ class PluginUpdater:
                 'last_checked':self.last_checked}
 
     def _request(self, url, limit):
-        request = Request(url, headers={'Accept':'application/vnd.github+json',
+        request = Request(url, headers={'Accept':'application/octet-stream' if url.endswith('.zip') else 'application/json',
             'User-Agent':'KiCad-Component-Selection-Workbench/'+VERSION})
         with urlopen(request, timeout=20) as response:
             final = urlsplit(response.geturl())
@@ -99,20 +100,47 @@ class PluginUpdater:
     def _json(self, url):
         return json.loads(self._request(url, 2 * 1024 * 1024))
 
-    def check(self):
+    def _latest_release(self):
+        try:
+            release = self._json(f'https://github.com/{REPOSITORY}/releases/latest/download/workbench-update.json')
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+            # Older releases predate the published manifest. Never skip validation.
+            return self._json(f'https://api.github.com/repos/{REPOSITORY}/releases/latest')
+        if not isinstance(release, dict) or release.get('identifier') != IDENTIFIER:
+            raise ValueError('更新清单插件标识不匹配')
+        return release
+
+    def _cached_release(self, force):
+        try:
+            with (self.home / 'release-cache.json').open(encoding='utf-8') as stream:
+                data = json.loads(stream.read(2 * 1024 * 1024))
+            age = time.time() - data['checked_at']
+            if 0 <= age < (60 if force else 6 * 60 * 60) and isinstance(data['release'], dict):
+                return data
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return None
+
+    def check(self, force=True):
+        if type(force) is not bool:
+            raise ValueError('检查更新参数无效')
         with self.lock:
             self.last_error = ''
+            previous_offer, previous_pending = self.offer, self.pending
             self.offer = None
-            self.pending = None
             try:
+                cached = self._cached_release(force)
                 try:
-                    release = self._json(f'https://api.github.com/repos/{REPOSITORY}/releases/latest')
+                    release = cached['release'] if cached else self._latest_release()
                 except HTTPError as exc:
                     if exc.code in (403, 429):
                         raise ValueError('GitHub 暂时拒绝请求或已达到访问频率限制，请稍后重试；当前版本不受影响') from exc
                     if exc.code != 404:
                         raise
                     self.offer = None
+                    self.pending = None
                     self.last_checked = datetime.now(timezone.utc).isoformat()
                     return {**self.status(), 'message':'尚无正式发布版本；当前安装可继续使用'}
                 version = release.get('tag_name', '').removeprefix('v')
@@ -136,9 +164,23 @@ class PluginUpdater:
                     self.offer = {'version':version,'url':expected,'sha256':digest[7:], 'size':size,
                         'notes':str(release.get('body') or '')[:12000],
                         'release_url':f'https://github.com/{REPOSITORY}/releases/tag/v{version}'}
-                self.last_checked = datetime.now(timezone.utc).isoformat()
-                return self.status()
+                checked_at = cached['checked_at'] if cached else time.time()
+                self.last_checked = datetime.fromtimestamp(checked_at, timezone.utc).isoformat()
+                if self.offer != previous_offer:
+                    self.pending = None
+                else:
+                    self.pending = previous_pending
+                if not cached:
+                    try:
+                        atomic_json(self.home / 'release-cache.json', {'checked_at':checked_at, 'release':release})
+                    except OSError:
+                        pass  # A cache write failure must not misreport a successful network check.
+                result = self.status()
+                if cached:
+                    result['message'] = '使用最近的更新检查结果；启动检查缓存 6 小时，手动检查间隔至少 1 分钟。'
+                return result
             except Exception as exc:
+                self.offer, self.pending = previous_offer, previous_pending
                 self.last_error = str(exc)
                 raise
 

@@ -98,7 +98,9 @@ class DesktopBridge:
             if action=='status':
                 return updater.status()
             if action=='check':
-                return updater.check()
+                if value is not None and type(value) is not bool:
+                    raise ValueError('检查更新参数无效')
+                return updater.check(force=value is not False)
             if action=='preferences':
                 return updater.preferences(value)
             if action=='prepare':

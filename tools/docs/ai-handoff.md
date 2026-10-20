@@ -32,6 +32,8 @@ WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（sta
 
 后台监视 `--desktop-owner-pid`，Windows 使用进程句柄避免 PID 重用；宿主异常退出后等待零请求及任务空闲再停止服务。旧服务没有该接口，需要首次升级时人工核对后退出，不能绕过归属校验批量结束 Python 进程。
 
+更新清单优先使用固定仓库 releases/latest/download/workbench-update.json，只有 HTTP 404 才回退旧版 REST API，不在解析/校验失败时降级绕过。缓存 release-cache.json 位于 updater.home，仍重做字段校验；启动缓存 6 小时，手动最短 60 秒。检查时保留同版本已校验的 pending 下载，查询失败不丢失待安装包。发布工作流先上传 ZIP 和清单到草稿，完成后公开。
+
 ```text
 显式工程/配置
   -> 配置 + 当前原理图/BOM + overrides + stock_cache
