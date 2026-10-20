@@ -16,7 +16,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 
 | 测试类别 | 范围 |
 | --- | --- |
-| `test_auto_column_widths.py`、`test_workbench_toolbar.py` | 自动列宽按钮仅位于列设置面板，复用主表列宽计算与持久化，隐藏列及候选表配置不受影响 |
+| `test_auto_column_widths.py`、`test_workbench_toolbar.py` | 自动列宽按钮位置、列宽计算与持久化，以及整页生成 JavaScript 的语法校验（包括 Python 字符串转义） |
 | `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 搜索、筛选、库存、订货与请求竞态 |
 | `test_*selection*`、`test_selected_schematic_sync.py` | 配置、主料一致性、记录及同步范围 |
 | `test_path_settings.py`、`test_part_selection_overrides.py` | 更换型号网页搜索偏好、确认时间戳持久化及路径设置 |
@@ -60,6 +60,8 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 临时 ZIP、解压文件、截图、报告、下载、字节码和测试缓存不得写入源码或正式工程，不得提交。稳定夹具应最小化并说明用途，禁止为测试复制真实工程或其 `.git`。
 
 ## 真实冒烟
+
+生命周期冒烟还注入退出脚本缺失、列表未加载的场景，验证空白窗口可正常关闭；失败时输出页面地址、加载状态、行数及桥接可用性。测试子进程固定 UTF-8，避免 Windows 输出解码错误掩盖实际故障。
 
 安装桌面依赖后运行 `python -B tests/run_desktop_lifecycle_smoke.py`，或通过 `--python "C:/path/to/desktop-runtime/Scripts/python.exe"` 指定已准备好依赖的解释器。它在外部临时合成工程打开隐藏的真实 WebView2 窗口，验证原生叉号触发行编辑保存、所属后台端口释放、重开数据保持、菜单重启及退出；正常清理测试宿主和工程，不触碰生产服务或 CAD。它不验证实际 KiCad 插件按钮、网络转换或真实工程同步。
 

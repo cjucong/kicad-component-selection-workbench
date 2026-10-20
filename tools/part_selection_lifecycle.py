@@ -129,7 +129,20 @@ class DesktopLifecycle:
             return True
         def prepare():
             try:
-                self.window.evaluate_js('window.requestDesktopExit(false)')
+                prepared = self.window.evaluate_js(
+                    'typeof window.requestDesktopExit === "function" '
+                    '? (window.requestDesktopExit(false), true) : false')
+                if prepared is False:
+                    # A script parse error can leave static chrome but no editable rows.
+                    empty = self.window.evaluate_js(
+                        '!!document.querySelector("#rows") '
+                        '&& document.querySelector("#rows").children.length === 0 '
+                        '&& !document.querySelector("[data-field], [data-composing=\\"1\\"]")')
+                    if empty is True:
+                        logging.warning('Closing uninitialized workbench without editable rows')
+                        self.finish_exit(False)
+                    else:
+                        logging.error('Exit handler unavailable; editable workbench retained')
             except Exception:
                 logging.exception('Could not prepare workbench close; window retained')
         # WinForms invokes Closing on its UI thread; waiting for JS here deadlocks.

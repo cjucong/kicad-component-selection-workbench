@@ -71,6 +71,15 @@ class WorkbenchToolbarTest(unittest.TestCase):
             self.assertIn(f'id="{id_}"', status)
         self.assertIn('class="workbench-chrome"', self.html)
 
+    @unittest.skipUnless(shutil.which("node"), "Node is required for full page script validation")
+    def test_entire_rendered_page_script_is_valid_javascript(self):
+        scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', self.html, re.S)
+        self.assertTrue(scripts)
+        result = subprocess.run([shutil.which("node"), "--check"],
+                                input="\n".join(scripts), capture_output=True,
+                                text=True, encoding="utf-8", timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_toolbar_dropdowns_stack_above_filter_controls(self):
         toolbar = re.search(r'\.toolbar \{([^}]+)\}', self.html).group(1)
         filters = re.search(r'\.filter-bar \{([^}]+)\}', self.html).group(1)

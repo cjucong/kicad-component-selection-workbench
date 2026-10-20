@@ -29,9 +29,13 @@ def child(root, phase):
                 deadline = time.monotonic()+30
                 while not window.evaluate_js("document.querySelectorAll('#rows tr').length===1 && !!window.pywebview?.api?.finish_exit"):
                     if time.monotonic()>deadline:
-                        raise RuntimeError('Workbench did not load')
+                        state = window.evaluate_js("JSON.stringify({url:location.href,ready:document.readyState,rows:document.querySelectorAll('#rows tr').length,state:document.querySelector('#state')?.textContent,bridge:!!window.pywebview?.api?.finish_exit,text:document.body.innerText.slice(0,1000)})")
+                        raise RuntimeError('Workbench did not load: '+str(state))
                     time.sleep(0.1)
-                if phase=='close':
+                if phase=='uninitialized':
+                    window.evaluate_js("delete window.requestDesktopExit; document.querySelector('#rows').replaceChildren(); null")
+                    window.destroy()
+                elif phase=='close':
                     window.evaluate_js("document.querySelector('#openPluginUpdates').click(); null")
                     while not window.evaluate_js("document.querySelector('#pluginVersion').textContent.includes('0.1.5')"):
                         if time.monotonic()>deadline:
@@ -96,10 +100,10 @@ def main():
         (root / 'settings.json').write_text(json.dumps({'schematic_dir':'.','source_bom':'__schematic__'}))
         flags = {'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}
         env = {**os.environ,'PYTHONDONTWRITEBYTECODE':'1',
-               'KICAD_PART_SELECTION_HOME':str(root.parent / 'desktop')}
-        for phase in ('close','restart'):
+               'KICAD_PART_SELECTION_HOME':str(root.parent / 'desktop'), 'PYTHONIOENCODING':'utf-8'}
+        for phase in ('close','restart','uninitialized'):
             result = subprocess.run([str(args.python),'-B',str(Path(__file__).resolve()),'--child',str(root),'--phase',phase],
-                capture_output=True,text=True,encoding='utf-8',timeout=90,env=env,**flags)
+                capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90,env=env,**flags)
             if result.returncode:
                 raise AssertionError(result.stdout+'\n'+result.stderr)
             assert (root / (phase+'.ok')).exists()
@@ -109,6 +113,7 @@ def main():
         assert (root / 'sample.kicad_sch').read_text()==schematic
         print(json.dumps({'real_webview2':'passed','native_close_autosave':'passed',
                           'port_release_and_reopen':'passed','restart_and_exit_menu':'passed',
+                          'uninitialized_window_close':'passed',
                           'production_cad_written':False}))
 
 

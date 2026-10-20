@@ -5716,7 +5716,7 @@ function renderRows(rows) {{
       .map(item => item.review_confirmed_at).filter(Boolean))];
     const confirmedRefs = Object.entries(row.per_ref_selection || {{}})
       .filter(([, item]) => item.review_confirmed_at);
-    const confirmedAtTitle = confirmedRefs.map(([ref, item]) => `${{ref}}: ${{item.review_confirmed_at}}`).join("\n");
+    const confirmedAtTitle = confirmedRefs.map(([ref, item]) => `${{ref}}: ${{item.review_confirmed_at}}`).join("\\n");
     const confirmedAtText = confirmedAtValues.length === 1
       ? `${{reviewStatus === "Confirmed" ? "确认于" : "上次确认于"}} ${{formatReviewTime(confirmedAtValues[0])}}`
       : confirmedAtValues.length > 1 ? "各位号确认时间不同" : "";

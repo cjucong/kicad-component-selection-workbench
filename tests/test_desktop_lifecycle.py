@@ -120,7 +120,42 @@ def test_native_close_is_deferred_until_frontend_saved():
     window.evaluate_js.side_effect = lambda script:dispatched.set()
     assert lifecycle.on_closing() is False
     assert dispatched.wait(2)
-    window.evaluate_js.assert_called_once_with('window.requestDesktopExit(false)')
+    assert window.evaluate_js.call_count == 1
+    assert 'window.requestDesktopExit(false)' in window.evaluate_js.call_args.args[0]
+    window.destroy.assert_not_called()
+
+
+@pytest.mark.parametrize('empty', [True, False])
+def test_uninitialized_close_only_stops_owned_backend_without_editable_rows(empty):
+    lifecycle, window = controller()
+    evaluated = threading.Event()
+    def evaluate(script):
+        if 'typeof window.requestDesktopExit' in script:
+            return False
+        evaluated.set()
+        return empty
+    window.evaluate_js.side_effect = evaluate
+    with patch.object(lifecycle, '_stop_backend') as stop:
+        lifecycle.on_closing()
+        assert evaluated.wait(2)
+        # Wait for the close worker, not merely its last evaluation.
+        for worker in threading.enumerate():
+            if worker.name == 'desktop-close':
+                worker.join(timeout=2)
+        assert stop.call_count == int(empty)
+        assert window.destroy.call_count == int(empty)
+    assert lifecycle.allow_close is empty
+
+
+def test_uninitialized_close_still_retains_window_when_backend_busy():
+    lifecycle, window = controller()
+    window.evaluate_js.side_effect = [False, True]
+    with patch.object(lifecycle, '_stop_backend', side_effect=ValueError('busy')):
+        lifecycle.on_closing()
+        for worker in threading.enumerate():
+            if worker.name == 'desktop-close':
+                worker.join(timeout=2)
+    assert not lifecycle.allow_close
     window.destroy.assert_not_called()
 
 
