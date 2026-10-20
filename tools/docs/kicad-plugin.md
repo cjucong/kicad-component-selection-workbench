@@ -104,7 +104,7 @@ python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro
 使用既有配置：
 
 ```powershell
-python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json"
+python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/选料工作台/工作台配置.json"
 ```
 
 中文入口 tools/启动器件选料助手.bat 转发 --project/--config，无参数弹工程选择器。--project 为绝对工程目录或文件；--config 解析 project_root，两者同时提供必须一致。私有桌面环境重新启动时保留 --config。只支持独立工作台，不提供浏览器模式或依赖失败后的浏览器回退；外部商城快捷页面不受影响。

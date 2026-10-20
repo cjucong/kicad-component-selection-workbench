@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
+from part_selection_overrides import DATA_DIRECTORY, DATA_FILE_NAMES
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -63,7 +64,9 @@ def read_target_refs(project_root: Path, refs_arg: str | None, input_path: Path 
     if input_path and input_path.exists():
         raw = input_path.read_text(encoding="utf-8-sig")
     if not raw:
-        default_file = project_root / "BOM" / "part_selection_input.txt"
+        default_file = project_root / DATA_DIRECTORY / DATA_FILE_NAMES['input_refs']
+        if not default_file.exists():
+            default_file = project_root / "BOM" / "part_selection_input.txt"
         raw = default_file.read_text(encoding="utf-8-sig") if default_file.exists() else DEFAULT_REFS
 
     refs: list[str] = []
@@ -914,10 +917,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate LCSC search helper files for KiCad designators.")
     parser.add_argument("--project", type=Path, required=True, help="KiCad project directory")
     parser.add_argument("--refs", help="Comma/space separated refs. Overrides --input.")
-    parser.add_argument("--input", type=Path, help="Text file containing refs. Defaults to BOM/part_selection_input.txt.")
+    parser.add_argument("--input", type=Path, help=f"Text file containing refs. Defaults to {DATA_DIRECTORY}/{DATA_FILE_NAMES['input_refs']}.")
     parser.add_argument("--bom", type=Path, help=f"Source BOM CSV. Defaults to BOM/{BOM_SOURCE}.")
     parser.add_argument("--lcsc-bom", type=Path, help="Latest exported LCSC BOM CSV. Defaults to newest BOM/*LCSC*.csv.")
-    parser.add_argument("--out-dir", type=Path, help="Output directory. Defaults to BOM/.")
+    parser.add_argument("--out-dir", type=Path, help=f"Output directory. Defaults to {DATA_DIRECTORY}/.")
     return parser.parse_args()
 
 
@@ -928,13 +931,13 @@ def main() -> int:
     refs = read_target_refs(project_root, args.refs, args.input)
     source_bom = args.bom or (bom_dir / BOM_SOURCE)
     lcsc_bom = args.lcsc_bom if args.lcsc_bom else find_latest_lcsc_csv(bom_dir)
-    out_dir = args.out_dir or bom_dir
+    out_dir = args.out_dir or project_root / DATA_DIRECTORY
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = merge_part_data(refs, project_root, source_bom, lcsc_bom)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    xlsx_path = out_dir / f"part_selection_review_{stamp}.xlsx"
-    html_path = out_dir / f"part_selection_review_{stamp}.html"
+    xlsx_path = out_dir / f"选料核对表_{stamp}.xlsx"
+    html_path = out_dir / f"选料核对表_{stamp}.html"
     write_excel(rows, xlsx_path)
     write_html(rows, html_path, source_bom, lcsc_bom)
 

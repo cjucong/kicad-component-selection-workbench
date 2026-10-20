@@ -15,16 +15,29 @@ from typing import Any
 from urllib.parse import urlparse
 
 
+DATA_DIRECTORY = "BOM/选料工作台"
+CONFIG_NAME = "工作台配置.json"
+DATA_FILE_NAMES = {
+    "output_overrides": "已选物料与字段修改记录.json",
+    "stock_cache": "立创库存与参数缓存.json",
+    "input_refs": "位号清单.txt",
+}
+SYNC_LOG_NAME = "原理图同步记录.csv"
+RUNTIME_LOG_NAME = "原理图同步运行日志.jsonl"
+EXPORT_PREFIXES = ("采购BOM表_", "选料变更记录_")
+LEGACY_PATHS = {
+    "bom_dir": "BOM", "input_refs": "BOM/part_selection_input.txt",
+    "output_overrides": "BOM/part_selection_overrides.json", "stock_cache": "BOM/lcsc_stock_cache.json",
+}
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "project_name": "KiCad Project",
     "project_root": ".",
     "schematic_dir": "DOC",
-    "bom_dir": "BOM",
+    "bom_dir": DATA_DIRECTORY,
     "source_bom": "__schematic__",
     "lcsc_bom_pattern": "BOM/*LCSC*.csv",
-    "input_refs": "BOM/part_selection_input.txt",
-    "output_overrides": "BOM/part_selection_overrides.json",
-    "stock_cache": "BOM/lcsc_stock_cache.json",
+    **{key: f"{DATA_DIRECTORY}/{name}" for key, name in DATA_FILE_NAMES.items()},
     "kicad_protocol": "kicad-sch-search",
     "jump_cursor_behavior": "return",
     "open_lcsc_search_on_replace": "true",
@@ -112,12 +125,18 @@ def _resolve_path(project_root: Path, value: str | Path) -> Path:
     return project_root / path
 
 
+def configuration_defaults(config_path: Path, loaded: dict) -> dict[str, Any]:
+    # Explicit older/custom configurations retain their original implicit paths.
+    legacy = config_path.name != CONFIG_NAME and loaded.get("data_layout_version", 0) < 2
+    return {**DEFAULT_CONFIG, **(LEGACY_PATHS if legacy else {})}
+
+
 def load_config(config_path: Path) -> dict[str, Any]:
     config_path = Path(os.path.expandvars(str(config_path))).expanduser().resolve()
-    config = dict(DEFAULT_CONFIG)
+    loaded = {}
     if config_path.exists():
         loaded = json.loads(config_path.read_text(encoding="utf-8-sig"))
-        config.update(loaded)
+    config = {**configuration_defaults(config_path, loaded), **loaded}
 
     project_root_value = Path(os.path.expandvars(str(config.get("project_root") or "."))).expanduser()
     if project_root_value.is_absolute():

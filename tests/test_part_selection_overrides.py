@@ -26,6 +26,7 @@ from part_selection_helper import PartInfo  # noqa: E402
 from part_selection_helper import load_lcsc_bom, load_source_bom, read_refs_from_bom  # noqa: E402
 from part_selection_helper import update_schematic_symbol_fields  # noqa: E402
 import part_selection_server  # noqa: E402
+from part_selection_runtime import runtime_directory
 from part_selection_server import (  # noqa: E402
     PartSelectionApp,
     alternate_parts_from_schematic,
@@ -662,7 +663,7 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertIn('(property "Description" "CAP CER 100pF 50V C0G 0805"', schematic_text)
             self.assertIn('(property "LCSC_ALT" "C1001"', schematic_text)
             self.assertIn('(property "LCSC_ALT_INFO" "C1001 | ALT-CAP | 0805 | 100pF 50V"', schematic_text)
-            sync_log = bom_dir / "part_selection_schematic_sync_log.csv"
+            sync_log = bom_dir / "原理图同步记录.csv"
             self.assertTrue(sync_log.exists())
             log_text = sync_log.read_text(encoding="utf-8-sig")
             self.assertIn("C118", log_text)
@@ -671,7 +672,7 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertIn("https://so.szlcsc.com/global.html?k=C4857915", log_text)
             self.assertIn("lcsc_alt", log_text)
             self.assertIn("C1001 | ALT-CAP | 0805 | 100pF 50V", log_text)
-            runtime_log = bom_dir / "part_selection_schematic_sync_runtime.jsonl"
+            runtime_log = runtime_directory(root) / "原理图同步运行日志.jsonl"
             runtime_records = [json.loads(line) for line in runtime_log.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(result["runtime_log"], str(runtime_log))
             self.assertTrue(result["sync_attempt_id"])
@@ -874,7 +875,7 @@ class PartSelectionOverridesTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ref is required"):
                 PartSelectionApp(config_path).sync_schematic({"field_overrides": {"value": "1k"}})
 
-            runtime_log = bom_dir / "part_selection_schematic_sync_runtime.jsonl"
+            runtime_log = runtime_directory(root) / "原理图同步运行日志.jsonl"
             records = [json.loads(line) for line in runtime_log.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(
                 [record["event"] for record in records],
@@ -1230,7 +1231,7 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertEqual(result["schematic_verify"]["phase"], "after_notify")
             self.assertEqual(prepare_calls["count"], 2)
             self.assertEqual(notify_calls["count"], 2)
-            runtime_log = bom_dir / "part_selection_schematic_sync_runtime.jsonl"
+            runtime_log = runtime_directory(root) / "原理图同步运行日志.jsonl"
             runtime_events = [
                 json.loads(line)["event"] for line in runtime_log.read_text(encoding="utf-8").splitlines()
             ]

@@ -13,7 +13,8 @@ import sys
 import tempfile
 import threading
 
-from part_selection_overrides import DEFAULT_CONFIG, load_config
+from part_selection_overrides import (DATA_FILE_NAMES, DATA_DIRECTORY, SYNC_LOG_NAME,
+                                      EXPORT_PREFIXES, configuration_defaults, load_config)
 from part_selection_runtime import runtime_directory
 from part_selection_library import find_converter
 
@@ -26,8 +27,9 @@ PATH_FIELDS = (
 EDITABLE_FIELDS = (*PATH_FIELDS, 'project_name', 'lcsc_bom_pattern', 'jump_cursor_behavior',
                    'open_lcsc_search_on_replace')
 DATA_FIELDS = ('input_refs', 'output_overrides', 'stock_cache')
-LOG_NAMES = ('part_selection_schematic_sync_log.csv', 'part_selection_schematic_sync_runtime.jsonl')
-EXPORT_PATTERNS = ('part_selection_pump_table_*.csv', 'part_selection_change_log_*.csv')
+LOG_NAMES = (SYNC_LOG_NAME, 'part_selection_schematic_sync_log.csv')
+EXPORT_PATTERNS = tuple(prefix + '*.csv' for prefix in (*EXPORT_PREFIXES,
+    'part_selection_pump_table_', 'part_selection_change_log_'))
 
 
 class SettingsGate:
@@ -70,7 +72,8 @@ def _revision(path):
 
 def settings_snapshot(config):
     path, root = config['config_path'], config['project_root'].resolve()
-    values = {**DEFAULT_CONFIG, **_raw(path)}
+    raw = _raw(path)
+    values = {**configuration_defaults(path, raw), **raw}
     try:
         converter = str(find_converter(config.get('converter_executable')))
     except OSError:
@@ -88,6 +91,7 @@ def settings_snapshot(config):
         'desktop_home_effective': str(Path(os.environ.get('KICAD_PART_SELECTION_HOME') or
             str(Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.cache'))) / 'KiCadPartSelection'))),
         'plugin_directory': str(Path(__file__).resolve().parent),
+        'default_data_directory': DATA_DIRECTORY, 'data_file_names': DATA_FILE_NAMES,
         'converter_path': converter, 'schematic_default': schematic_default, 'import_source': import_source,
     }
 
@@ -276,7 +280,7 @@ def save_settings(config, payload):
     if set(updates) - set(EDITABLE_FIELDS) or any(not isinstance(v, str) for v in updates.values()):
         raise ValueError('包含不支持的配置字段或字段类型')
     raw = _raw(path)
-    values = {**DEFAULT_CONFIG, **raw, **{k: v.strip() for k, v in updates.items()}}
+    values = {**configuration_defaults(path, raw), **raw, **{k: v.strip() for k, v in updates.items()}}
     if values['jump_cursor_behavior'] not in ('return', 'stay'):
         raise ValueError('请选择跳转后鼠标返回原位或留在原理图')
     if values['open_lcsc_search_on_replace'] not in ('true', 'false'):

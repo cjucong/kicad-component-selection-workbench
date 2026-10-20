@@ -7,7 +7,7 @@
 从独立仓库运行时必须指定目标，例如：
 
 ```powershell
-python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json"
+python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/选料工作台/工作台配置.json"
 ```
 
 只支持独立窗口，已移除浏览器模式及自动回退。--project 可替代 --config；同时给出时，配置解析根目录必须匹配。不要把插件仓库当成工程，不要为排错复制整套工程工具。
@@ -24,7 +24,7 @@ python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selecti
 
 先在菜单配置窗口核对 output_overrides、stock_cache、bom_dir 和当前工程。菜单迁移默认复制已有数据，遇到目标文件内容不同会停止，不覆盖；原文件仍在旧位置。直接手改 JSON 不会自动搬迁旧文件，不要把空白页面当成旧记录已清除，更不要未经确认保存空记录。必要时停止对应服务，备份原文件并复制到新位置后再启动核对。
 
-已有 BOM/part_selection_config.json 应继续使用原路径；bom_dir 变化不会自动改其他显式路径。列宽/列顺序保存在独立工作台 localStorage，重启保留；与旧浏览器不共享，也不同于人工主料记录。
+默认配置为 BOM/选料工作台/工作台配置.json。旧标准配置在关闭旧后台后的首次启动自动迁移，旧文件与工程外备份保留；若提示新旧冲突，先备份并核对，不要删新记录后重新迁移。自定义配置仍使用原路径；bom_dir 变化不会自动改其他显式路径。列宽/列顺序保存在独立工作台 localStorage，重启保留；与旧浏览器不共享，也不同于人工主料记录。
 
 库存缓存不是实时结果，查询失败和无货应分开看。核对所选 C 编码、缓存对应项与来源时间，采购前检查官网。
 
@@ -50,7 +50,7 @@ python -B -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools');
 
 ## 同步失败或 KiCad 卡住
 
-按错误 attempt_id 查 bom_dir 下的 part_selection_schematic_sync_runtime.jsonl，再核对 part_selection_schematic_sync_log.csv。先区分工程识别、保存/关闭、写入、磁盘校验和重开定位阶段。
+按错误 attempt_id 查工程外缓存下的 `原理图同步运行日志.jsonl`（同步错误的 runtime_log 给出绝对路径），再核对 bom_dir 下的 `原理图同步记录.csv`。先区分工程识别、保存/关闭、写入、磁盘校验和重开定位阶段。
 
 KICAD_BUSY 或窗口归属不明时应停止本次同步，等待 KiCad 响应并处理对话框，不连续点击、不强杀有未保存内容的进程。同一进程可能托管 PCB 和原理图，不能以终止进程解决窗口问题。
 
@@ -60,7 +60,7 @@ KICAD_BUSY 或窗口归属不明时应停止本次同步，等待 KiCad 响应�
 
 位号文本由目标控件直接写入并完整回读验证，避免 SendKeys 受输入法或焦点变化影响；C103 等丢字符时停止跳转并记录 expected/current，不继续点击不确定的结果。真实 KiCad wx 控件仍需在实际版本中核验。
 
-CLI 的 `--bulk-sync-no-notify --bulk-sync-no-prepare` 不是只读模式：没有 `--bulk-sync-dry-run` 仍会写原理图。仅评估可使用 `python -B tools/part_selection_server.py --config "E:/work/Board/BOM/part_selection_config.json" --bulk-sync-bom __schematic__ --bulk-sync-dry-run --bulk-sync-no-notify --bulk-sync-no-prepare`，仅对已保存数据计算差异。
+CLI 的 `--bulk-sync-no-notify --bulk-sync-no-prepare` 不是只读模式：没有 `--bulk-sync-dry-run` 仍会写原理图。仅评估可使用 `python -B tools/part_selection_server.py --config "E:/work/Board/BOM/选料工作台/工作台配置.json" --bulk-sync-bom __schematic__ --bulk-sync-dry-run --bulk-sync-no-notify --bulk-sync-no-prepare`，仅对已保存数据计算差异。
 
 ## 转换失败
 

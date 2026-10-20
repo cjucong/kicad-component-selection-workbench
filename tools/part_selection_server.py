@@ -49,6 +49,7 @@ from part_selection_helper import (
     update_schematic_symbol_field_map,
 )
 from part_selection_overrides import (
+    SYNC_LOG_NAME, RUNTIME_LOG_NAME, EXPORT_PREFIXES,
     MAX_ALTERNATE_PARTS,
     OVERRIDES_UPDATE_LOCK,
     choose_effective_c_code,
@@ -90,9 +91,9 @@ SCHEMATIC_SYNC_FIELDS = (
     "procurement_url",
     "procurement_info",
 )
-GENERATED_REVIEW_BOM_PREFIXES = ("part_selection_change_log_", "part_selection_review_")
-SCHEMATIC_SYNC_LOG = "part_selection_schematic_sync_log.csv"
-SCHEMATIC_SYNC_RUNTIME_LOG = "part_selection_schematic_sync_runtime.jsonl"
+GENERATED_REVIEW_BOM_PREFIXES = ("part_selection_change_log_", "part_selection_review_", EXPORT_PREFIXES[1])
+SCHEMATIC_SYNC_LOG = SYNC_LOG_NAME
+SCHEMATIC_SYNC_RUNTIME_LOG = RUNTIME_LOG_NAME
 SCHEMATIC_SYNC_RUNTIME_LOG_LOCK = threading.Lock()
 SCHEMATIC_SYNC_TRANSACTION_LOCK = threading.Lock()
 SCHEMATIC_NOTIFY_SETTLE_SECONDS = 0.25
@@ -1524,7 +1525,7 @@ class PartSelectionApp:
             files.append(self.source_bom())
         result: list[dict[str, str]] = [{"name": "原理图当前数据", "path": SCHEMATIC_SOURCE_BOM}]
         for path in sorted(set(files), key=lambda item: item.name.lower()):
-            if path.name == SCHEMATIC_SYNC_LOG or path.name.lower().startswith(GENERATED_REVIEW_BOM_PREFIXES):
+            if path.name in (SCHEMATIC_SYNC_LOG, "part_selection_schematic_sync_log.csv") or path.name.lower().startswith(GENERATED_REVIEW_BOM_PREFIXES):
                 continue
             try:
                 if not read_refs_from_bom(path):
@@ -2132,7 +2133,7 @@ class PartSelectionApp:
         started_at: float,
         details: dict[str, object] | None = None,
     ) -> Path:
-        output_path = self.bom_dir / SCHEMATIC_SYNC_RUNTIME_LOG
+        output_path = runtime_directory(self.project_root) / SCHEMATIC_SYNC_RUNTIME_LOG
         output_path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "timestamp": datetime.now().isoformat(timespec="milliseconds"),
@@ -2465,7 +2466,7 @@ class PartSelectionApp:
         attempt_id = f"{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
         started_at = time.perf_counter()
         refs = split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))
-        runtime_log_path = self.bom_dir / SCHEMATIC_SYNC_RUNTIME_LOG
+        runtime_log_path = runtime_directory(self.project_root) / SCHEMATIC_SYNC_RUNTIME_LOG
 
         def log_event(event: str, **details: object) -> None:
             self.append_schematic_sync_runtime_log(attempt_id, event, refs, started_at, details)
@@ -2644,7 +2645,7 @@ class PartSelectionApp:
     ) -> dict[str, object]:
         attempt_id = f"{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
         started_at = time.perf_counter()
-        runtime_log_path = self.bom_dir / SCHEMATIC_SYNC_RUNTIME_LOG
+        runtime_log_path = runtime_directory(self.project_root) / SCHEMATIC_SYNC_RUNTIME_LOG
 
         def log_event(event: str, **details: object) -> None:
             self.append_schematic_sync_runtime_log(attempt_id, event, selected_refs or [], started_at, details)
@@ -2868,7 +2869,7 @@ class PartSelectionApp:
             parts = merge_part_data(refs, self.project_root, selected_path, lcsc_bom, self.config["schematic_dir"])
         overrides = load_overrides(self.overrides_path)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = self.bom_dir / f"part_selection_change_log_{timestamp}.csv"
+        output_path = self.bom_dir / f"{EXPORT_PREFIXES[1]}{timestamp}.csv"
         columns = [
             "Designator",
             "Page",
@@ -2959,7 +2960,7 @@ class PartSelectionApp:
             return True
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = self.bom_dir / f"part_selection_pump_table_{timestamp}.csv"
+        output_path = self.bom_dir / f"{EXPORT_PREFIXES[0]}{timestamp}.csv"
         columns = [
             "Designator",
             "Quantity",

@@ -6,7 +6,7 @@
     ['converter_executable', 'EasyKiConverter 程序', 'pathConverterFields', 'file'],
     ['project_name', '工程名称', 'pathAdvancedFields'],
     ['schematic_dir', '原理图目录', 'pathAdvancedFields', 'folder'],
-    ['output_overrides', '选料记录文件', 'pathAdvancedFields', 'file'],
+    ['output_overrides', '已选物料与字段修改记录', 'pathAdvancedFields', 'file'],
     ['stock_cache', '库存与参数缓存文件', 'pathAdvancedFields', 'file'],
     ['input_refs', '位号清单文件', 'pathAdvancedFields', 'file'],
     ['lcsc_bom_pattern', '立创 BOM 匹配规则', 'pathAdvancedFields'],
@@ -15,7 +15,8 @@
     ['jump_cursor_behavior', '跳转后鼠标位置', 'pathNavigationFields', 'choice'],
     ['open_lcsc_search_on_replace', '更换型号时自动打开网页搜索', 'pathReplacementFields', 'choice'],
   ];
-  const dataFiles = {output_overrides: 'part_selection_overrides.json', stock_cache: 'lcsc_stock_cache.json', input_refs: 'part_selection_input.txt'};
+  const defaultDirectory = 'BOM/选料工作台';
+  const dataFiles = {output_overrides: '已选物料与字段修改记录.json', stock_cache: '立创库存与参数缓存.json', input_refs: '位号清单.txt'};
   const inputs = new Map();
   let snapshot, initialValues, initialSource;
   let opening = false, saved = false, saving = false;
@@ -33,7 +34,7 @@
           <div id="pathImportRow" hidden><div id="pathImportFields" class="path-fields"></div><p class="path-settings-note">仅本次使用导入文件；下次启动仍读取已保存的原理图。</p></div>
         </fieldset>
         <fieldset class="path-section"><legend>工程选料数据</legend>
-          <div class="path-choices"><label><input type="radio" name="path-data" id="pathDataDefault">工程目录 / BOM</label><label><input type="radio" name="path-data" id="pathDataCustom">自定义目录</label></div>
+          <div class="path-choices"><label><input type="radio" name="path-data" id="pathDataDefault">工程目录 / BOM / 选料工作台</label><label><input type="radio" name="path-data" id="pathDataCustom">自定义目录</label></div>
           <div id="pathDataFields" class="path-fields"></div>
           <p class="path-settings-note">保存选料记录、确认状态、备选料、订货信息、导出表及同步日志。修改目录时先确认复制，原文件保留。</p>
           <p id="pathCustomFilesNotice" class="path-settings-note" hidden>部分文件使用独立位置，已保留。可在高级路径设置中查看或统一。</p>
@@ -79,7 +80,7 @@
     return path.replace(/\/\.\//g, '/').replace(/\/+/g, '/').toLowerCase();
   };
   function updateDataState() {
-    const parent = inputs.get('bom_dir').value || 'BOM';
+    const parent = inputs.get('bom_dir').value || defaultDirectory;
     dialog.querySelector('#pathCustomFilesNotice').hidden = !Object.entries(dataFiles).some(([key, name]) => normalized(inputs.get(key).value) !== normalized(join(parent, name)));
   }
   function placeData(parent) {
@@ -88,7 +89,7 @@
   }
   function updateSource() { dialog.querySelector('#pathImportRow').hidden = !imported.checked; }
   function updateDirectory() {
-    dataDefault.checked = normalized(inputs.get('bom_dir').value) === normalized('BOM');
+    dataDefault.checked = normalized(inputs.get('bom_dir').value) === normalized(defaultDirectory);
     dataCustom.checked = !dataDefault.checked;
     updateDataState();
   }
@@ -128,13 +129,13 @@
     dialog.querySelector('#' + panel).append(row);
     inputs.set(key, input);
   }
-  inputs.get('bom_dir').addEventListener('input', () => { placeData(inputs.get('bom_dir').value || 'BOM'); updateDirectory(); });
+  inputs.get('bom_dir').addEventListener('input', () => { placeData(inputs.get('bom_dir').value || defaultDirectory); updateDirectory(); });
   for (const key of Object.keys(dataFiles)) inputs.get(key).addEventListener('input', updateDataState);
   for (const radio of [schematic, imported]) radio.addEventListener('change', updateSource);
-  dataDefault.addEventListener('change', () => { inputs.get('bom_dir').value = 'BOM'; placeData('BOM'); });
+  dataDefault.addEventListener('change', () => { inputs.get('bom_dir').value = defaultDirectory; placeData(defaultDirectory); });
   dataCustom.addEventListener('change', () => inputs.get('bom_dir').focus());
-  dialog.querySelector('#pathUnifyData').addEventListener('click', () => placeData(inputs.get('bom_dir').value || 'BOM'));
-  dialog.querySelector('#pathDefaults').addEventListener('click', () => { inputs.get('bom_dir').value = 'BOM'; placeData('BOM'); updateDirectory(); });
+  dialog.querySelector('#pathUnifyData').addEventListener('click', () => placeData(inputs.get('bom_dir').value || defaultDirectory));
+  dialog.querySelector('#pathDefaults').addEventListener('click', () => { inputs.get('bom_dir').value = defaultDirectory; placeData(defaultDirectory); updateDirectory(); });
   dialog.querySelector('[data-open-directory]').addEventListener('click', async event => {
     const button = event.currentTarget;
     button.disabled = true;

@@ -51,13 +51,13 @@ const path = require('node:path');
     await page.locator('#pathDataCustom').check();
     await page.locator('#path-bom_dir').fill('reverted');
     await page.locator('#pathDataDefault').check();
-    assert.equal(await page.locator('#path-output_overrides').inputValue(),'BOM/part_selection_overrides.json');
+    assert.equal(await page.locator('#path-output_overrides').inputValue(),'BOM/选料工作台/已选物料与字段修改记录.json');
     // Exercise the browse button without opening a blocking native Windows dialog.
     await page.route('**/api/path_picker', route => route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,path:'exports'})}));
     await page.getByRole('button',{name:'选择工程选料数据目录',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('#path-bom_dir').value==='exports');
     await page.unroute('**/api/path_picker');
-    assert.equal(await page.locator('#path-output_overrides').inputValue(),'exports/part_selection_overrides.json');
+    assert.equal(await page.locator('#path-output_overrides').inputValue(),'exports/已选物料与字段修改记录.json');
     await page.locator('#pathAdvanced summary').click();
     await page.locator('#path-output_overrides').fill('conflict.json');
     page.once('dialog', dialog => dialog.accept());
@@ -81,7 +81,7 @@ const path = require('node:path');
     await open();
     assert.equal(await page.locator('#path-bom_dir').inputValue(),'exports');
     assert.equal(await page.locator('#path-jump_cursor_behavior').inputValue(),'stay');
-    assert.equal(await page.locator('#path-output_overrides').inputValue(),'exports/part_selection_overrides.json');
+    assert.equal(await page.locator('#path-output_overrides').inputValue(),'exports/已选物料与字段修改记录.json');
     // A full reload ignores any remembered CSV selection.
     assert.equal(await page.locator('#bomSelect').inputValue(),'__schematic__');
     await page.locator('#pathAdvanced summary').click();
@@ -222,7 +222,7 @@ def main():
                 if result.returncode:
                     raise AssertionError(result.stderr.encode('ascii',errors='backslashreplace').decode())
                 assert json.loads((root / 'BOM/part_selection_overrides.json').read_text())['R1']['note']=='preserved selection'
-                assert json.loads((root / 'exports/part_selection_overrides.json').read_text())['R1']['note']=='preserved selection'
+                assert json.loads((root / 'exports/已选物料与字段修改记录.json').read_text(encoding='utf-8'))['R1']['note']=='preserved selection'
                 assert (root / 'example.kicad_sch').read_text()==schematic
             finally:
                 process.terminate()

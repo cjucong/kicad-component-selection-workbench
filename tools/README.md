@@ -7,7 +7,7 @@
 ```powershell
 python -m pip install -r tools/kicad_plugin/desktop-requirements.txt
 python -B tools/kicad_plugin/desktop.py --project "E:/path/to/project/project.kicad_pro"
-python -B tools/kicad_plugin/desktop.py --config "E:/path/to/project/BOM/part_selection_config.json"
+python -B tools/kicad_plugin/desktop.py --config "E:/path/to/project/BOM/选料工作台/工作台配置.json"
 ```
 
 上面两条启动命令择一。中文入口 `tools/启动器件选料助手.bat` 支持相同参数，无参数则打开工程选择器。只支持独立工作台，不提供浏览器模式或自动回退。关闭窗口会保存行编辑并退出所属后台；“文件”菜单提供重启与退出，任务忙碌时暂不关闭。

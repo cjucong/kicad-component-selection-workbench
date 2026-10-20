@@ -119,31 +119,8 @@ finally { $dialog.Dispose() }
 
 def ensure_config(root: Path, config_path: Path | None = None) -> Path:
     sys.path.insert(0, str(CORE))
-    from part_selection_overrides import load_config
-    config = config_path or root / "BOM" / "part_selection_config.json"
-    config = Path(os.path.expandvars(str(config))).expanduser().resolve()
-    if config_path is not None and not config.is_file():
-        raise FileNotFoundError(f"Configuration not found: {config}")
-    if config.exists():
-        if load_config(config)["project_root"].resolve() != root.resolve():
-            raise ValueError(f"Configuration points to another project: {config}")
-        return config
-    data = {
-        "project_name": f"{root.name} {TITLE}", "project_root": "..",
-        "schematic_dir": "DOC" if (root / "DOC").is_dir() else ".",
-        "source_bom": "__schematic__", "lcsc_bom_pattern": "BOM/*LCSC*.csv",
-        "input_refs": "BOM/part_selection_input.txt",
-        "output_overrides": "BOM/part_selection_overrides.json",
-        "stock_cache": "BOM/lcsc_stock_cache.json", "kicad_protocol": "kicad-sch-search",
-    }
-    config.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with config.open("x", encoding="utf-8") as stream:
-            json.dump(data, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-    except FileExistsError:
-        return ensure_config(root, config_path)
-    return config
+    from part_selection_paths import resolve_config
+    return resolve_config(root, config_path)
 
 
 def service_targets(payload: object, root: Path, config: Path) -> bool:
@@ -223,7 +200,7 @@ def ensure_backend(root: Path, config: Path, logs: Path, *, owner_token: str) ->
     # Prefer the stable project-specific port if already running.
     for port in ports:
         info = service_info(port)
-        if service_targets(info, root, config):
+        if isinstance(info, dict) and info.get('project_root') and Path(info['project_root']).resolve() == root.resolve():
             if not matches_service(info, root, config, owner_token):
                 raise RuntimeError('该工程仍有旧版或其他工作台后台运行。请先退出原工作台；旧版后台需手动退出一次。不要重复启动或结束 KiCad。')
             logging.info("Reusing matching service on %s", port)

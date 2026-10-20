@@ -1,0 +1,13 @@
+{
+  "project_name": "My KiCad Project",
+  "project_root": "E:/work/MyBoard",
+  "schematic_dir": "DOC",
+  "data_layout_version": 2,
+  "bom_dir": "BOM/选料工作台",
+  "source_bom": "__schematic__",
+  "lcsc_bom_pattern": "BOM/*LCSC*.csv",
+  "input_refs": "BOM/选料工作台/位号清单.txt",
+  "output_overrides": "BOM/选料工作台/已选物料与字段修改记录.json",
+  "stock_cache": "BOM/选料工作台/立创库存与参数缓存.json",
+  "converter_executable": ""
+}

@@ -94,7 +94,7 @@ class StandalonePathsTests(unittest.TestCase):
             server.parse_args()
         with patch.object(sys, 'argv', ['server', '--project', str(self.root)]):
             args = server.parse_args()
-        self.assertEqual(args.config, self.root / 'BOM/part_selection_config.json')
+        self.assertEqual(args.config, self.root / 'BOM/选料工作台/工作台配置.json')
 
     def test_package_is_self_contained_without_fpga_tool(self):
         import package_plugin

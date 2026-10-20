@@ -24,12 +24,12 @@ python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro
 已有配置直接指定：
 
 ```powershell
-python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json"
+python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/选料工作台/工作台配置.json"
 ```
 
 只支持独立工作台，不再提供浏览器启动或自动回退。关闭窗口等同“文件 → 退出工作台”：先保存行编辑，再退出所属后台。“文件 → 重启工作台”会等待原端口释放后以同一工程和配置重新启动；搜索、转换、同步或输入法组字尚未结束时保留窗口并提示处理。路径表单的未保存配置会单独询问是否放弃。
 
-后端也接受 `--project`；必须明确提供工程或配置，不从源码目录猜测。两参数同时给出时，配置的 project_root 必须与 --project 匹配。已有 `BOM/part_selection_config.json` 原样保留；新工程使用前核对配置和数据位置。
+后端也接受 `--project`；必须明确提供工程或配置，不从源码目录猜测。两参数同时给出时，配置的 project_root 必须与 --project 匹配。标准旧配置首次启动按下方步骤迁移，已有中文配置及自定义配置保留；新工程使用前核对配置和数据位置。
 
 ## 工程设置
 
@@ -51,7 +51,7 @@ Comment、Value 或 Footprint 自动保存完成后，会按这三个字段重�
 
 每次启动默认读取“原理图当前数据”，指磁盘上已保存的原理图，不是编辑器尚未保存的内容；历史 CSV 配置和上次界面选择不再覆盖它。“导入 BOM 文件”需主动选择，保存并刷新后仅本次使用，再次启动或完整刷新仍回到原理图。历史导入文件路径保留，便于再次选取，不会仅因改数据目录而丢失。
 
-“工程选料数据”默认在当前工程 `BOM/`，包含选料记录（主料、确认状态、备注、备选、订货链接）、库存/参数缓存、位号清单、导出 BOM/改动表和同步日志。可选“自定义目录”并输入路径或点文件夹图标。主动修改目录会将三个数据文件的目标路径一并指向新目录；打开设置、修改无关项或直接手改 JSON 不会擅自统一已有自定义文件。独立文件位置会显示提示，在高级设置中仍可逐项修改，或点“数据文件放入所选目录”。“工程目录 / BOM”和“恢复工程数据默认路径”恢复标准数据路径。
+“工程选料数据”默认在当前工程 `BOM/选料工作台/`，包含选料记录（主料、确认状态、备注、备选、订货链接）、库存/参数缓存、位号清单、导出 BOM/改动表和同步记录。可选“自定义目录”并输入路径或点文件夹图标。主动修改目录会将三个数据文件的目标路径一并指向新目录；打开设置、修改无关项或直接手改 JSON 不会擅自统一已有自定义文件。独立文件位置会显示提示，在高级设置中仍可逐项修改，或点“数据文件放入所选目录”。“工程目录 / BOM / 选料工作台”和“恢复工程数据默认路径”恢复标准数据路径。
 
 设置需按“保存并应用”，不采用行编辑的逐字自动保存。修改数据位置时在保存前询问是否复制；取消则不切换。确认后先在工程外备份再复制，保留原文件，目标有不同内容时拒绝覆盖。保存成功后点“完成并刷新”；搜索、转换或其他请求未结束时暂不允许切换。原理图、PCB、正式工程库均不迁移，配置文件本身保持原位置。
 
@@ -62,22 +62,23 @@ Comment、Value 或 Footprint 自动保存完成后，会按这三个字段重�
 ```json
 {
   "project_name": "Board",
-  "project_root": "..",
+  "project_root": "../..",
+  "data_layout_version": 2,
   "schematic_dir": "DOC",
-  "bom_dir": "BOM",
+  "bom_dir": "BOM/选料工作台",
   "source_bom": "__schematic__",
   "lcsc_bom_pattern": "BOM/*LCSC*.csv",
-  "input_refs": "BOM/part_selection_input.txt",
-  "output_overrides": "BOM/part_selection_overrides.json",
-  "stock_cache": "BOM/lcsc_stock_cache.json"
+  "input_refs": "BOM/选料工作台/位号清单.txt",
+  "output_overrides": "BOM/选料工作台/已选物料与字段修改记录.json",
+  "stock_cache": "BOM/选料工作台/立创库存与参数缓存.json"
 }
 ```
 
 | 键 | 路径基准与用途 |
 | --- | --- |
-| `project_root` | 相对配置文件所在目录；配置放 BOM 下时推荐显式写 `..`。旧 BOM 配置的 `.` 根目录兼容规则保留 |
+| `project_root` | 相对配置文件所在目录；配置放 `BOM/选料工作台/` 时写 `../..`。旧 BOM 配置的 `.` 根目录兼容规则保留 |
 | `schematic_dir` | 相对工程根目录，通常 `DOC`；原理图位于根目录时写 `.` |
-| `bom_dir` | 相对工程根目录，保存导出和同步日志；默认 `BOM` |
+| `bom_dir` | 相对工程根目录，保存导出和同步记录；默认 `BOM/选料工作台` |
 | `source_bom` | `__schematic__` 或保留的导入 CSV/XLSX 文件位置；界面启动始终默认原理图，主动导入仅本次生效 |
 | `lcsc_bom_pattern` | 相对工程根目录的 BOM 匹配规则，默认 `BOM/*LCSC*.csv` |
 | `input_refs` | 相对工程根目录的位号输入文件 |
@@ -93,16 +94,33 @@ Comment、Value 或 Footprint 自动保存完成后，会按这三个字段重�
 
 ## 迁移已有记录
 
+中文目录结构如下（文件按实际使用生成）：
+
+```text
+BOM/选料工作台/
+  工作台配置.json
+  已选物料与字段修改记录.json
+  立创库存与参数缓存.json
+  位号清单.txt
+  原理图同步记录.csv
+  采购BOM表_时间.csv
+  选料变更记录_时间.csv
+```
+
+`已选物料与字段修改记录.json` 保存已选 C 编码、确认状态、备注、备选、订货链接及 Comment/Value/封装等字段修改。中文只用于文件与目录命名；配置键和 KiCad 属性名保持兼容，不翻译。JSON/TXT/JSONL 使用 UTF-8，CSV 输出使用带 BOM 的 UTF-8。
+
+旧标准配置 `BOM/part_selection_config.json` 在工作台正常关闭后，下次从插件入口或 `--project` 启动时自动迁移；显式指定旧标准配置也会解析到同一中文配置。新配置重新计算相对工程路径，保留未知配置、原始属性和所有选料元数据。迁移前备份在工程外 `中文数据迁移备份/`，原文件继续保留供核对；目标存在不同内容、旧后台仍运行或旧数据在迁移后又改变时停止，不静默覆盖或另开一份空记录。旧英文副本不再是日常编辑入口，核对完再自行归档，不要同时运行新旧版本。显式自定义配置路径、数据目录及自定义文件名不强制改变，可在工程设置中统一。
+
 推荐使用“设置 → 工程设置…”选择数据目录，保存时确认复制，由程序备份、复制后切换。若直接手改 JSON，**不会自动搬迁文件**：先备份原记录和配置，停止对应后端，将 overrides、库存缓存及需保留的同步日志复制到新位置，再修改各路径、重启并核对主料、备注、确认、备选和订货信息。保留原副本直到核对完成。若新路径为空，应先查明是否漏复制，未经确认不得新建空记录替代旧数据。
 
-`bom_dir` 下的同步日志通常为 `part_selection_schematic_sync_log.csv`、`part_selection_schematic_sync_runtime.jsonl`；已有工程仍沿用原 BOM 路径。列布局保存在独立工作台的 localStorage，重启保留；旧浏览器的布局不自动迁入。
+`原理图同步记录.csv` 在 `bom_dir`；诊断用 `原理图同步运行日志.jsonl` 在工程外 `runtime_directory(project_root)`，同步返回的 `runtime_log` 提供实际绝对路径。旧标准目录下的 JSONL 在升级时复制到工程外，后续不再写入工程；它不属于需提交的选料记录。列布局保存在独立工作台的 localStorage，重启保留；旧浏览器的布局不自动迁入。
 
 临时缓存默认在工程同级的 `../.kicad-part-selection-cache/<工程名>-<路径哈希>/`。可在启动前设置：
 
 ```powershell
 $env:KICAD_PART_SELECTION_CACHE = 'E:/KiCadCaches'
 $env:KICAD_PART_SELECTION_HOME = 'E:/KiCadDesktop'
-python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/part_selection_config.json"
+python -B tools/kicad_plugin/desktop.py --config "E:/work/Board/BOM/选料工作台/工作台配置.json"
 ```
 
 CACHE 是绝对、工程外同盘的缓存父目录，程序追加工程路径哈希子目录；不能用跨盘目录或链接回工程。HOME 是绝对、工程外的桌面日志/环境基目录，默认 `%LOCALAPPDATA%/KiCadPartSelection`。两者不负责移动正式记录或库文件。
