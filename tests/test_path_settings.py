@@ -48,6 +48,14 @@ def test_navigation_preference_is_validated_persisted_and_used_without_restart(a
         assert '-MoveCursorAfterJump' not in run.call_args.args[1]
 
 
+def test_auto_lcsc_search_preference_defaults_on_and_can_be_disabled(app):
+    assert settings_snapshot(app.config)['values']['open_lcsc_search_on_replace'] == 'true'
+    app.save_path_settings(payload(app, open_lcsc_search_on_replace='false'))
+    assert settings_snapshot(app.config)['values']['open_lcsc_search_on_replace'] == 'false'
+    with pytest.raises(ValueError, match='是否自动打开网页搜索'):
+        app.save_path_settings(payload(app, open_lcsc_search_on_replace='sometimes'))
+
+
 def test_settings_directory_opener_only_opens_registered_directories(app):
     from part_selection_settings import open_settings_directory
     with patch('part_selection_settings.os.startfile', create=True) as open_path:

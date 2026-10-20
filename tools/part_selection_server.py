@@ -1251,6 +1251,7 @@ def group_parts_for_review(parts, overrides: dict[str, dict[str, object]]) -> li
             "decision": str(override.get("decision") or ""),
             "status": str(override.get("status") or ""),
             "review_status": row_review_status({"override": override}),
+            "review_confirmed_at": str(override.get("review_confirmed_at") or ""),
             "description": description,
             "note": str(override.get("note") or ""),
             "alternate_parts": alternate_parts,
@@ -3374,6 +3375,7 @@ tr.hidden-row {{ display: none; }}
 .review-status {{ display: grid; gap: 4px; min-width: 74px; }}
 .review-status select {{ min-height: 28px; }}
 .review-pill {{ display: inline-flex; align-items: center; justify-content: center; min-height: 18px; padding: 1px 7px; border-radius: 999px; border: 1px solid transparent; font-size: 11px; font-weight: 700; line-height: 1.4; white-space: nowrap; }}
+.review-confirmed-at {{ color: #64748b; font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }}
 .review-ok {{ background: #e8f7ef; color: #0b6b3a; border-color: #a7d9bd; }}
 .review-warn {{ background: #fff3cd; color: #8a5a00; border-color: #f3cf74; }}
 .review-bad {{ background: #ffe4e6; color: #b42318; border-color: #f3a7ad; }}
@@ -3711,7 +3713,7 @@ tr.hidden-row {{ display: none; }}
         <label title="芯片使用完整型号；阻容感使用对应数值">Value <select id="candidateReplaceValue" aria-label="Value 更新方式"><option value="false" selected>不替换</option><option value="true">替换</option></select></label>
         <label title="芯片使用完整型号；阻容感使用 resistor / capacitor / inductor，型号保留在物料参数中">Comment <select id="candidateReplaceComment" aria-label="Comment 更新方式"><option value="false" selected>不替换</option><option value="true">替换</option></select></label>
       </div>
-      <button id="openOfficialSearch" type="button">Chrome快速搜索</button>
+      <button id="openOfficialSearch" type="button">网页搜索</button>
     </div>
     <div id="candidateSearchProgress" class="candidate-search-progress" role="status"></div>
     <div id="candidateFilterBar" class="candidate-filter-bar" hidden>
@@ -3823,6 +3825,8 @@ const FILTER_CYCLES = {{
   ]
 }};
 const activeFilters = new Map();
+const FILTER_SCROLL_STORAGE_PREFIX = "partSelectionFilterScroll_v1:";
+let activeFilterViewKey = "";
 let candidateTargetRow = null;
 let candidateTargetKey = "";
 let currentCandidateItems = new Map();
@@ -4938,7 +4942,24 @@ function bomRowMatchesSearch(row, query) {{
     ? new RegExp(`\\\\b${{term}}\\\\b`, "i").test(text) : text.includes(term));
 }}
 
+function filterViewKey() {{
+  return JSON.stringify([
+    bomSelect.value || "", refsInput.value.trim(),
+    Array.from(activeFilters.entries()).sort(([a], [b]) => a.localeCompare(b)),
+    bomSearch.value.trim().toLocaleLowerCase()
+  ]);
+}}
+
+function rememberFilterScroll() {{
+  if (!activeFilterViewKey) return;
+  try {{ sessionStorage.setItem(FILTER_SCROLL_STORAGE_PREFIX + activeFilterViewKey, String(window.scrollY)); }}
+  catch (_error) {{}}
+}}
+
 function applyActiveFilter() {{
+  const nextViewKey = filterViewKey();
+  const changedView = Boolean(activeFilterViewKey && activeFilterViewKey !== nextViewKey);
+  if (changedView) rememberFilterScroll();
   let visibleCount = 0;
   rowsEl.querySelectorAll("tr[data-filter-key]").forEach(tr => {{
     const keys = String(tr.dataset.filterKey || "all").split(/\s+/);
@@ -4952,6 +4973,13 @@ function applyActiveFilter() {{
     if (visible) visibleCount += 1;
   }});
   bomSearchCount.textContent = `${{visibleCount}} / ${{currentRows.length}} 行`;
+  if (changedView) {{
+    let savedScroll = 0;
+    try {{ savedScroll = Number(sessionStorage.getItem(FILTER_SCROLL_STORAGE_PREFIX + nextViewKey) || 0); }}
+    catch (_error) {{}}
+    window.scrollTo({{top: Number.isFinite(savedScroll) ? savedScroll : 0}});
+  }}
+  activeFilterViewKey = nextViewKey;
   updateSyncSelection();
   updateWorkbenchSummary();
 }}
@@ -5358,6 +5386,14 @@ async function saveReviewStatus(tr) {{
     pill.textContent = reviewStatusText(payload.review_status);
     pill.title = "";
   }}
+  const confirmedAt = String(data.override?.review_confirmed_at || "");
+  const timeLabel = tr.querySelector("[data-review-confirmed-at]");
+  if (timeLabel) {{
+    timeLabel.textContent = confirmedAt
+      ? `${{payload.review_status === "Confirmed" ? "确认于" : "上次确认于"}} ${{formatReviewTime(confirmedAt)}}`
+      : "";
+    timeLabel.title = confirmedAt;
+  }}
   setState(`确认状态已保存 ${{payload.refs || payload.ref}}`, "saved");
   tr.dataset.reviewStatus = payload.review_status || "Pending";
   const row = rowDataForElement(tr);
@@ -5365,7 +5401,10 @@ async function saveReviewStatus(tr) {{
     row.review_status = tr.dataset.reviewStatus;
     row.review_status_mixed = false;
     row.override = {{...row.override, review_status: row.review_status}};
-    for (const selection of Object.values(row.per_ref_selection || {{}})) selection.review_status = row.review_status;
+    for (const selection of Object.values(row.per_ref_selection || {{}})) {{
+      selection.review_status = row.review_status;
+      if (confirmedAt) selection.review_confirmed_at = confirmedAt;
+    }}
   }}
   refreshRowState(tr);
 }}
@@ -5671,6 +5710,14 @@ function renderRows(rows) {{
     const note = row.note || "";
     const selectedStatus = statusValue(row, ov);
     const reviewStatus = row.review_status || ov.review_status || "Pending";
+    const confirmedAtValues = [...new Set(Object.values(row.per_ref_selection || {{}})
+      .map(item => item.review_confirmed_at).filter(Boolean))];
+    const confirmedRefs = Object.entries(row.per_ref_selection || {{}})
+      .filter(([, item]) => item.review_confirmed_at);
+    const confirmedAtTitle = confirmedRefs.map(([ref, item]) => `${{ref}}: ${{item.review_confirmed_at}}`).join("\n");
+    const confirmedAtText = confirmedAtValues.length === 1
+      ? `${{reviewStatus === "Confirmed" ? "确认于" : "上次确认于"}} ${{formatReviewTime(confirmedAtValues[0])}}`
+      : confirmedAtValues.length > 1 ? "各位号确认时间不同" : "";
     const reviewControl = `<select class="edit" data-field="review_status">${{[["Pending", "待确认"], ["Confirmed", "确认"], ["Rejected", "不确认"]].map(item => `<option value="${{item[0]}}" ${{item[0] === reviewStatus ? "selected" : ""}}>${{item[1]}}</option>`).join("")}}</select>`;
     const refButtons = renderRefButtons(row);
     const pageRefButtons = renderPageRefButtons(row);
@@ -5692,6 +5739,7 @@ function renderRows(rows) {{
         <div class="review-status">
           ${{reviewControl}}
           <span class="review-pill ${{reviewStatusClass(reviewStatus)}}" data-review-state title="${{row.review_status_mixed || row.selection_codes_mixed ? "位号确认状态或 C 编码不一致；整行按未确认处理" : ""}}">${{row.review_status_mixed || row.selection_codes_mixed ? "未确认" : esc(reviewStatusText(reviewStatus))}}</span>
+          <small class="review-confirmed-at" data-review-confirmed-at title="${{esc(confirmedAtTitle)}}">${{esc(confirmedAtText)}}</small>
         </div>
         ${{syncButton}}${{syncMarker}}${{fieldReconcileNotice}}${{syncSummary}}
       </td>
@@ -6003,12 +6051,30 @@ async function openCandidates(tr) {{
   candidateTitle.title = refs;
   candidateMinimizedTitle.textContent = candidateTitle.textContent;
   candidateKeyword.value = candidateKeywordForRow(tr);
-  candidateRows.innerHTML = '<tr><td colspan="8">正在同步搜索：Chrome 官网 + 结构化候选</td></tr>';
+  candidateRows.innerHTML = '<tr><td colspan="8">正在同步搜索：官网 + 结构化候选</td></tr>';
   candidateModal.classList.add("open");
-  void launchOfficialSearch(candidateKeyword.value.trim());
+  const autoSearch = await shouldOpenSearchOnReplace();
+  if (autoSearch) void launchOfficialSearch(candidateKeyword.value.trim());
   void searchCandidates().catch(err => {{
-    candidateRows.innerHTML = `<tr><td colspan="8" class="bad">结构化查询失败：${{esc(err.message || String(err))}}；Chrome 官网仍可继续使用</td></tr>`;
+    candidateRows.innerHTML = `<tr><td colspan="8" class="bad">结构化查询失败：${{esc(err.message || String(err))}}；网页搜索仍可继续使用</td></tr>`;
   }});
+}}
+
+async function shouldOpenSearchOnReplace() {{
+  try {{
+    const response = await fetch("/api/config");
+    if (!response.ok) throw new Error("读取工程设置失败");
+    const config = await response.json();
+    return String(config.open_lcsc_search_on_replace ?? "true") !== "false";
+  }} catch (_error) {{
+    return true;
+  }}
+}}
+
+function formatReviewTime(value) {{
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return new Intl.DateTimeFormat("zh-CN", {{year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false}}).format(date);
 }}
 
 function closeCandidates() {{
@@ -6036,11 +6102,11 @@ async function launchLcscUrl(url, label = "立创页面") {{
       body: JSON.stringify({{url: value}})
     }});
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "启动 Chrome 页面失败");
-    setState(`已用 Chrome 打开${{label}}`, "saved");
+    if (!data.ok) throw new Error(data.error || "打开网页失败");
+    setState(`已打开${{label}}`, "saved");
   }} catch (err) {{
     window.open(value, "_blank", "noopener");
-    setState(`Chrome 启动失败，已改用浏览器标签页：${{err.message || String(err)}}`, "status");
+    setState(`网页打开失败，已改用浏览器标签页：${{err.message || String(err)}}`, "status");
   }}
 }}
 
@@ -6054,11 +6120,11 @@ async function launchOfficialSearch(keyword) {{
       body: JSON.stringify({{keyword: value}})
     }});
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "启动 Chrome 搜索失败");
-    setState(`已用 Chrome 打开立创搜索：${{value}}`, "saved");
+    if (!data.ok) throw new Error(data.error || "打开网页搜索失败");
+    setState(`已打开立创网页搜索：${{value}}`, "saved");
   }} catch (err) {{
     window.open(officialSearchUrl(value), "_blank", "noopener");
-    setState(`Chrome 启动失败，已改用浏览器标签页：${{err.message || String(err)}}`, "status");
+    setState(`网页搜索打开失败，已改用浏览器标签页：${{err.message || String(err)}}`, "status");
   }}
 }}
 

@@ -129,6 +129,15 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertEqual(data["R1"]["note"], "first")
             self.assertIn("updated_at", data["R2"])
 
+    def test_review_confirmation_records_server_time_and_keeps_history_when_status_changes(self):
+        with temporary_project() as tmp:
+            path = Path(tmp) / "overrides.json"
+            confirmed = save_override(path, "R1", {"review_status": "Confirmed"})["R1"]
+            timestamp = confirmed["review_confirmed_at"]
+            self.assertTrue(timestamp)
+            pending = save_override(path, "R1", {"review_status": "Pending", "review_confirmed_at": "forged"})["R1"]
+            self.assertEqual(pending["review_confirmed_at"], timestamp)
+
     def test_save_override_preserves_structured_field_overrides(self):
         with temporary_project() as tmp:
             path = Path(tmp) / "overrides.json"
@@ -2055,6 +2064,9 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertIn("review-ok", html)
             self.assertIn("review-warn", html)
             self.assertIn("review-bad", html)
+        self.assertIn("data-review-confirmed-at", html)
+        self.assertIn("确认于", html)
+        self.assertIn("上次确认于", html)
 
     def test_render_index_places_row_sync_in_review_and_model_search_in_stock(self):
         html = self.render_minimal_index()

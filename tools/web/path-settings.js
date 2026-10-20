@@ -13,6 +13,7 @@
     ['runtime_cache', '临时缓存父目录', 'pathAdvancedFields', 'folder'],
     ['desktop_home', '桌面环境与日志父目录', 'pathAdvancedFields', 'folder'],
     ['jump_cursor_behavior', '跳转后鼠标位置', 'pathNavigationFields', 'choice'],
+    ['open_lcsc_search_on_replace', '更换型号时自动打开网页搜索', 'pathReplacementFields', 'choice'],
   ];
   const dataFiles = {output_overrides: 'part_selection_overrides.json', stock_cache: 'lcsc_stock_cache.json', input_refs: 'part_selection_input.txt'};
   const inputs = new Map();
@@ -39,6 +40,7 @@
         </fieldset>
         <section class="path-section"><h3>封装转换</h3><div id="pathConverterFields" class="path-fields"></div><p class="path-settings-note" id="pathConverterStatus"></p></section>
         <section class="path-section"><h3>原理图跳转</h3><div id="pathNavigationFields" class="path-fields"></div></section>
+        <section class="path-section"><h3>更换型号</h3><div id="pathReplacementFields" class="path-fields"></div></section>
         <details id="pathAdvanced"><summary>高级路径设置</summary>
           <div class="path-settings-tools"><button type="button" id="pathDefaults">恢复工程数据默认路径</button><button type="button" id="pathUnifyData">数据文件放入所选目录</button></div>
           <div id="pathAdvancedFields" class="path-fields"></div>
@@ -98,7 +100,9 @@
     title.textContent = label;
     const input = document.createElement(kind === 'choice' ? 'select' : 'input');
     if (kind === 'choice') {
-      input.innerHTML = '<option value="return">返回原来的鼠标位置（默认）</option><option value="stay">留在原理图画布</option>';
+      input.innerHTML = key === 'jump_cursor_behavior'
+        ? '<option value="return">返回原来的鼠标位置（默认）</option><option value="stay">留在原理图画布</option>'
+        : '<option value="true">开启（默认）</option><option value="false">关闭</option>';
     }
     Object.assign(input, {id: 'path-' + key, name: key, spellcheck: false, autocomplete: 'off'});
     input.placeholder = key === 'converter_executable' ? '自动检测（可留空）' : ['runtime_cache', 'desktop_home'].includes(key) ? '自动选择工程外目录' : '';

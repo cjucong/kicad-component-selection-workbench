@@ -27,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stock_cache": "BOM/lcsc_stock_cache.json",
     "kicad_protocol": "kicad-sch-search",
     "jump_cursor_behavior": "return",
+    "open_lcsc_search_on_replace": "true",
 }
 
 ALTERNATE_PART_FIELDS = ("c_code", "model", "package", "param")
@@ -219,6 +220,8 @@ def merge_override_record(current: dict[str, Any], update: dict[str, Any], now: 
         current["procurement_choice"] = normalize_procurement_choice(update.get("procurement_choice"))
         current["procurement_updated_at"] = now
     current["updated_at"] = now
+    if str(update.get("review_status") or "").strip() == "Confirmed":
+        current["review_confirmed_at"] = now
     return current
 
 
