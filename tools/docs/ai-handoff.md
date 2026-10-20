@@ -26,7 +26,9 @@
 
 `part_selection_lifecycle.py` 管理宿主与后台。宿主生成随机令牌，通过环境变量 `KICAD_PART_SELECTION_DESKTOP_TOKEN` 交给子服务，服务读取后移除；令牌不写命令行、配置或日志。`/api/config` 的 desktop_launcher_version=3，desktop_owner_id 仅返回 SHA256 摘要。启动核对程序目录、工程、配置和宿主摘要，同工程旧/其他宿主服务需退出，不静默复用或另起同工程写入服务。
 
-WebView 只暴露 `DesktopBridge.finish_exit`，不得直接暴露带有 window 对象的控制器。`web/desktop-lifecycle.js` 统一处理叉号和菜单退出/重启，先 flushRowEdits，失败保留窗口；原生 Closing 事件先取消关闭，在另一线程调 JS，避免 UI 线程等待自己。后台 `POST /api/desktop_shutdown` 验证 X-Desktop-Token，并通过 SettingsGate 拒绝在途请求和搜索/转换，停止接收新请求后正常 shutdown。确认 TCP 端口释放才能销毁窗口；重启先释放工程窗口互斥锁，再携带显式工程/配置启动隐藏宿主。不结束 KiCad、不强杀用户任务。
+WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（status/check/preferences/prepare），不得直接暴露带有 window 对象的控制器。`web/desktop-lifecycle.js` 统一处理叉号和菜单退出/重启，先 flushRowEdits，失败保留窗口；原生 Closing 事件先取消关闭，在另一线程调 JS，避免 UI 线程等待自己。后台 `POST /api/desktop_shutdown` 验证 X-Desktop-Token，并通过 SettingsGate 拒绝在途请求和搜索/转换，停止接收新请求后正常 shutdown。确认 TCP 端口释放才能销毁窗口；重启先释放工程窗口互斥锁，再携带显式工程/配置启动隐藏宿主。不结束 KiCad、不强杀用户任务。
+
+在线更新由 `kicad_plugin/updater.py` 管理，仅限带 build-info 的安装副本；状态和下载位于 LOCALAPPDATA 工程外目录。桥接核对本窗口 URL，不经 HTTP 暴露安装权限。正式 release 资产必须来自固定仓库、通过 SHA-256/版本/路径/标识校验，Python 文件先编译检查，禁止包内 third_party 和工程文件。下载只暂存，退出后 desktop.main 才发布目录，保留 converter、备份旧安装、失败回滚；共享安装的其他活跃宿主阻止更新。CI 标签发布工作流在 .github/workflows/release.yml，不能把 git main 提交说成 release 更新。
 
 后台监视 `--desktop-owner-pid`，Windows 使用进程句柄避免 PID 重用；宿主异常退出后等待零请求及任务空闲再停止服务。旧服务没有该接口，需要首次升级时人工核对后退出，不能绕过归属校验批量结束 Python 进程。
 

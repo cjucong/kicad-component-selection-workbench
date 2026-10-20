@@ -334,6 +334,7 @@ def main(argv=None) -> int:
         raise
     handle = None
     lifecycle = None
+    updater = None
     try:
         if args.config:
             args.config = Path(os.path.expandvars(str(args.config))).expanduser().resolve()
@@ -389,10 +390,14 @@ def main(argv=None) -> int:
             if not activate_window(title):
                 raise RuntimeError("Workbench is starting. Retry shortly; see desktop.log if it does not appear.")
             return 0
+        from updater import PluginUpdater
+        updater = PluginUpdater(HERE)
+        updater.register()
         from part_selection_lifecycle import DesktopLifecycle, DesktopBridge
         token = secrets.token_urlsafe(32)
         url = ensure_backend(root, config, logs, owner_token=token)
         lifecycle = DesktopLifecycle(url, token)
+        lifecycle.updater = updater
         logging.info("Opening project=%s url=%s", root, url)
         window = webview.create_window(title, url, width=1380, height=900, min_size=(800, 500),
                                        text_select=True, js_api=DesktopBridge(lifecycle))
@@ -401,6 +406,12 @@ def main(argv=None) -> int:
         window.events.closing += lifecycle.on_closing
         webview.start(gui="edgechromium", private_mode=False,
                       storage_path=str(logs / "webview"))
+        if lifecycle.install_update:
+            try:
+                updater.apply()
+            except Exception as exc:
+                logging.exception('Plugin update failed; previous installation retained')
+                show_error(f'插件更新失败，已保留或恢复原安装。\n{exc}\n\n更新日志：{updater.home}')
         if lifecycle.restart:
             release_window(handle)
             handle = None
@@ -411,6 +422,8 @@ def main(argv=None) -> int:
         show_error(f"{exc}\n\n{log_base / 'desktop.log'}")
         return 1
     finally:
+        if updater:
+            updater.unregister()
         if lifecycle and not lifecycle.allow_close:
             try:
                 lifecycle._stop_backend()

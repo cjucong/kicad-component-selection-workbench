@@ -1,7 +1,7 @@
 /* The native host calls this same path for its title-bar close button. */
 (() => {
   let exiting = false;
-  window.requestDesktopExit = async restart => {
+  window.requestDesktopExit = async (restart, update = false) => {
     if (exiting) return;
     if (!window.pywebview?.api?.finish_exit) {
       setState('仅支持独立工作台，请从 KiCad 插件入口启动', 'error');
@@ -11,12 +11,13 @@
     const wasInert = document.body.inert;
     try {
       if (bulkSyncRunning) throw new Error('正在同步原理图，请完成后再关闭或重启工作台');
+      if (window.pluginUpdateBusy) throw new Error('正在检查或下载插件更新，请完成后再关闭');
       if (document.querySelector('[data-composing="1"]')) throw new Error('请先完成输入法编辑');
       if (window.hasUnsavedPathSettings?.() && !window.confirm('路径配置尚未保存，放弃这些配置改动并退出？')) return;
       document.body.inert = true;
       await flushRowEdits();
       setState(restart ? '正在重启工作台…' : '正在退出工作台…', 'status');
-      const result = await window.pywebview.api.finish_exit(Boolean(restart));
+      const result = await window.pywebview.api.finish_exit(Boolean(restart), Boolean(update));
       if (!result.ok) throw new Error(result.error || '后台未能退出');
     } catch (error) {
       setState(error.message || String(error), 'error');

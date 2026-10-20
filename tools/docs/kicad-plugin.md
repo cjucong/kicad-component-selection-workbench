@@ -9,12 +9,12 @@
 1. 安装 Windows 版 KiCad 10、64 位 Python 3.10 或更高版本，以及 Microsoft Edge WebView2 Runtime。Python 安装时勾选“Add python.exe to PATH”。打开 PowerShell，运行 `python --version` 确认版本；若只有 `py` 命令可用，下面的 `python` 替换为 `py -3`。KiCad IPC 入口还需在首选项中启用 IPC API。
 2. 获取源码，下面两种方法任选一种。
 
-**不用 Git：**打开 https://github.com/cjucong/kicad- ，点击 **Code → Download ZIP**，完整解压到例如 `D:\KiCadTools\kicad-main`。不要直接在 ZIP 内运行，也不要只下载 `tools` 中的单个文件。在解压目录空白处打开 PowerShell，确认 `Get-ChildItem` 能看到 `README.md`、`tools`、`tests`。
+**不用 Git：**打开 https://github.com/cjucong/kicad-component-selection-workbench ，点击 **Code → Download ZIP**，完整解压到例如 `D:\KiCadTools\kicad-main`。不要直接在 ZIP 内运行，也不要只下载 `tools` 中的单个文件。在解压目录空白处打开 PowerShell，确认 `Get-ChildItem` 能看到 `README.md`、`tools`、`tests`。
 
 **使用 Git：**先安装 Git for Windows，再在 PowerShell 执行：
 
 ```powershell
-git clone https://github.com/cjucong/kicad-.git D:\KiCadTools\kicad-part-selection
+git clone https://github.com/cjucong/kicad-component-selection-workbench.git D:\KiCadTools\kicad-part-selection
 Set-Location D:\KiCadTools\kicad-part-selection
 ```
 
@@ -39,6 +39,20 @@ python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro
 ### 转换器是否需要另装
 
 以上命令安装的是**轻量版**：搜索、选料、数据导出、现有库封装选择等可以使用，但不会从 GitHub 源码自动下载转换器。需要“替换立创封装”时，另行获取 [EasyKiConverter v3.1.11](https://github.com/EasyKiconverter/EasyKiConverter/releases/tag/v3.1.11) 的 Windows 运行包，完整解压并保留 DLL 等依赖；在顶部“设置 → 工程设置…”选择其中的 `easykiconverter.exe`，保存后使用。完整分发包的构建、版本校验及许可材料见 [转换器说明](easykiconverter.md)。不要把外部转换器安装目录误选为工程数据输出目录。
+
+## 在线更新
+
+新版安装一次后，在“设置 → 插件更新…”选择更新方式：
+
+- **手动检查**：只在点击“检查更新”时访问仓库。
+- **启动时检查并提醒（默认）**：发现正式版本后菜单显示“有新版本”，由你确认“更新并重启”。
+- **自动下载，退出工作台后更新**：下次启动自动下载并校验正式包；不打断工作，正常关闭时保存行编辑、停止所属后台，窗口退出后安装。再次打开使用新版，也可点“更新并重启”。
+
+更新首选项按本机插件安装位置保存，不放进具体工程。下载、暂存与安装备份位于 `%LOCALAPPDATA%/KiCadPartSelection/plugin-updates/<安装路径哈希>/`。更新仅替换已安装的插件，不修改源码仓库、原理图、PCB、选料记录、配置、工程库或既有转换器；原工程和配置参数在重启时保留。多工程共用安装时，请先关闭其他工作台再安装，不结束 KiCad。下载或校验失败保留当前窗口和安装；文件发布失败恢复旧目录并保留完整备份。已安装成功但启动失败时，可退出工作台后用备份目录或上一版本包手动恢复。
+
+只接收本仓库 GitHub Releases 的正式版本，不跟随每次 main 提交，不下载预发布或降级版本。发布 ZIP 名称必须为 `kicad-component-selection-workbench-v<版本号>.zip`，GitHub 资产 SHA-256、ZIP 内容和 build-info 版本须一致；校验缺失、路径越界或尝试覆盖转换器/工程文件时拒绝安装。网络或代理不可达会提示重试，不改系统代理。源码窗口可查看版本，但须用 Git 更新后运行安装器。首次安装本更新功能仍需手动更新一次。
+
+维护者修改 `tools/kicad_plugin/updater.py` 的 `VERSION`，测试通过、提交并推送后创建对应 `vX.Y.Z` 标签；`.github/workflows/release.yml` 在 Windows 运行回归、打包并发布同名 ZIP。包含第三方转换器的完整分发包仍按转换器文档准备，本在线代码更新包不重复分发或升级转换器。
 
 ### 手动更新和卸载
 

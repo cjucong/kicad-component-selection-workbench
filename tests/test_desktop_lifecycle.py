@@ -145,6 +145,50 @@ def test_shutdown_failure_keeps_window_and_allows_retry():
     window.destroy.assert_not_called()
 
 
+def test_verified_update_is_applied_only_after_saved_window_and_owned_backend_close():
+    lifecycle, window = controller()
+    lifecycle.updater = Mock(pending={'verified':True})
+    lifecycle.updater.status.return_value = {'mode':'check'}
+    with patch.object(lifecycle, '_stop_backend') as stop:
+        assert lifecycle.finish_exit(True, True)['ok']
+    assert lifecycle.install_update and lifecycle.restart
+    stop.assert_called_once()
+    lifecycle.updater.apply.assert_not_called()
+
+
+def test_update_without_verified_package_or_during_busy_shutdown_keeps_window():
+    lifecycle, window = controller()
+    lifecycle.updater = Mock(pending=None)
+    with patch.object(lifecycle, '_stop_backend') as stop:
+        assert not lifecycle.finish_exit(True, True)['ok']
+    stop.assert_not_called()
+    lifecycle.updater.pending={'verified':True}
+    with patch.object(lifecycle, '_stop_backend', side_effect=ValueError('busy')):
+        assert not lifecycle.finish_exit(True, True)['ok']
+    assert not lifecycle.install_update
+    window.destroy.assert_not_called()
+
+
+def test_automatic_update_waits_for_normal_exit_and_does_not_force_restart():
+    lifecycle, window = controller()
+    lifecycle.updater = Mock(pending={'verified':True})
+    lifecycle.updater.status.return_value={'mode':'auto'}
+    with patch.object(lifecycle, '_stop_backend'):
+        assert lifecycle.finish_exit(False)['ok']
+    assert lifecycle.install_update and not lifecycle.restart
+
+
+def test_foreign_webpage_or_unknown_action_cannot_manage_updates():
+    from part_selection_lifecycle import DesktopBridge
+    lifecycle, window = controller()
+    lifecycle.updater = Mock()
+    bridge = DesktopBridge(lifecycle)
+    assert not bridge.plugin_update('execute','arbitrary command')['ok']
+    window.get_current_url=lambda:'https://example.com/'
+    assert not bridge.plugin_update('prepare')['ok']
+    lifecycle.updater.prepare.assert_not_called()
+
+
 def test_foreign_webpage_cannot_call_native_shutdown():
     lifecycle, window = controller()
     window.get_current_url = lambda:'https://example.com/'
@@ -234,10 +278,10 @@ def test_real_owner_exit_triggers_graceful_service_shutdown(app):
     assert app.settings_gate.stopping
 
 
-def test_bridge_exposes_only_finish_exit():
+def test_bridge_exposes_only_exit_and_restricted_update_actions():
     from part_selection_lifecycle import DesktopBridge
     bridge = DesktopBridge(Mock())
-    assert [name for name in dir(bridge) if not name.startswith('_')]==['finish_exit']
+    assert [name for name in dir(bridge) if not name.startswith('_')]==['finish_exit', 'plugin_update']
 
 
 def test_frontend_exit_flushes_edits_and_retains_window_on_busy_or_failure():

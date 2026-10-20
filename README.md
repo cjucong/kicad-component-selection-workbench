@@ -1,4 +1,4 @@
-# KiCad 器件选料助手
+# KiCad Component Selection Workbench
 
 独立于工程的 KiCad 10 选料插件，提供本地工作台、立创候选与库存查询、主料/备选料/订货记录、封装对比和原理图字段同步。程序可服务不同工程；CAD、BOM、人工记录和工程库由各工程保管。
 
@@ -25,6 +25,8 @@ python -B tools/kicad_plugin/desktop.py --config "E:/path/to/project/BOM/part_se
 
 安装到 KiCad 工具栏或构建 ZIP，见 [插件安装](tools/docs/kicad-plugin.md)。轻量安装包不内置转换器，完整版准备方法见 [转换器说明](tools/docs/easykiconverter.md)。
 
+通过“设置 → 插件更新…”检查 GitHub 正式发布版本、选择“更新并重启”，或启用“自动下载，退出工作台后更新”。默认仅启动时检查提醒，不自动安装；也可关闭自动检查。更新校验下载包 SHA-256、版本及插件标识，保留转换器与工程数据，目录切换失败恢复旧安装。源码运行使用 Git 更新，不通过菜单覆盖。[更新说明](tools/docs/kicad-plugin.md#在线更新)
+
 ## 工程数据与路径
 
 保留已有 `BOM/part_selection_config.json`，无需把工程复制到插件仓库。命令显式指定工程或配置；同时指定时两者解析出的工程根目录必须一致。后端不从插件源码父目录猜测工程。
@@ -44,6 +46,6 @@ python -B tools/kicad_plugin/desktop.py --config "E:/path/to/project/BOM/part_se
 
 本仓库仅包含插件源码、资源、打包入口和测试，不携带 CAD、生产 BOM、工程专用规则或 Git 数据快照。测试通过不代表实际 KiCad 按钮、跨机器窗口自动化或网络转换已验证；真实冒烟需另行在隔离工程执行并记录结果。
 
-仓库地址：https://github.com/cjucong/kicad-.git 。源码每轮修改后按协作规则备份、测试、提交推送并更新本机安装；源码文件的普通保存不会直接改动运行中的安装副本。
+仓库地址：https://github.com/cjucong/kicad-component-selection-workbench.git 。源码每轮修改后按协作规则备份、测试、提交推送并更新本机安装；源码文件的普通保存不会直接改动运行中的安装副本。
 
 未指定开源许可证；公开托管不等于授予 MIT 等开源授权，后续许可由仓库所有者决定。

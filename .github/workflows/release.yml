@@ -1,0 +1,39 @@
+name: Release Workbench
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install test dependencies
+        run: python -m pip install -r tools/requirements.txt pytest jsonschema
+      - name: Verify version and run regression tests
+        shell: pwsh
+        run: |
+          $env:PYTHONDONTWRITEBYTECODE='1'
+          $env:RELEASE_TAG='${{ github.ref_name }}'
+          python -B -c "import os,sys; sys.path.insert(0,'tools/kicad_plugin'); from updater import VERSION; assert os.environ['RELEASE_TAG']=='v'+VERSION"
+          if($LASTEXITCODE -ne 0) { throw 'Tag and package version differ' }
+          python -B -m pytest tests -q -p no:cacheprovider --tb=short
+          if($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }
+      - name: Build verified package
+        shell: pwsh
+        run: |
+          python -B tools/kicad_plugin/package_plugin.py --output '${{ runner.temp }}/kicad-component-selection-workbench-${{ github.ref_name }}.zip'
+          if($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' '${{ runner.temp }}/kicad-component-selection-workbench-${{ github.ref_name }}.zip' --repo '${{ github.repository }}' --title 'KiCad Component Selection Workbench ${{ github.ref_name }}' --generate-notes

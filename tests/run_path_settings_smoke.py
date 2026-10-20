@@ -84,7 +84,7 @@ const path = require('node:path');
     const bounds = await page.locator('#pathSettingsDialog').boundingBox();
     assert(bounds.x>=0 && bounds.y>=0 && bounds.x+bounds.width<=390 && bounds.y+bounds.height<=844);
     assert.equal(await page.locator('#pathSettingsDialog').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
-    const overlaps = await page.locator('.path-field').evaluateAll(rows=>rows.some(row=>{
+    const overlaps = await page.locator('#pathSettingsDialog .path-field').evaluateAll(rows=>rows.some(row=>{
       const label=row.querySelector('label').getBoundingClientRect();
       const input=row.querySelector('input:not([type=radio])').getBoundingClientRect();
       if (!input.width || !label.width) return false;
@@ -138,11 +138,37 @@ const path = require('node:path');
     await page.evaluate(()=>{window.pywebview={api:{finish_exit:async restart=>{window.testRestart=restart;return {ok:true};}}};});
     await page.locator('#pathRestart').click();
     await page.waitForFunction(()=>window.testRestart===true);
+    await page.locator('#pathSettingsDialog footer [data-close-paths]').click();
+    await page.waitForSelector('#rows tr');
+    // Exercise update controls through a mocked native bridge, not production GitHub.
+    await page.evaluate(()=>{
+      window.testUpdateCalls=[];
+      window.pywebview={api:{}};
+      window.pywebview.api.plugin_update=async(action,value)=>{
+        window.testUpdateCalls.push([action,value]);
+        return {ok:true,installed:true,current_version:'0.1.3',latest_version:action==='status'?'':'9.0.0',
+          available:action!=='status',mode:action==='preferences'?value:'check',ready:action==='prepare',
+          notes:'<img src=x onerror=alert(1)> release notes'};
+      };
+      window.pywebview.api.finish_exit=async(restart,update)=>{window.testUpdateExit=[restart,update];return {ok:true};};
+    });
+    await page.getByRole('button',{name:'设置',exact:true}).click();
+    await page.locator('#openPluginUpdates').click();
+    await page.locator('#pluginUpdatesDialog').waitFor({state:'visible'});
+    await page.locator('#checkPluginUpdate').click();
+    await page.locator('#installPluginUpdate').waitFor({state:'visible'});
+    assert.equal(await page.locator('#pluginReleaseNotes img').count(),0);
+    await page.locator('#pluginUpdateMode').selectOption('auto');
+    await page.waitForFunction(()=>window.testUpdateCalls.some(c=>c[0]==='preferences' && c[1]==='auto'));
+    page.once('dialog',dialog=>dialog.accept());
+    await page.locator('#installPluginUpdate').click();
+    await page.waitForFunction(()=>window.testUpdateExit?.[0]===true && window.testUpdateExit?.[1]===true);
+    assert.equal(await page.evaluate(()=>window.testUpdateCalls.some(c=>c[0]==='prepare')),true);
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({menu:'passed',cancel:'passed',defaults:'passed',browse_mock:'passed',
       conflict:'passed',migration_cancel:'passed',migration_and_reload:'passed',
       explicit_import_and_schematic_startup:'passed',custom_paths_retained:'passed',
-      runtime_restart_button:'passed',desktop_mobile_layout:'passed',page_errors:errors}));
+      runtime_restart_button:'passed',update_controls_mock_bridge:'passed',desktop_mobile_layout:'passed',page_errors:errors}));
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''

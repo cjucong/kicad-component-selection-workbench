@@ -82,8 +82,32 @@ class DesktopBridge:
     def __init__(self, lifecycle):
         self._lifecycle = lifecycle
 
-    def finish_exit(self, restart=False):
-        return self._lifecycle.finish_exit(restart)
+    def finish_exit(self, restart=False, update=False):
+        return self._lifecycle.finish_exit(restart, update)
+
+    def plugin_update(self, action, value=None):
+        lifecycle = self._lifecycle
+        if not lifecycle.lock.acquire(blocking=False):
+            return {'ok':False,'error':'工作台正在退出或处理更新，请稍候'}
+        try:
+            if lifecycle.window.get_current_url()!=lifecycle.url or lifecycle.allow_close:
+                raise ValueError('仅允许当前工作台管理插件更新')
+            updater = lifecycle.updater
+            if updater is None:
+                raise ValueError('当前宿主不支持更新，请重新安装插件')
+            if action=='status':
+                return updater.status()
+            if action=='check':
+                return updater.check()
+            if action=='preferences':
+                return updater.preferences(value)
+            if action=='prepare':
+                return updater.prepare()
+            raise ValueError('不支持的更新操作')
+        except Exception as exc:
+            return {'ok':False,'error':str(exc)}
+        finally:
+            lifecycle.lock.release()
 
 
 class DesktopLifecycle:
@@ -95,6 +119,8 @@ class DesktopLifecycle:
         self.restart = False
         self.shutdown_requested = False
         self.lock = threading.Lock()
+        self.updater = None
+        self.install_update = False
 
     def on_closing(self):
         if self.allow_close:
@@ -136,13 +162,17 @@ class DesktopLifecycle:
             time.sleep(0.1)
         raise ValueError('后台仍在完成退出，请稍后再次关闭；不会强制终止同步')
 
-    def finish_exit(self, restart=False):
+    def finish_exit(self, restart=False, update=False):
         if not self.lock.acquire(blocking=False):
             return {'ok':False,'error':'正在退出工作台，请稍候'}
         try:
-            if type(restart) is not bool or self.window.get_current_url()!=self.url:
+            if type(restart) is not bool or type(update) is not bool or self.window.get_current_url()!=self.url:
                 raise ValueError('仅允许当前工作台请求退出')
+            if update and (not self.updater or not self.updater.pending):
+                raise ValueError('请先下载并校验更新')
             self._stop_backend()
+            self.install_update = bool(self.updater and self.updater.pending and (
+                update or self.updater.status()['mode']=='auto'))
             self.restart = restart
             self.allow_close = True
             self.window.destroy()

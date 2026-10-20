@@ -493,7 +493,7 @@ assert.ok(!bomRowMatchesSearch(row,'missing'));
             self.assertIn("resources", metadata)
             manifest = json.loads(archive.read("plugins/plugin.json"))
             self.assertEqual(manifest["actions"][0]["scopes"], ["pcb", "schematic"])
-            self.assertEqual(metadata["versions"][0]["version"], "0.1.2")
+            self.assertEqual(metadata["versions"][0]["version"], "0.1.3")
             self.assertIn("plugins/__init__.py", names)
             self.assertIn("plugins/" + manifest["actions"][0]["entrypoint"], names)
             self.assertIn("plugins/app/part_selection_server.py", names)

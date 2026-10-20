@@ -21,14 +21,14 @@ ROOT = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
 from part_selection_runtime import runtime_directory
 IDENTIFIER = "com.smu.part-selection"
-VERSION = "0.1.2"
+from updater import VERSION
 CORE_FILES = (
     "part_selection_server.py", "part_selection_helper.py", "part_selection_overrides.py",
     "part_selection_library.py", "part_selection_footprints.py", "part_selection_runtime.py", "part_selection_paths.py", "part_selection_settings.py", "part_selection_lifecycle.py",
     "part_stock_lookup.py", "part_selection_search.py", "kicad_sexpr.py", "kicad_schematic_search.ps1",
     "kicad_ipc_action.py", "kicad_schematic_search_launcher.vbs",
     "install_kicad_schematic_search_protocol.ps1",
-    "web/toolbar-icons.svg", "web/LUCIDE-LICENSE", "web/footprint-compare.js", "web/footprint-compare.css", "web/row-edits.js", "web/path-settings.js", "web/path-settings.css", "web/desktop-lifecycle.js",
+    "web/toolbar-icons.svg", "web/LUCIDE-LICENSE", "web/footprint-compare.js", "web/footprint-compare.css", "web/row-edits.js", "web/path-settings.js", "web/path-settings.css", "web/desktop-lifecycle.js", "web/plugin-updates.js",
 )
 
 
@@ -133,7 +133,8 @@ def converter_bundle(runtime, source, notices):
 
 def package_files(*, converter_runtime=None, converter_source=None, converter_notices=None) -> dict[str, bytes]:
     files = {"plugins/" + name: (HERE / name).read_bytes()
-             for name in ("__init__.py", "desktop.py", "plugin.json", "requirements.txt", "desktop-requirements.txt")}
+             for name in ("__init__.py", "desktop.py", "updater.py", "plugin.json", "requirements.txt", "desktop-requirements.txt")}
+    files["plugins/build-info.json"] = (json.dumps({"version": VERSION}) + "\n").encode()
     files.update({"plugins/app/" + name: (TOOLS / name).read_bytes() for name in CORE_FILES})
     files["plugins/icon.png"] = icon_png()
     files["resources/icon.png"] = icon_png(24)

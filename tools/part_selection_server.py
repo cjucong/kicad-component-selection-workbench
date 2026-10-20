@@ -3231,6 +3231,7 @@ def render_index(app: PartSelectionApp) -> str:
     path_settings_js = (Path(__file__).resolve().parent / "web" / "path-settings.js").read_text(encoding="utf-8")
     path_settings_css = (Path(__file__).resolve().parent / "web" / "path-settings.css").read_text(encoding="utf-8")
     desktop_lifecycle_js = (Path(__file__).resolve().parent / "web" / "desktop-lifecycle.js").read_text(encoding="utf-8")
+    plugin_updates_js = (Path(__file__).resolve().parent / "web" / "plugin-updates.js").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3579,7 +3580,7 @@ tr.hidden-row {{ display: none; }}
   </div>
   <div class="app-menu">
     <button type="button" data-menu-trigger aria-expanded="false">设置</button>
-    <div class="menu-popup"><button type="button" id="openPathConfig">工程设置…</button></div>
+    <div class="menu-popup"><button type="button" id="openPathConfig">工程设置…</button><button type="button" id="openPluginUpdates">插件更新…</button></div>
   </div>
   <span class="menubar-spacer" aria-hidden="true"></span>
   <button type="button" class="project-path-link" data-action="open-project-path" title="点击打开工程目录">{html.escape(str(app.project_root))}</button>
@@ -7332,6 +7333,7 @@ loadBomOptions().then(() => {{
 <script>{footprint_js}</script>
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>
+<script>{plugin_updates_js}</script>
 </body>
 </html>"""
 

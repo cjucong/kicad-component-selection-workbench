@@ -32,6 +32,12 @@ def child(root, phase):
                         raise RuntimeError('Workbench did not load')
                     time.sleep(0.1)
                 if phase=='close':
+                    window.evaluate_js("document.querySelector('#openPluginUpdates').click(); null")
+                    while not window.evaluate_js("document.querySelector('#pluginVersion').textContent.includes('0.1.3')"):
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Native update bridge did not respond')
+                        time.sleep(0.1)
+                    window.evaluate_js("document.querySelector('#pluginUpdatesDialog [data-close-update]').click()")
                     window.evaluate_js("window.openPathSettings(); null")
                     while not window.evaluate_js("document.querySelector('#pathSettingsDialog').open"):
                         if time.monotonic()>deadline:
