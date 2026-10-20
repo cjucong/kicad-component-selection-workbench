@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -22,7 +23,15 @@ class _TemporaryProject:
             raise
 
     def cleanup(self):
-        self._container.cleanup()
+        # WebView2 can release its metrics mapping just after its host exits.
+        for attempt in range(21):
+            try:
+                self._container.cleanup()
+                return
+            except OSError:
+                if attempt == 20:
+                    raise
+                time.sleep(0.25)
 
     def __enter__(self):
         return self.name

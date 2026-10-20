@@ -34,7 +34,8 @@
 .path-field { display: grid; grid-template-columns: 175px minmax(0, 1fr); align-items: center; gap: 8px; }
 .path-field-control { display: flex; gap: 4px; min-width: 0; }
 .path-field-control input { box-sizing: border-box; width: 100%; min-width: 0; height: 30px; padding: 4px 7px; font: inherit; border: 1px solid #b6c1c9; border-radius: 3px; background: #fff; color: #25313b; user-select: text; }
-.path-field-control input:focus { outline: 2px solid #68ad93; outline-offset: 1px; }
+.path-field-control select { box-sizing: border-box; width: 100%; min-width: 0; height: 30px; padding: 4px 7px; font: inherit; border: 1px solid #b6c1c9; border-radius: 3px; background: #fff; color: #25313b; }
+.path-field-control input:focus, .path-field-control select:focus { outline: 2px solid #68ad93; outline-offset: 1px; }
 .path-settings-dialog .path-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: 0 0 30px; padding: 4px; border: 1px solid #c0c9ce; border-radius: 3px; background: transparent; font-size: 22px; }
 .path-icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .path-settings-note { font-size: 12px; line-height: 1.65; color: #65717d; }

@@ -965,6 +965,9 @@ def enrich_rows_with_schematic_sync_state(
 
     for row in rows:
         desired = row_schematic_sync_fields(row)
+        row["schematic_fields_by_ref"] = {
+            ref: actual_by_ref[ref] for ref in row.get("refs_list", []) if ref in actual_by_ref
+        }
         per_ref_desired = row.get("per_ref_sync_fields") or {}
         changed_refs: set[str] = set()
         missing_refs: list[str] = []
@@ -2182,7 +2185,10 @@ class PartSelectionApp:
     def jump_to_schematic(self, url: str) -> dict[str, object]:
         if urlparse(url).scheme != self.config.get("kicad_protocol", "kicad-sch-search"):
             raise ValueError("Not a KiCad schematic jump URL")
-        return self.run_kicad_script(url, ["-Mode", "SearchPanel"])
+        switches = ["-Mode", "SearchPanel"]
+        if self.config.get("jump_cursor_behavior", "return") == "stay":
+            switches.append("-MoveCursorAfterJump")
+        return self.run_kicad_script(url, switches)
 
     def prepare_kicad_for_external_schematic_write(self, refs: list[str]) -> dict[str, object]:
         url = self.kicad_url_for_refs(refs)
@@ -4536,7 +4542,7 @@ function rowForRefs(row, refs) {{
   clone.page_refs = buildPageRefs(clone.ref_links);
   clone.quantity = refs.length;
   clone.temp_split = true;
-  for (const key of ["per_ref_sync_fields", "per_ref_selection", "description_by_ref", "notes_by_ref", "field_diffs_by_ref", "external_schematic_updates", "schematic_field_conflicts", "stock_by_ref"]) {{
+  for (const key of ["per_ref_sync_fields", "schematic_fields_by_ref", "per_ref_selection", "description_by_ref", "notes_by_ref", "field_diffs_by_ref", "external_schematic_updates", "schematic_field_conflicts", "stock_by_ref"]) {{
     if (row[key]) clone[key] = Object.fromEntries(Object.entries(row[key]).filter(([ref]) => selected.has(ref)));
   }}
   if (row.notes_by_ref) {{
@@ -5163,7 +5169,7 @@ function schematicFieldReconcileNotice(row) {{
 }}
 
 function rowAnchor(tr) {{
-  return {{refs: tr?.dataset.refs || tr?.dataset.ref || "", scrollY: window.scrollY}};
+  return {{refs: tr?.dataset.refs || tr?.dataset.ref || "", scrollY: window.scrollY, scrollX: window.scrollX, top: tr?.getBoundingClientRect().top}};
 }}
 
 function restoreRowAnchor(anchor) {{
@@ -5175,7 +5181,7 @@ function restoreRowAnchor(anchor) {{
     return wanted.some(ref => refs.includes(ref));
   }});
   if (target) {{
-    target.scrollIntoView({{block: "center", inline: "nearest"}});
+    window.scrollTo({{top: window.scrollY + target.getBoundingClientRect().top - (anchor.top ?? target.getBoundingClientRect().top), left: anchor.scrollX ?? window.scrollX}});
     target.classList.add("changed");
     window.setTimeout(() => target.classList.remove("changed"), 1200);
   }} else if (Number.isFinite(anchor.scrollY)) {{
@@ -5183,19 +5189,53 @@ function restoreRowAnchor(anchor) {{
   }}
 }}
 
+function updateSavedFieldDiffs(row, fields) {{
+  const byRef = row.field_diffs_by_ref ||= {{}};
+  const diffs = row.field_diffs ||= {{}};
+  for (const field of fields) {{
+    const changed = [], oldValues = [];
+    for (const ref of row.refs_list || String(row.refs).split(",")) {{
+      const baseline = row.schematic_fields_by_ref?.[ref];
+      if (!baseline) continue;
+      const oldValue = String(baseline[field] || "").trim();
+      const newValue = String(row.per_ref_sync_fields?.[ref]?.[field] ?? row[field] ?? "").trim();
+      if (oldValue === newValue) {{
+        if (byRef[ref]) delete byRef[ref][field];
+      }} else {{
+        (byRef[ref] ||= {{}})[field] = {{old: oldValue, new: newValue}};
+        changed.push(ref);
+        if (!oldValues.includes(oldValue)) oldValues.push(oldValue);
+      }}
+    }}
+    if (changed.length) diffs[field] = {{old: oldValues.join("; "), new: row.per_ref_sync_fields?.[changed[0]]?.[field] ?? row[field] ?? "", refs: changed.join(",")}};
+    else delete diffs[field];
+  }}
+  const changedRefs = Object.keys(byRef).filter(ref => Object.keys(byRef[ref]).length);
+  row.field_changed_refs = [...new Set([...changedRefs, ...String(row.missing_schematic_refs || "").split(",").filter(Boolean)])].join(",");
+  row.field_edit_status = row.field_changed_refs ? "NeedsSchematicUpdate" : "";
+}}
+
 function markRowNeedsSchematicSync(tr, refsText = "") {{
   if (!tr) return;
-  tr.dataset.syncNeeded = "1";
+  const row = rowDataForElement(tr);
+  const needed = row?.schematic_fields_by_ref ? !!row.field_changed_refs : true;
+  tr.dataset.syncNeeded = needed ? "1" : "0";
   refreshRowState(tr);
   const button = tr.querySelector("[data-action='sync-schematic']");
   if (button) {{
-    button.classList.remove("action-muted", "action-sync");
-    button.classList.add("action-sync-needed");
-    button.title = "有改动，请同步原理图";
+    button.classList.remove("action-muted", "action-sync", "action-sync-needed");
+    button.classList.add(needed ? "action-sync-needed" : "action-muted");
+    button.title = needed ? "有改动，请同步原理图" : "当前字段和原理图一致";
   }}
-  if (!tr.querySelector("[data-sync-marker]")) {{
-    const marker = schematicSyncMarker({{field_changed_refs: refsText || tr.dataset.refs || tr.dataset.ref}}, true);
+  tr.querySelector("[data-sync-marker]")?.remove();
+  if (needed) {{
+    const marker = schematicSyncMarker(row || {{field_changed_refs: refsText || tr.dataset.refs || tr.dataset.ref}}, true);
     if (button) button.insertAdjacentHTML("afterend", marker);
+  }}
+  for (const field of ["comment", "value", "footprint"]) {{
+    const cell = tr.querySelector(`[data-col='${{field}}']`);
+    cell?.querySelector(".field-diff")?.remove();
+    if (cell && row) cell.insertAdjacentHTML("beforeend", fieldDiff(row, field));
   }}
 }}
 
@@ -5209,14 +5249,20 @@ async function saveRow(tr, decision, acceptedCode) {{
 }}
 
 async function saveFieldEdits(tr) {{
+  tr.querySelectorAll(".field-edit").forEach(queueRowInput);
   await flushRowEdits();
   const anchor = rowAnchor(tr);
-  const payload = fieldPayload(tr);
-  const res = await fetch("/api/field_override", {{ method: "POST", headers: {{"Content-Type": "application/json"}}, body: JSON.stringify(payload) }});
+  const version = rowsLoadVersion, bom = bomSelect.value || "";
+  const res = await fetch(`/api/rows?refs=${{encodeURIComponent(refsInput.value.trim())}}&bom=${{encodeURIComponent(bom)}}&stock=0`);
   const data = await res.json();
-  if (!data.ok) throw new Error(data.error || "保存字段失败");
-  setState(`字段已保存，正在重新合并 ${{payload.refs || payload.ref}}`, "saved");
-  await loadRows(anchor);
+  if (!res.ok) throw new Error(data.error || "加载字段失败");
+  if (version !== rowsLoadVersion || bom !== (bomSelect.value || "") || rowEditQueue.pending) return;
+  const signature = rows => rows.map(row => row.refs).sort().join("|");
+  if (signature(data.rows) !== signature(currentRows)) {{
+    renderRows(data.rows);
+    restoreRowAnchor(anchor);
+  }}
+  setState(`字段已保存 ${{anchor.refs}}`, "saved");
 }}
 
 async function adoptSchematicFields(tr, button) {{
@@ -5244,10 +5290,18 @@ async function saveReviewStatus(tr) {{
   if (pill) {{
     pill.className = `review-pill ${{reviewStatusClass(payload.review_status)}}`;
     pill.textContent = reviewStatusText(payload.review_status);
+    pill.title = "";
   }}
   setState(`确认状态已保存 ${{payload.refs || payload.ref}}`, "saved");
   tr.dataset.reviewStatus = payload.review_status || "Pending";
-  await loadRows(rowAnchor(tr));
+  const row = rowDataForElement(tr);
+  if (row) {{
+    row.review_status = tr.dataset.reviewStatus;
+    row.review_status_mixed = false;
+    row.override = {{...row.override, review_status: row.review_status}};
+    for (const selection of Object.values(row.per_ref_selection || {{}})) selection.review_status = row.review_status;
+  }}
+  refreshRowState(tr);
 }}
 
 async function postSchematicSync(path, payload) {{
@@ -6708,6 +6762,10 @@ async function persistRowInput(entry) {{
       row.effective_c_code = row.stock_c_code = row.manual_c_code = code;
       row.override = {{...row.override, ...payload}};
       row.review_status = "Pending";
+      row.review_status_mixed = row.selection_codes_mixed = false;
+      for (const selection of Object.values(row.per_ref_selection || {{}})) {{
+        Object.assign(selection, {{effective_c_code: code, decision: payload.decision, status: payload.status, review_status: "Pending"}});
+      }}
       row.stock = {{c_code: code, status: "待查询"}};
       for (const fields of Object.values(row.per_ref_sync_fields || {{}})) {{ fields.lcsc_c_code = code; fields.lcsc_url = lcscUrl(code); }}
       if (document.body.contains(tr)) {{
@@ -6729,8 +6787,12 @@ async function persistRowInput(entry) {{
     }} else {{
       row[field] = value;
       for (const fields of Object.values(row.per_ref_sync_fields || {{}})) fields[field] = value;
+      row.override = {{...row.override, field_overrides: {{...row.override?.field_overrides, [field]: value}}}};
     }}
-    if (field !== "note") {{ row.field_changed_refs = refs; row.field_edit_status = "NeedsSchematicUpdate"; }}
+    if (field !== "note") {{
+      if (row.schematic_fields_by_ref) updateSavedFieldDiffs(row, field === "replacement_c_code" ? ["lcsc_c_code", "lcsc_url"] : [field]);
+      else {{ row.field_changed_refs = refs; row.field_edit_status = "NeedsSchematicUpdate"; }}
+    }}
   }}
   if (field !== "note" && document.body.contains(tr)) markRowNeedsSchematicSync(tr, refs);
   if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");

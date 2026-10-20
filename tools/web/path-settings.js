@@ -12,6 +12,7 @@
     ['lcsc_bom_pattern', '立创 BOM 匹配规则', 'pathAdvancedFields'],
     ['runtime_cache', '临时缓存父目录', 'pathAdvancedFields', 'folder'],
     ['desktop_home', '桌面环境与日志父目录', 'pathAdvancedFields', 'folder'],
+    ['jump_cursor_behavior', '跳转后鼠标位置', 'pathNavigationFields', 'choice'],
   ];
   const dataFiles = {output_overrides: 'part_selection_overrides.json', stock_cache: 'lcsc_stock_cache.json', input_refs: 'part_selection_input.txt'};
   const inputs = new Map();
@@ -37,6 +38,7 @@
           <p id="pathCustomFilesNotice" class="path-settings-note" hidden>部分文件使用独立位置，已保留。可在高级路径设置中查看或统一。</p>
         </fieldset>
         <section class="path-section"><h3>封装转换</h3><div id="pathConverterFields" class="path-fields"></div><p class="path-settings-note" id="pathConverterStatus"></p></section>
+        <section class="path-section"><h3>原理图跳转</h3><div id="pathNavigationFields" class="path-fields"></div></section>
         <details id="pathAdvanced"><summary>高级路径设置</summary>
           <div class="path-settings-tools"><button type="button" id="pathDefaults">恢复工程数据默认路径</button><button type="button" id="pathUnifyData">数据文件放入所选目录</button></div>
           <div id="pathAdvancedFields" class="path-fields"></div>
@@ -94,13 +96,16 @@
     const title = document.createElement('label');
     title.htmlFor = 'path-' + key;
     title.textContent = label;
-    const input = document.createElement('input');
-    Object.assign(input, {id: 'path-' + key, name: key, type: 'text', spellcheck: false, autocomplete: 'off'});
+    const input = document.createElement(kind === 'choice' ? 'select' : 'input');
+    if (kind === 'choice') {
+      input.innerHTML = '<option value="return">返回原来的鼠标位置（默认）</option><option value="stay">留在原理图画布</option>';
+    }
+    Object.assign(input, {id: 'path-' + key, name: key, spellcheck: false, autocomplete: 'off'});
     input.placeholder = key === 'converter_executable' ? '自动检测（可留空）' : ['runtime_cache', 'desktop_home'].includes(key) ? '自动选择工程外目录' : '';
     const control = document.createElement('div');
     control.className = 'path-field-control';
     control.append(input);
-    if (kind) {
+    if (kind && kind !== 'choice') {
       const browse = document.createElement('button');
       Object.assign(browse, {type: 'button', className: 'path-icon-button', title: '选择' + label});
       browse.setAttribute('aria-label', browse.title);
@@ -153,7 +158,7 @@
     const moving = ['bom_dir', ...Object.keys(dataFiles)].some(key => normalized(inputs.get(key).value) !== normalized(initialValues[key]));
     if (moving && !window.confirm('将复制已有选料记录、缓存、位号清单、导出表及同步日志到新位置；原文件保留，目标有不同数据时停止。继续保存？')) return;
     saving = true;
-    const controls = [...form.querySelectorAll('input,button')];
+    const controls = [...form.querySelectorAll('input,select,button')];
     controls.forEach(control => { control.disabled = true; });
     try {
       await flushRowEdits();
@@ -176,7 +181,7 @@
     try {
       snapshot = await api('/api/path_settings');
       saved = false;
-      form.querySelectorAll('input,button').forEach(control => { control.disabled = false; });
+      form.querySelectorAll('input,select,button').forEach(control => { control.disabled = false; });
       dialog.querySelector('footer [data-close-paths]').textContent = '取消';
       dialog.querySelector('#pathRestart').hidden = true;
       dialog.querySelector('#pathAdvanced').open = false;

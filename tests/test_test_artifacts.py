@@ -29,6 +29,24 @@ class TestArtifactLifecycleTests(unittest.TestCase):
     def test_reusable_tests_have_lifecycle_documentation(self):
         self.assertTrue((ROOT / "tests/README.md").is_file())
 
+    def test_cleanup_retries_transient_file_locks_but_reports_persistent_errors(self):
+        from unittest.mock import patch
+        from _scratch import temporary_project
+        scratch = temporary_project()
+        self.addCleanup(scratch.cleanup)
+        cleanup = scratch._container.cleanup
+        with patch.object(scratch._container, 'cleanup', side_effect=[PermissionError('locked'), None]) as attempt:
+            with patch('_scratch.time.sleep') as wait:
+                scratch.cleanup()
+                self.assertEqual(attempt.call_count, 2)
+                wait.assert_called_once_with(0.25)
+        with patch.object(scratch._container, 'cleanup', side_effect=PermissionError('locked')) as attempt:
+            with patch('_scratch.time.sleep'):
+                with self.assertRaises(PermissionError):
+                    scratch.cleanup()
+                self.assertEqual(attempt.call_count, 21)
+        cleanup()
+
     def test_scratch_removes_sibling_runtime_cache(self):
         from _scratch import temporary_project, runtime_directory
 

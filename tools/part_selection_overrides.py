@@ -26,6 +26,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "output_overrides": "BOM/part_selection_overrides.json",
     "stock_cache": "BOM/lcsc_stock_cache.json",
     "kicad_protocol": "kicad-sch-search",
+    "jump_cursor_behavior": "return",
 }
 
 ALTERNATE_PART_FIELDS = ("c_code", "model", "package", "param")

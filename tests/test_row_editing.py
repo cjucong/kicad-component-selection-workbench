@@ -91,6 +91,36 @@ const {createRowEditQueue} = require('./tools/web/row-edits.js');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 ''')
 
+    def test_saved_diffs_keep_per_reference_baselines_and_unrelated_changes(self):
+        html = render_index(SimpleNamespace(config={}, project_root=ROOT))
+        function = html.split('function updateSavedFieldDiffs', 1)[1].split('function markRowNeedsSchematicSync', 1)[0]
+        function = 'function updateSavedFieldDiffs' + function
+        self.run_js("const assert=require('node:assert/strict');" + function + r'''
+const row={refs:'C1,C2',refs_list:['C1','C2'],value:'220nF',
+ schematic_fields_by_ref:{C1:{value:'100nF',footprint:'Lib:0603'},C2:{value:'0.1uF',footprint:'Lib:0603'}},
+ per_ref_sync_fields:{C1:{value:'220nF'},C2:{value:'220nF'}},
+ field_diffs_by_ref:{C1:{footprint:{old:'Lib:0603',new:'Lib:0805'}}}};
+updateSavedFieldDiffs(row,['value']);
+assert.equal(row.field_diffs.value.old,'100nF; 0.1uF');
+assert.equal(row.field_diffs_by_ref.C2.value.old,'0.1uF');
+row.per_ref_sync_fields.C1.value='470nF';row.per_ref_sync_fields.C2.value='470nF';
+updateSavedFieldDiffs(row,['value']);
+assert.equal(row.field_diffs.value.old,'100nF; 0.1uF');
+row.per_ref_sync_fields.C1.value='100nF';row.per_ref_sync_fields.C2.value='0.1uF';
+updateSavedFieldDiffs(row,['value']);
+assert.equal(row.field_diffs.value,undefined);
+assert.equal(row.field_diffs_by_ref.C1.value,undefined);
+assert.equal(row.field_changed_refs,'C1');
+assert.equal(row.field_edit_status,'NeedsSchematicUpdate');
+row.per_ref_sync_fields.C1.footprint='Lib:0603';
+row.per_ref_sync_fields.C2.footprint='Lib:0603';
+updateSavedFieldDiffs(row,['footprint']);
+assert.equal(row.field_changed_refs,'');
+row.missing_schematic_refs='C3';
+updateSavedFieldDiffs(row,['value']);
+assert.equal(row.field_changed_refs,'C3');
+''')
+
     def test_partial_field_save_preserves_notes_and_other_fields(self):
         from part_selection_server import PartSelectionApp
         from part_selection_overrides import save_overrides, load_overrides

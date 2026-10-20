@@ -195,6 +195,9 @@ public static class NativeMethods {
     public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
@@ -390,7 +393,9 @@ function Set-KiCadForeground {
         return
     }
     $shell = New-Object -ComObject WScript.Shell
-    [NativeMethods]::ShowWindowAsync($Target.MainWindowHandle, 9) | Out-Null
+    if ([NativeMethods]::IsIconic($Target.MainWindowHandle)) {
+        [NativeMethods]::ShowWindowAsync($Target.MainWindowHandle, 9) | Out-Null
+    }
     Start-Sleep -Milliseconds 20
     $appActivateByTitle = $shell.AppActivate($Target.MainWindowTitle)
     Start-Sleep -Milliseconds 20
@@ -1081,7 +1086,7 @@ function Invoke-ProtectedSearchResultClicks {
         if ($blocked) {
             [NativeMethods]::BlockInput($false) | Out-Null
         }
-        if ($hasOriginal) {
+        if ($hasOriginal -and -not $MoveCursorAfterJump) {
             [NativeMethods]::SetCursorPos($original.X, $original.Y) | Out-Null
         }
     }

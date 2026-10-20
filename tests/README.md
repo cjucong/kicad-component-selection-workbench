@@ -36,6 +36,14 @@ python -B -m pytest tests/test_kicad_search_text.py tests/test_kicad_busy_guard.
 
 ## 隔离与清理
 
+导航专项：
+
+```powershell
+python -B -m pytest tests/test_kicad_navigation_preferences.py tests/test_path_settings.py -p no:cacheprovider
+```
+
+上述测试模拟 Win32 边界，确认仅最小化时还原、默认恢复鼠标及留在原理图模式、设置校验与即时生效，不操作用户编辑器。行编辑 Chromium 冒烟另覆盖自动保存差异、连续修改与回改、Enter 反馈一致及确认料不重建当前行；设置冒烟覆盖鼠标选项取消、保存和重开保持。
+
 ```python
 from pathlib import Path
 from _scratch import temporary_project

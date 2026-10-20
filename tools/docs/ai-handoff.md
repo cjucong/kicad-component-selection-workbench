@@ -62,6 +62,8 @@ WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（sta
 
 ## 保持的行为边界
 
+- 自动保存与 Enter 共享 rowEditQueue；行数据包含 schematic_fields_by_ref 作为逐位号磁盘基线，保存成功更新 field_diffs/field_diffs_by_ref 及当前行，不使用上次网页输入作为 old。确认状态不调用 loadRows；Enter 仅真实分组变化时重绘并保持屏幕位置。新增跳转偏好 jump_cursor_behavior=return/stay，在工程设置保存；stay 传 -MoveCursorAfterJump。Set-KiCadForeground 仅 IsIconic 时执行 SW_RESTORE，禁止无条件还原最大化窗口。
+
 - 分组只按 Comment + Value + Footprint；主料冲突显式清空，不回退历史料号。备份后持久化，不丢备注、备选、订货和审计信息。
 - replace_value、replace_comment 为独立严格布尔值，缺省 false；保留字段不等于删除已存在待同步覆盖。
 - keep/library/convert 三种封装模式默认 keep。library/convert 的正式网页确认必须基于 phase=preview 及绑定的 footprint_choice，检查候选、位号、行版本、原理图/库摘要、焊盘编号和人工确认。取消、过期或并发变化不保存此次选择。

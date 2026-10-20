@@ -23,7 +23,7 @@ PATH_FIELDS = (
     'output_overrides', 'stock_cache', 'converter_executable',
     'runtime_cache', 'desktop_home',
 )
-EDITABLE_FIELDS = (*PATH_FIELDS, 'project_name', 'lcsc_bom_pattern')
+EDITABLE_FIELDS = (*PATH_FIELDS, 'project_name', 'lcsc_bom_pattern', 'jump_cursor_behavior')
 DATA_FIELDS = ('input_refs', 'output_overrides', 'stock_cache')
 LOG_NAMES = ('part_selection_schematic_sync_log.csv', 'part_selection_schematic_sync_runtime.jsonl')
 EXPORT_PATTERNS = ('part_selection_pump_table_*.csv', 'part_selection_change_log_*.csv')
@@ -276,6 +276,8 @@ def save_settings(config, payload):
         raise ValueError('包含不支持的配置字段或字段类型')
     raw = _raw(path)
     values = {**DEFAULT_CONFIG, **raw, **{k: v.strip() for k, v in updates.items()}}
+    if values['jump_cursor_behavior'] not in ('return', 'stay'):
+        raise ValueError('请选择跳转后鼠标返回原位或留在原理图')
     targets = _validate(root, path, values)
     copies = []
     for key in DATA_FIELDS:

@@ -40,10 +40,26 @@ const assert = require('node:assert/strict');
     assert.equal(await page.locator('#rows tr').count(),2);
     const selected = page.locator('#rows tr[data-refs="C103,C104,C105"]');
     assert.equal(await selected.count(),1);
+    await selected.evaluate(el=>window.originalEditedRow=el);
+    await selected.locator('[data-field="value"]').fill('220nF');
+    await page.waitForTimeout(1000);
+    assert.match(await selected.locator('[data-col="value"] .field-diff').innerText(), /100nF.*220nF/);
+    assert.equal(await selected.evaluate(el=>el===window.originalEditedRow),true);
+    await selected.locator('[data-field="value"]').fill('470nF');
+    await page.waitForTimeout(1000);
+    assert.match(await selected.locator('[data-col="value"] .field-diff').innerText(), /100nF.*470nF/);
+    await selected.locator('[data-field="value"]').fill('100nF');
+    await page.waitForTimeout(1000);
+    assert.equal(await selected.locator('[data-col="value"] .field-diff').count(),0);
     await selected.locator('[data-field="value"]').fill('220nF');
     await page.waitForTimeout(1000);
     // Saving while focused must keep the same DOM/focus, and only this group changes.
     assert.equal(await selected.locator('[data-field="value"]').inputValue(),'220nF');
+    const beforeEnter = await selected.locator('[data-col="value"] .field-diff').innerText();
+    await selected.locator('[data-field="value"]').press('Enter');
+    await page.waitForTimeout(700);
+    assert.equal(await selected.locator('[data-col="value"] .field-diff').innerText(),beforeEnter);
+    assert.equal(await selected.evaluate(el=>el===window.originalEditedRow),true);
     assert.equal(await page.locator('#rows tr[data-refs="C106"] [data-field="value"]').inputValue(),'100nF');
     await selected.locator('[data-field="footprint"]').fill('Library:0805');
     await selected.locator('[data-field="comment"]').fill('capacitor');
@@ -91,6 +107,8 @@ const assert = require('node:assert/strict');
     await page.waitForTimeout(900);
     await page.unroute('**/api/field_override');
     // A confirmation chosen while C-code autosave is in flight must not become Pending.
+    await selected.evaluate(el=>window.originalEditedRow=el);
+    const reviewGeometry = await selected.boundingBox();
     await page.route('**/api/override',async route=>{
       const payload=route.request().postDataJSON();
       if (payload.manual_c_code==='C123457') await new Promise(r=>setTimeout(r,500));
@@ -102,6 +120,8 @@ const assert = require('node:assert/strict');
     await page.waitForTimeout(1100);
     await page.unroute('**/api/override');
     assert.equal(await selected.locator('[data-field="review_status"]').inputValue(),'Confirmed');
+    assert.equal(await selected.evaluate(el=>el===window.originalEditedRow),true);
+    assert.equal((await selected.boundingBox()).y,reviewGeometry.y);
     // Reverting while an older write is still in flight must persist the last input.
     let delayed=false;
     await page.route('**/api/field_override',async route=>{
