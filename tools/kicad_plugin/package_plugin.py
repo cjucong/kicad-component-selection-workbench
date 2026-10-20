@@ -24,8 +24,8 @@ IDENTIFIER = "com.smu.part-selection"
 VERSION = "0.1.2"
 CORE_FILES = (
     "part_selection_server.py", "part_selection_helper.py", "part_selection_overrides.py",
-    "part_selection_library.py", "part_selection_footprints.py", "part_selection_runtime.py",
-    "part_stock_lookup.py", "part_selection_search.py", "fpga_pin_assignment.py", "kicad_schematic_search.ps1",
+    "part_selection_library.py", "part_selection_footprints.py", "part_selection_runtime.py", "part_selection_paths.py",
+    "part_stock_lookup.py", "part_selection_search.py", "kicad_sexpr.py", "kicad_schematic_search.ps1",
     "kicad_ipc_action.py", "kicad_schematic_search_launcher.vbs",
     "install_kicad_schematic_search_protocol.ps1",
     "web/toolbar-icons.svg", "web/LUCIDE-LICENSE", "web/footprint-compare.js", "web/footprint-compare.css",
@@ -181,6 +181,13 @@ def install_plugin(plugin_directory: Path, backup_directory: Path, **bundle_opti
              if name.startswith("plugins/")}
     with tempfile.TemporaryDirectory(dir=directory, prefix=".selection-install-") as td:
         staged = Path(td)
+        # A code-only upgrade must not remove an already installed converter.
+        if not bundle_options.get("converter_runtime"):
+            bundled = next((path / "third_party" for path in previous if (path / "third_party").is_dir()), None)
+            if bundled is not None:
+                if any(path.is_symlink() for path in (bundled, *bundled.rglob("*"))):
+                    raise ValueError("Refusing to copy linked converter files")
+                shutil.copytree(bundled, staged / "third_party")
         for name, data in files.items():
             path = staged / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,6 +231,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--plugin-dir", type=Path, help="Custom KiCad user plugin directory for --install")
     parser.add_argument("--kicad-version", choices=["10.0"], default="10.0")
     parser.add_argument("--converter-runtime", type=Path, help="Pinned Windows converter runtime directory (full bundle)")
     parser.add_argument("--converter-source", type=Path, help="Clean pinned converter Git checkout")
@@ -233,7 +241,7 @@ def main() -> int:
     output = args.output or runtime_directory(ROOT) / f"part-selection-{VERSION}.zip"
     print(build_package(output, **bundle))
     if args.install:
-        print(install_plugin(user_plugin_directory(args.kicad_version), runtime_directory(ROOT) / "plugin_install_backups", **bundle))
+        print(install_plugin(args.plugin_dir or user_plugin_directory(args.kicad_version), runtime_directory(ROOT) / "plugin_install_backups", **bundle))
     return 0
 
 

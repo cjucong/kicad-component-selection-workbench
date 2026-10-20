@@ -1,31 +1,29 @@
-# 可复用测试
+# 插件回归测试
 
-这里保留回归测试源码、`fixtures/` 固定夹具和冒烟测试入口，不是运行后可以整目录删除的一次性数据。
+本目录保留可复用测试和稳定夹具，不含生产 CAD、BOM、人工选料记录或 Git 数据。电路连通性、FPGA、工程目录检查和 U46 审核测试由原工程维护。
 
-## 测试范围
+## 运行
 
-| 文件类别 | 用途 |
-| --- | --- |
-| `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 候选搜索、筛选、库存、订货和请求竞态 |
-| `test_*selection*`、`test_selected_schematic_sync.py` | 选料状态、分组、字段覆盖和同步 |
-| `test_footprint_choices.py`、`test_part_selection_library.py` | 封装选择、转换、库事务及回滚 |
-| `test_kicad_*`、`test_start_part_selection_tool.py` | 插件入口、隐藏启动、窗口归属和忙碌保护 |
-| 其余 `test_*.py` | 表格布局、工程解析、电路专项及临时产物清理回归 |
-| `run_*_smoke.py` | 按需运行的真实安装包/转换器/桌面窗口冒烟测试 |
-
-常规验证（从工程根目录执行）：
+从独立插件仓库根目录执行：
 
 ```powershell
+python -m pip install -r tools/requirements.txt pytest
 $env:PYTHONDONTWRITEBYTECODE = '1'
-python -B -m unittest discover -s tests
 python -B -m pytest tests -p no:cacheprovider
 ```
 
-第二条测试命令还覆盖使用 pytest 函数与 `scratch_project` 的测试，需要安装 pytest；普通单元测试不能代替真实 KiCad 窗口、网络、WebView2 和 EasyKiConverter 冒烟测试。U46 审核机制的独立回归入口是 `python -B tools/test_xc7a75t_io_audit.py`。
+Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或转换器的检查需对应运行环境。报告实际失败、跳过及缺失依赖，不把跳过当成验证通过。仅 unittest discovery 不覆盖所有 pytest 测试。
 
-## 临时产物
+| 测试类别 | 范围 |
+| --- | --- |
+| `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 搜索、筛选、库存、订货与请求竞态 |
+| `test_*selection*`、`test_selected_schematic_sync.py` | 配置、主料一致性、记录及同步范围 |
+| `test_footprint_choices.py`、`test_part_selection_library.py` | 封装对比、库事务与回滚 |
+| `test_kicad_*`、`test_start_part_selection_tool.py` | 桌面/安装入口、工程归属和忙碌保护 |
+| `test_test_artifacts.py` | 临时产物清理 |
+| `run_*_smoke.py` | 按需真实窗口、安装包或联网转换冒烟 |
 
-新建临时工程统一使用 `_scratch.py` 的上下文管理器：
+## 隔离与清理
 
 ```python
 from pathlib import Path
@@ -33,11 +31,15 @@ from _scratch import temporary_project
 
 with temporary_project(prefix="example_") as directory:
     project = Path(directory)
-    # Create disposable fixtures and reports here, never in the real project.
+    # Only disposable fixtures belong here.
 ```
 
-- 路径由 `tools/part_selection_runtime.py` 计算，在工程外同盘缓存的 `tests/` 下，不硬编码本机路径哈希。pytest 测试可使用 `conftest.py` 的 `scratch_project` 夹具，自动清理旁边缓存；既有系统 `TemporaryDirectory()` 和 pytest `tmp_path` 同样不应指向工程内部。
-- 正常结束、断言失败或可展开的异常都会清理临时工程及其同级运行缓存；`setUp` 中使用时立即注册 `self.addCleanup(tmp.cleanup)`。强杀进程、断电或文件占用可能留下残余，不能保证这种情况下即时清理。
-- 生成的临时工程、ZIP、截图、SVG、报告、解压目录和字节码不能提交；需要长期保留的稳定夹具须说明用途并人工审核。
-- `run_kicad_plugin_smoke.py --prepare-runtime` 的依赖环境是工程外可复用缓存，刻意保留，不属于一次性输出。
-- 不删除 `fixtures/` 或测试源码来代替清理产物。正式 CAD、BOM、库文件不能用于破坏性测试。
+pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立即注册 `self.addCleanup(tmp.cleanup)`。临时工程及它生成的同级运行缓存均在外部容器，正常结束、断言失败或异常展开时清理。其他 TemporaryDirectory/tmp_path 也须满足相同边界。强杀或文件占用可能留下残余，后续核对绝对路径再清理。
+
+临时 ZIP、解压文件、截图、报告、下载、字节码和测试缓存不得写入源码或正式工程，不得提交。稳定夹具应最小化并说明用途，禁止为测试复制真实工程或其 `.git`。
+
+## 真实冒烟
+
+查看 `python -B tests/run_kicad_plugin_smoke.py --help` 和 `python -B tests/run_easykiconverter_smoke.py --help` 后按需执行，只使用自动清理的隔离工程。桌面冒烟另需 `tools/kicad_plugin/desktop-requirements.txt` 与 `jsonschema`，部分步骤会联网。可复用的依赖运行时允许保留在外部缓存，并与一次性测试结果区分。
+
+单元测试、打包和模拟 loader 检查不能证明实际 KiCad 按钮、窗口交互、网络转换或跨机器兼容已通过；本说明不声明这些真实冒烟已执行。

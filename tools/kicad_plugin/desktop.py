@@ -21,7 +21,7 @@ CORE = HERE / "app" if (HERE / "app").is_dir() else HERE.parent
 
 
 def validate_project(path: Path) -> Path:
-    path = Path(path).expanduser()
+    path = Path(os.path.expandvars(str(path))).expanduser()
     if not path.is_absolute():
         raise ValueError("Project path must be absolute; refusing to guess from the working directory")
     root = path.parent if path.suffix.lower() in {".kicad_pro", ".kicad_pcb", ".kicad_sch"} else path
@@ -117,10 +117,13 @@ finally { $dialog.Dispose() }
     return Path(path) if path else None
 
 
-def ensure_config(root: Path) -> Path:
+def ensure_config(root: Path, config_path: Path | None = None) -> Path:
     sys.path.insert(0, str(CORE))
     from part_selection_overrides import load_config
-    config = root / "BOM" / "part_selection_config.json"
+    config = config_path or root / "BOM" / "part_selection_config.json"
+    config = Path(os.path.expandvars(str(config))).expanduser().resolve()
+    if config_path is not None and not config.is_file():
+        raise FileNotFoundError(f"Configuration not found: {config}")
     if config.exists():
         if load_config(config)["project_root"].resolve() != root.resolve():
             raise ValueError(f"Configuration points to another project: {config}")
@@ -139,7 +142,7 @@ def ensure_config(root: Path) -> Path:
             json.dump(data, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
     except FileExistsError:
-        return ensure_config(root)
+        return ensure_config(root, config_path)
     return config
 
 
@@ -147,6 +150,8 @@ def matches_service(payload: object, root: Path, config: Path) -> bool:
     if not isinstance(payload, dict) or not payload.get("config_path") or not payload.get("project_root"):
         return False
     if payload.get("desktop_launcher_version") != 2:
+        return False
+    if not payload.get("backend_directory") or Path(payload["backend_directory"]).resolve() != CORE.resolve():
         return False
     try:
         return (Path(payload["project_root"]).resolve() == root.resolve()
@@ -169,7 +174,10 @@ def project_key(root: Path) -> str:
 
 def cache_directory() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".cache")))
-    directory = base / "KiCadPartSelection"
+    configured = os.environ.get("KICAD_PART_SELECTION_HOME")
+    directory = Path(os.path.expandvars(configured)).expanduser() if configured else base / "KiCadPartSelection"
+    if not directory.is_absolute():
+        raise ValueError("KICAD_PART_SELECTION_HOME must be an absolute path")
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
@@ -292,6 +300,7 @@ def main(argv=None) -> int:
                  bool(os.environ.get("KICAD_API_SOCKET")), bool(os.environ.get("KICAD_API_TOKEN")))
     parser = argparse.ArgumentParser(description="KiCad part-selection desktop host")
     parser.add_argument("--project", type=Path, help="Absolute project file or directory")
+    parser.add_argument("--config", type=Path, help="Explicit project configuration JSON")
     parser.add_argument("--browser", action="store_true", help="Use the system browser instead of WebView2")
     try:
         args = parser.parse_args(argv)
@@ -300,8 +309,16 @@ def main(argv=None) -> int:
         raise
     handle = None
     try:
+        if args.config:
+            args.config = Path(os.path.expandvars(str(args.config))).expanduser().resolve()
         if args.project:
             root = validate_project(args.project)
+        elif args.config:
+            sys.path.insert(0, str(CORE))
+            from part_selection_overrides import load_config
+            if not args.config.is_file():
+                raise FileNotFoundError(f"Configuration not found: {args.config}")
+            root = validate_project(load_config(args.config)["project_root"])
         else:
             try:
                 if not os.environ.get("KICAD_API_SOCKET"):
@@ -314,6 +331,9 @@ def main(argv=None) -> int:
                 if path is None:
                     return 0
                 root = validate_project(path)
+        config = ensure_config(root, args.config) if args.config else ensure_config(root)
+        if log_base.resolve().is_relative_to(root.resolve()):
+            raise ValueError("Desktop runtime must be outside the KiCad project")
         logs = log_base / project_key(root)
         logs.mkdir(exist_ok=True)
         if not args.browser:
@@ -334,7 +354,7 @@ def main(argv=None) -> int:
                     with (logs / "window.log").open("ab") as output:
                         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
                         subprocess.Popen([str(python), "-B", str(HERE / "desktop.py"),
-                                          "--project", str(root)], cwd=root, stdin=subprocess.DEVNULL,
+                                          "--project", str(root), "--config", str(config)], cwd=root, stdin=subprocess.DEVNULL,
                                          stdout=output, stderr=output, **options)
                     return 0
                 finally:
@@ -345,7 +365,6 @@ def main(argv=None) -> int:
             if not activate_window(title):
                 raise RuntimeError("Workbench is starting. Retry shortly; see desktop.log if it does not appear.")
             return 0
-        config = ensure_config(root)
         url = ensure_backend(root, config, logs)
         logging.info("Opening project=%s url=%s", root, url)
         if args.browser:

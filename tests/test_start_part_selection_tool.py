@@ -1,15 +1,42 @@
 import os
+import json
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import time
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from _scratch import temporary_project
 
 
 class StartPartSelectionToolTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows hidden launcher')
+    def test_hidden_vbs_preserves_arguments_with_spaces(self):
+        with temporary_project(prefix='hidden launcher ') as directory:
+            work = Path(directory)
+            for name in ('start_part_selection_tool.bat', 'start_part_selection_tool.vbs'):
+                shutil.copy2(PROJECT_ROOT / 'tools' / name, work / name)
+            output = work / 'arguments.json'
+            (work / 'launch_part_selection.py').write_text(
+                'import json, os, sys\nfrom pathlib import Path\n'
+                'Path(os.environ["LAUNCH_TEST_OUTPUT"]).write_text(json.dumps(sys.argv[1:]))\n')
+            arguments = ['--config', str(work / 'settings with spaces.json')]
+            env = {**os.environ, 'PART_SELECTION_PYTHON': sys.executable,
+                   'LAUNCH_TEST_OUTPUT': str(output), 'TEMP': str(work)}
+            subprocess.run(['cscript.exe', '//B', str(work / 'start_part_selection_tool.vbs'),
+                            *arguments], env=env, capture_output=True, check=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
+            deadline = time.monotonic() + 15
+            while not output.exists() and time.monotonic() < deadline:
+                time.sleep(0.1)
+            log = work / 'part_selection_tool_startup.log'
+            self.assertTrue(output.exists(), log.read_text(errors='replace') if log.exists() else 'Worker did not start')
+            self.assertEqual(json.loads(output.read_text()), ['--hidden', *arguments])
+
     def launcher_text(self):
         return (PROJECT_ROOT / "tools" / "start_part_selection_tool.bat").read_text(
             encoding="ascii"
@@ -29,12 +56,11 @@ class StartPartSelectionToolTest(unittest.TestCase):
     def test_launcher_starts_hidden_background_worker(self):
         script = self.launcher_text()
 
-        self.assertIn("-windowstyle hidden", script)
+        self.assertIn("wscript.exe //b", script)
         self.assertIn("pythonw", script)
-        self.assertIn("--open", script)
+        self.assertIn("launch_part_selection.py %*", script)
         self.assertIn("part_selection_tool_startup.log", script)
-        self.assertIn("http://127.0.0.1:8765/api/config", script)
-        self.assertIn("skipped duplicate launch", script)
+        self.assertNotIn('--project "%~dp0.."', script)
         self.assertNotIn("pause", script)
         self.assertNotIn('"%python%" -b part_selection_server.py', script)
 

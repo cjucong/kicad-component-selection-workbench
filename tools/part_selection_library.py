@@ -18,7 +18,7 @@ import threading
 import time
 from uuid import uuid4
 
-from fpga_pin_assignment import parse_sexpr
+from kicad_sexpr import parse_sexpr
 from part_selection_runtime import runtime_directory
 
 PINNED_VERSION = '3.1.11'

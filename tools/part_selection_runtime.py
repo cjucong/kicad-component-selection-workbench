@@ -9,7 +9,11 @@ from pathlib import Path
 def runtime_directory(project_root):
     project = Path(project_root).resolve()
     key = hashlib.sha256(os.path.normcase(str(project)).encode('utf-8')).hexdigest()[:12]
-    directory = project.parent / '.kicad-part-selection-cache' / (project.name + '-' + key)
+    configured = os.environ.get('KICAD_PART_SELECTION_CACHE', '')
+    base = Path(os.path.expandvars(configured)).expanduser() if configured else project.parent / '.kicad-part-selection-cache'
+    if not base.is_absolute():
+        raise ValueError('Runtime cache path must be absolute')
+    directory = base / (project.name + '-' + key)
     resolved = directory.resolve()
     if resolved.is_relative_to(project):
         raise ValueError('Runtime cache must be outside the KiCad project')

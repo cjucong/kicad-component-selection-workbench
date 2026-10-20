@@ -527,7 +527,10 @@ function Get-ProjectRoot {
     if ($ProjectRoot) {
         return (Resolve-Path -LiteralPath $ProjectRoot).Path
     }
-    return (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+    if ($env:KIPRJMOD -and (Test-Path -LiteralPath $env:KIPRJMOD -PathType Container)) {
+        return (Resolve-Path -LiteralPath $env:KIPRJMOD).Path
+    }
+    throw "Specify -ProjectRoot; the installed plugin directory is not a KiCad project."
 }
 
 function Get-CommandLineProjectStatus {

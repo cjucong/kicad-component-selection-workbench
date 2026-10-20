@@ -96,14 +96,7 @@ SCHEMATIC_SYNC_RUNTIME_LOG_LOCK = threading.Lock()
 SCHEMATIC_SYNC_TRANSACTION_LOCK = threading.Lock()
 SCHEMATIC_NOTIFY_SETTLE_SECONDS = 0.25
 SCHEMATIC_SOURCE_BOM = "__schematic__"
-DEFAULT_BULK_SYNC_REF_MAP = {
-    "U56": "U28",
-    "U59": "U42",
-    "U60": "U41",
-    "U58": "U67",
-    "U54": "U50",
-    "U55": "U40",
-}
+DEFAULT_BULK_SYNC_REF_MAP = {}
 
 
 def find_latest_by_pattern(project_root: Path, pattern: str) -> Path | None:
@@ -1419,7 +1412,7 @@ class PartSelectionApp:
     def __init__(self, config_path: Path):
         self.config = load_config(config_path)
         self.project_root = self.config["project_root"]
-        self.bom_dir = self.project_root / "BOM"
+        self.bom_dir = self.config["bom_dir"]
         self.overrides_path = self.config["output_overrides"]
         self.stock_cache_path = self.config["stock_cache"]
         self.search_jobs = CandidateSearchJobs(self.lcsc_search, self.cached_search_seed)
@@ -1430,18 +1423,22 @@ class PartSelectionApp:
     def source_bom(self) -> Path:
         return self.config["source_bom"]
 
+    def is_schematic_source(self, selected_bom: str = "") -> bool:
+        return (selected_bom == SCHEMATIC_SOURCE_BOM if selected_bom
+                else self.source_bom().name == SCHEMATIC_SOURCE_BOM)
+
     def resolve_bom_path(self, selected_bom: str = "") -> Path:
+        if self.is_schematic_source(selected_bom):
+            return self.config["schematic_dir"]
         if not selected_bom:
             return self.source_bom()
-        if selected_bom == SCHEMATIC_SOURCE_BOM:
-            return self.config["schematic_dir"]
         candidate = Path(selected_bom)
         if not candidate.is_absolute():
             candidate = self.project_root / candidate
         candidate = candidate.resolve()
-        project_root = self.project_root.resolve()
-        if project_root not in [candidate, *candidate.parents]:
-            raise ValueError("selected BOM must be inside the project directory")
+        roots = (self.project_root.resolve(), self.bom_dir.resolve())
+        if not any(candidate.is_relative_to(root) for root in roots):
+            raise ValueError("selected BOM must be inside the project directory or configured BOM directory")
         if not candidate.exists():
             raise FileNotFoundError(f"selected BOM not found: {candidate}")
         return candidate
@@ -1459,7 +1456,7 @@ class PartSelectionApp:
                     continue
             except Exception:
                 continue
-            relative = path.relative_to(self.project_root).as_posix()
+            relative = path.relative_to(self.project_root).as_posix() if path.is_relative_to(self.project_root) else str(path)
             result.append({"name": path.name, "path": relative})
         return result
 
@@ -1474,7 +1471,7 @@ class PartSelectionApp:
     def refs(self, query_refs: str = "", selected_bom: str = "") -> list[str]:
         if query_refs.strip():
             return read_target_refs(self.project_root, query_refs, None)
-        if selected_bom == SCHEMATIC_SOURCE_BOM:
+        if self.is_schematic_source(selected_bom):
             return sorted(load_schematic_parts(self.config["schematic_dir"]).keys(), key=ref_sort_key)
         bom_path = self.resolve_bom_path(selected_bom)
         refs = read_refs_from_bom(bom_path)
@@ -1522,7 +1519,7 @@ class PartSelectionApp:
             return overrides
 
     def rows(self, query_refs: str = "", selected_bom: str = "", include_stock: bool = True) -> list[dict[str, object]]:
-        if selected_bom == SCHEMATIC_SOURCE_BOM:
+        if self.is_schematic_source(selected_bom):
             schematic = load_schematic_parts(self.config["schematic_dir"])
             refs = self.refs(query_refs, selected_bom)
             with OVERRIDES_UPDATE_LOCK:
@@ -2752,7 +2749,7 @@ class PartSelectionApp:
         selected_bom = str(payload.get("bom", "") or "")
         query_refs = str(payload.get("refs", "") or "")
         refs = self.refs(query_refs, selected_bom)
-        if selected_bom == SCHEMATIC_SOURCE_BOM:
+        if self.is_schematic_source(selected_bom):
             schematic = load_schematic_parts(self.config["schematic_dir"])
             parts = [schematic[ref] for ref in refs if ref in schematic]
         else:
@@ -3069,6 +3066,7 @@ def make_handler(app: PartSelectionApp):
             if parsed.path == "/api/config":
                 config = {key: str(value) if isinstance(value, Path) else value for key, value in app.config.items()}
                 config["desktop_launcher_version"] = 2
+                config["backend_directory"] = str(Path(__file__).resolve().parent)
                 json_response(self, config)
                 return
             if parsed.path == "/favicon.ico":
@@ -3091,6 +3089,12 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/kicad_jump":
                     json_response(self, app.jump_to_schematic(str(payload.get("url", ""))))
+                    return
+                if parsed.path == "/api/open_path_config":
+                    if os.name != "nt":
+                        raise ValueError("Open the configuration JSON in your text editor")
+                    subprocess.Popen(["notepad.exe", str(app.config["config_path"])])
+                    json_response(self, {"ok": True, "path": str(app.config["config_path"])})
                     return
                 if parsed.path == "/api/override":
                     json_response(self, app.save_override(payload))
@@ -3128,7 +3132,7 @@ def make_handler(app: PartSelectionApp):
                         self,
                         app.bulk_sync_bom_state_to_schematic(
                             str(payload.get("bom", "")),
-                            ref_map={} if "selected_refs" in payload or payload.get("bom") == SCHEMATIC_SOURCE_BOM else DEFAULT_BULK_SYNC_REF_MAP,
+                            ref_map={} if "selected_refs" in payload or payload.get("bom") == SCHEMATIC_SOURCE_BOM else app.config.get("bulk_sync_ref_map", DEFAULT_BULK_SYNC_REF_MAP),
                             notify=payload.get("notify", True) is not False,
                             selected_refs=payload.get("selected_refs"),
                         ),
@@ -3500,6 +3504,7 @@ tr.hidden-row {{ display: none; }}
       <button type="button" data-command="exportChanges">导出改动表</button>
       <button type="button" data-command="saveDefaultView">保存当前列表配置为默认</button>
       <button type="button" data-command="loadDefaultView">加载默认列表配置</button>
+      <button type="button" id="openPathConfig">路径配置文件…</button>
     </div>
   </div>
   <div class="app-menu">
@@ -6986,6 +6991,16 @@ document.getElementById("saveDefaultView").addEventListener("click", () => {{
   saveDefaultViewConfig();
   closeToolbarMenus();
 }});
+
+document.getElementById("openPathConfig").addEventListener("click", async () => {{
+  closeToolbarMenus();
+  try {{
+    const response = await fetch("/api/open_path_config", {{method: "POST", headers: {{"Content-Type": "application/json"}}, body: "{{}}"}});
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "打开失败");
+    setState("已打开路径配置文件；修改前请备份，保存后重启后台生效", "status");
+  }} catch (error) {{ setState(error.message || String(error), "error"); }}
+}});
 document.getElementById("loadDefaultView").addEventListener("click", () => {{
   try {{ loadDefaultViewConfig(); }} catch (err) {{ setState(`加载默认配置失败：${{err.message || String(err)}}`, "error"); }}
   closeToolbarMenus();
@@ -7116,7 +7131,8 @@ loadBomOptions().then(() => {{
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run editable KiCad part-selection helper.")
-    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "BOM" / "part_selection_config.json")
+    parser.add_argument("--config", type=Path, help="Project configuration JSON")
+    parser.add_argument("--project", type=Path, help="KiCad project file or directory")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--open", action="store_true", help="Open the UI in the default browser.")
@@ -7124,7 +7140,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bulk-sync-dry-run", action="store_true", help="Only report what the bulk schematic sync would do.")
     parser.add_argument("--bulk-sync-no-notify", action="store_true", help="Do not notify or activate KiCad after bulk schematic sync.")
     parser.add_argument("--bulk-sync-no-prepare", action="store_true", help="Do not ask KiCad to save open schematic windows before bulk sync.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    from part_selection_paths import resolve_config
+    try:
+        args.config = resolve_config(args.project, args.config)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
+    return args
 
 
 def main() -> int:
@@ -7133,7 +7155,7 @@ def main() -> int:
     if args.bulk_sync_bom:
         result = app.bulk_sync_bom_state_to_schematic(
             args.bulk_sync_bom,
-            ref_map=DEFAULT_BULK_SYNC_REF_MAP,
+            ref_map={} if args.bulk_sync_bom == SCHEMATIC_SOURCE_BOM else app.config.get("bulk_sync_ref_map", DEFAULT_BULK_SYNC_REF_MAP),
             dry_run=args.bulk_sync_dry_run,
             notify=not args.bulk_sync_no_notify,
             prepare=not args.bulk_sync_no_prepare,

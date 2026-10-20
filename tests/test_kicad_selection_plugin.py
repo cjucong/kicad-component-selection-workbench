@@ -411,7 +411,8 @@ assert.ok(!bomRowMatchesSearch(row,'missing'));
         import desktop
         root = self.project()
         config = desktop.ensure_config(root)
-        payload = {"project_root": str(root), "config_path": str(config), "desktop_launcher_version": 2}
+        payload = {"project_root": str(root), "config_path": str(config), "desktop_launcher_version": 2,
+                   "backend_directory": str(desktop.CORE)}
         self.assertTrue(desktop.matches_service(payload, root, config))
         self.assertFalse(desktop.matches_service({**payload, "project_root": str(self.root)}, root, config))
         self.assertFalse(desktop.matches_service({"project_root": str(root)}, root, config))
@@ -492,7 +493,8 @@ assert.ok(!bomRowMatchesSearch(row,'missing'));
             self.assertIn("plugins/__init__.py", names)
             self.assertIn("plugins/" + manifest["actions"][0]["entrypoint"], names)
             self.assertIn("plugins/app/part_selection_server.py", names)
-            self.assertIn("plugins/app/fpga_pin_assignment.py", names)
+            self.assertIn("plugins/app/kicad_sexpr.py", names)
+            self.assertNotIn("plugins/app/fpga_pin_assignment.py", names)
             self.assertIn("plugins/app/kicad_schematic_search.ps1", names)
             self.assertIn("plugins/desktop-requirements.txt", names)
             self.assertFalse(any(n.startswith(("BOM/", "DOC/", "Libraries/")) for n in names))
@@ -640,8 +642,7 @@ assert.ok(!bomRowMatchesSearch(row,'missing'));
 
     @unittest.skipUnless(os.name == "nt", "Windows batch entrypoints")
     def test_chinese_launchers_forward_to_existing_entrypoints(self):
-        cases = (("启动器件选料助手.bat", "start_part_selection_tool.bat", "--desktop"),
-                 ("启动FPGA引脚分配工具.bat", "start_fpga_pin_assignment_tool.bat", ""))
+        cases = (("启动器件选料助手.bat", "start_part_selection_tool.bat", "--desktop"),)
         for wrapper_name, entry_name, argument in cases:
             with self.subTest(wrapper=wrapper_name):
                 wrapper = self.root / wrapper_name

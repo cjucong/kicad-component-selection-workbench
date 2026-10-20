@@ -23,8 +23,8 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
 
-DEFAULT_REFS = "R1169,R1170,R1214,R1272,R1310,R1315,R1316,R1495"
-BOM_SOURCE = "PXIE_4137_BOM_20260810_224839.csv"
+DEFAULT_REFS = ""
+BOM_SOURCE = "bom.csv"
 GENERIC_COMMENTS = {"", "CAPACITOR", "RESISTOR", "INDUCTOR", "DIODE", "MOSFET", "TRANSISTOR", "NC"}
 
 
@@ -47,10 +47,6 @@ class PartInfo:
     quantity: str = ""
     status: str = "Found"
     notes: list[str] = field(default_factory=list)
-
-
-def project_root_from_script() -> Path:
-    return Path(__file__).resolve().parents[1]
 
 
 def split_refs(text: object) -> list[str]:
@@ -370,7 +366,7 @@ def ref_sort_key_for_text(ref: str) -> tuple[str, int, str]:
 
 
 def load_schematic_sheet_names(doc_dir: Path) -> dict[Path, str]:
-    from fpga_pin_assignment import parse_sexpr
+    from kicad_sexpr import parse_sexpr
 
     names: dict[Path, set[str]] = {}
     hierarchy_files = set(doc_dir.glob("*.kicad_sch")) | set(doc_dir.parent.glob("*.kicad_sch"))
@@ -420,7 +416,7 @@ def load_schematic_parts(doc_dir: Path) -> dict[str, PartInfo]:
 
 def find_latest_lcsc_csv(bom_dir: Path) -> Path | None:
     files = sorted(
-        bom_dir.glob("PXIE_4137_LCSC_BOM_*.csv"),
+        bom_dir.glob("*LCSC*.csv"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
@@ -916,17 +912,18 @@ document.getElementById("jumpNext").addEventListener("click", () => {{
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate LCSC search helper files for KiCad designators.")
+    parser.add_argument("--project", type=Path, required=True, help="KiCad project directory")
     parser.add_argument("--refs", help="Comma/space separated refs. Overrides --input.")
     parser.add_argument("--input", type=Path, help="Text file containing refs. Defaults to BOM/part_selection_input.txt.")
     parser.add_argument("--bom", type=Path, help=f"Source BOM CSV. Defaults to BOM/{BOM_SOURCE}.")
-    parser.add_argument("--lcsc-bom", type=Path, help="Latest exported LCSC BOM CSV. Defaults to newest BOM/PXIE_4137_LCSC_BOM_*.csv.")
+    parser.add_argument("--lcsc-bom", type=Path, help="Latest exported LCSC BOM CSV. Defaults to newest BOM/*LCSC*.csv.")
     parser.add_argument("--out-dir", type=Path, help="Output directory. Defaults to BOM/.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    project_root = project_root_from_script()
+    project_root = args.project.expanduser().resolve()
     bom_dir = project_root / "BOM"
     refs = read_target_refs(project_root, args.refs, args.input)
     source_bom = args.bom or (bom_dir / BOM_SOURCE)

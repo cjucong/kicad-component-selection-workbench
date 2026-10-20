@@ -19,8 +19,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "project_name": "KiCad Project",
     "project_root": ".",
     "schematic_dir": "DOC",
-    "source_bom": "BOM/PXIE_4137_BOM_20260810_224839.csv",
-    "lcsc_bom_pattern": "BOM/PXIE_4137_LCSC_BOM_*.csv",
+    "bom_dir": "BOM",
+    "source_bom": "__schematic__",
+    "lcsc_bom_pattern": "BOM/*LCSC*.csv",
     "input_refs": "BOM/part_selection_input.txt",
     "output_overrides": "BOM/part_selection_overrides.json",
     "stock_cache": "BOM/lcsc_stock_cache.json",
@@ -103,20 +104,20 @@ def normalize_schematic_field_snapshot(value: object) -> dict[str, str]:
 
 
 def _resolve_path(project_root: Path, value: str | Path) -> Path:
-    path = Path(value)
+    path = Path(os.path.expandvars(str(value))).expanduser()
     if path.is_absolute():
         return path
     return project_root / path
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
-    config_path = Path(config_path).resolve()
+    config_path = Path(os.path.expandvars(str(config_path))).expanduser().resolve()
     config = dict(DEFAULT_CONFIG)
     if config_path.exists():
         loaded = json.loads(config_path.read_text(encoding="utf-8-sig"))
         config.update(loaded)
 
-    project_root_value = Path(config.get("project_root") or ".")
+    project_root_value = Path(os.path.expandvars(str(config.get("project_root") or "."))).expanduser()
     if project_root_value.is_absolute():
         project_root = project_root_value
     else:
@@ -126,8 +127,10 @@ def load_config(config_path: Path) -> dict[str, Any]:
 
     config["config_path"] = config_path
     config["project_root"] = project_root
-    for key in ("schematic_dir", "source_bom", "input_refs", "output_overrides", "stock_cache"):
+    for key in ("schematic_dir", "bom_dir", "source_bom", "input_refs", "output_overrides", "stock_cache"):
         config[key] = _resolve_path(project_root, config[key])
+    if config.get("converter_executable"):
+        config["converter_executable"] = _resolve_path(project_root, config["converter_executable"])
     return config
 
 

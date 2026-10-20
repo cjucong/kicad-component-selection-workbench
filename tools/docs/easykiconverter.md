@@ -1,5 +1,9 @@
 # 立创符号与封装转换
 
+[工具首页](../README.md) | [使用与路径配置](part-selection.md) | [插件安装](kicad-plugin.md)
+
+命令从独立插件仓库根目录执行，目标 CAD、BOM 与库位于另一个工程。下文 DSMU 和 Libraries/DSMU 是原工程示例；其他工程使用自己的已注册库和目标目录。
+
 ## 选料时如何使用
 
 在“更换型号”窗口搜索框后的“封装”下拉框选择：
@@ -44,6 +48,8 @@ fp-lib-table
 
 库表使用 `${KIPRJMOD}` 相对路径，可随工程复制。只新增封装，不覆盖 DSMU 旧封装；同名异路径注册、导入文件被人工修改或解析失败时停止。临时缓存由 `part_selection_runtime.runtime_directory(project_root)` 定位，默认在工程外同盘的 `../.kicad-part-selection-cache/<工程名>-<路径哈希>/`，避免 KiCad 递归备份，且保证跨目录原子写入不跨磁盘。库表备份和事务清单在其 `part_selection_library_backups/`；转换预览在 `footprint-preview-*/`，最多保留 8 份、后续转换会清理过期项。日志路径以错误提示中的绝对路径为准。正式转换库仍在工程 `Libraries/`，旧脚本直接转换接口保留按 C 编码隔离的旧路径及校验规则。
 
+目标库选择已在封装对比 UI 中提供。正式符号、封装及库表是工程设计依赖，不随插件搬家或缓存清理删除。缓存父目录可用 KICAD_PART_SELECTION_CACHE 指定，必须绝对、工程外且同盘；桌面日志/环境基目录另用 KICAD_PART_SELECTION_HOME，须绝对且在工程外。JSON 路径编辑需要重启对应后端，修改输出路径不自动迁移已有记录，须先备份、复制和核对，不能未经确认建立空记录。
+
 库文件及库表发布失败会回滚本次已写且未被外部修改的文件；发现并发编辑时保留外部内容并提示备份位置。库发布后若选料记录保存失败，提示“库已保存但记录未保存”；已有安全新增库不会因记录故障被静默删除，可重新预览复用。不要把此类本地保存故障误认为网络转换失败。
 
 当前只转换符号和封装；上游即便未导出 3D 仍可能写入失效模型链接，导入前会移除这些 model 块，并规范化上游旧封装命名空间。不会将未经核实的 3D 模型挂到 PCB。
@@ -65,14 +71,17 @@ fp-lib-table
 运行 `tools/kicad_plugin/prepare_converter_bundle.py --help` 查看准备参数，再用准备目录构建：
 
 ```powershell
-python -B tools/kicad_plugin/prepare_converter_bundle.py --runtime D:/app/ezkiconv
+$converter = 'E:/Converters/EasyKiConverter-3.1.11'
+python -B tools/kicad_plugin/prepare_converter_bundle.py --runtime $converter
 $cache = python -B -c "import sys; sys.path.insert(0, 'tools'); from part_selection_runtime import runtime_directory; print(runtime_directory('.'))"
-python -B tools/kicad_plugin/package_plugin.py --output "$cache/part-selection-full-0.1.2.zip" --converter-runtime D:/app/ezkiconv --converter-source "$cache/easyki-bundle/source" --converter-notices "$cache/easyki-bundle/notices"
+python -B tools/kicad_plugin/package_plugin.py --output "$cache/part-selection-full-0.1.2.zip" --converter-runtime $converter --converter-source "$cache/easyki-bundle/source" --converter-notices "$cache/easyki-bundle/notices"
 ```
 
 完整版包含固定 v3.1.11 / `1acc47c028ed1f75066ba134f6a2f327c0751c0e` 的独立 CLI 运行时、完整对应转换器源码 ZIP、GPL 许可、依赖许可/来源记录与 SHA-256 清单。不打包用户生成库、缓存、配置、日志或静态开发库。Qt 动态库保持可独立替换，依赖源码获取地址见 THIRD_PARTY.md。插件自身现有许可不作变更；源码和许可材料应随安装包一起保留，公开分发前另行核对所用二进制的依赖与再分发条款。
 
 不传 `--converter-*` 的原命令仍构建轻量包，可用保留封装和库封装选择模式；转换需自行配置运行时。`--install` 支持同一组参数，安装前应退出选料窗口和 KiCad。不能把只包含 Python 代码的轻量包称为已内置转换器的完整版。
+
+轻量直接安装会保留旧插件中的 third_party 转换器，轻量 ZIP 自身仍不含转换器。`--install --plugin-dir "E:/KiCadUser/10.0/plugins"` 可覆盖实际 Windows 文档目录的默认插件父目录；工程配置、记录和正式导入库不进入安装包。
 
 ## 接口与测试
 
@@ -80,7 +89,7 @@ python -B tools/kicad_plugin/package_plugin.py --output "$cache/part-selection-f
 
 转换器 v3.1.11 实际通过 EasyEDA 的 components API 下载 CAD 数据，不是直接解析立创商品网页。当前上游 CLI 没有代理开关；Qt 可能使用 Windows 系统代理，仅清除 HTTP_PROXY/HTTPS_PROXY 不能保证直连。本插件不修改系统代理，不宣称已实现自动绕过。
 
-如果怀疑代理影响，请在代理软件中对 easyeda.com 设置直连或临时关闭代理后重试，比较同一 C 编码；代理开启本身不代表必然失败。实际转出的 C4283613 在本机代理开启时也通过。网络不通、网站拒绝、缺少 CAD 数据和本地文件占用应分开排查。
+如果怀疑代理影响，请在代理软件中对 easyeda.com 设置直连或临时关闭代理后重试，比较同一 C 编码；代理开启本身不代表必然失败。网络不通、网站拒绝、缺少 CAD 数据和本地文件占用应分开排查；本说明不声明独立仓库已完成真实联网转换验证。
 
 每次转换记录输出和代理启用状态（不记录代理地址、密码），超时也会保留日志；位置为工程外缓存的 `part_selection_converter_logs/`，预览内部转换日志以错误中的绝对路径为准。界面进度区分转换、校验、注册和本地保存。转换失败不保存此次选型；本地保存失败会明确提示权限或文件占用，不能通过反复点击掩盖。运行中短暂轮询失败会继续等待原任务，不重新发起转换。
 
@@ -90,4 +99,4 @@ python -B tools/kicad_plugin/package_plugin.py --output "$cache/part-selection-f
 - `POST /api/start_selection`：异步选料任务，接受相同 payload，返回 job_id。
 - 网页转换采用 `phase=preview`，任务结果 `result.preview` 包含真实 SVG、尺寸、目标库及不可猜测的 `preview_id`；不会保存候选。确认调用 `POST /api/select_candidate`，只提交 `footprint_choice`（`preview_id/source/existing_id/target_mode/target_library/target_folder/name/acknowledged`），原始候选和字段替换选项由服务端预览上下文恢复，不接受客户端改换位号或 C 编码。
 - `GET /api/selection_job?id=...`：读取 stage/message/done/error/result。任务失败不会被当成保存成功。
-- `python -B -m pytest tests -q`：包含保留封装、转换失败、注册回滚、复用校验、进度任务、安装包内容及现有回归测试。真实网络转换请只在工程外的隔离测试工程执行，不对正式 CAD 做测试写入。
+- `python -B -m pytest tests -p no:cacheprovider`：包含保留封装、转换失败、注册回滚、复用校验、进度任务、安装包内容及现有回归测试。设置 PYTHONDONTWRITEBYTECODE=1；真实网络转换请只在工程外的自动清理隔离测试工程执行，不对正式 CAD/BOM 做测试写入，不带入 Git 数据。普通回归不能代替真实 UI 或网络冒烟，见 [测试说明](../../tests/README.md)。

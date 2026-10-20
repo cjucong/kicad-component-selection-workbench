@@ -16,7 +16,7 @@ import tempfile
 import time
 from uuid import uuid4
 
-from fpga_pin_assignment import parse_sexpr
+from kicad_sexpr import parse_sexpr
 from part_selection_library import IMPORT_LOCK, LibraryImporter, checked_path, digest, table_text
 from part_selection_runtime import runtime_directory
 

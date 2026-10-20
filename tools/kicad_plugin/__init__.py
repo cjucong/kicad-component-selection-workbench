@@ -36,7 +36,11 @@ class PartSelectionAction(pcbnew.ActionPlugin if pcbnew is not None else object)
             env = os.environ.copy()
             for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "KICAD_API_SOCKET", "KICAD_API_TOKEN"):
                 env.pop(name, None)
-            cache = Path(env.get("LOCALAPPDATA", str(Path.home() / ".cache"))) / "KiCadPartSelection"
+            configured_home = env.get("KICAD_PART_SELECTION_HOME")
+            cache = (Path(os.path.expandvars(configured_home)).expanduser() if configured_home else
+                     Path(env.get("LOCALAPPDATA", str(Path.home() / ".cache"))) / "KiCadPartSelection")
+            if not cache.is_absolute() or cache.resolve().is_relative_to(path.parent):
+                raise ValueError("Desktop runtime must use an absolute path outside the KiCad project")
             cache.mkdir(parents=True, exist_ok=True)
             options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
             with (cache / "pcb-launch.log").open("ab") as output:

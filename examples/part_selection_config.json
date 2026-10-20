@@ -1,0 +1,12 @@
+{
+  "project_name": "My KiCad Project",
+  "project_root": "E:/work/MyBoard",
+  "schematic_dir": "DOC",
+  "bom_dir": "BOM",
+  "source_bom": "__schematic__",
+  "lcsc_bom_pattern": "BOM/*LCSC*.csv",
+  "input_refs": "BOM/part_selection_input.txt",
+  "output_overrides": "BOM/part_selection_overrides.json",
+  "stock_cache": "BOM/lcsc_stock_cache.json",
+  "converter_executable": ""
+}

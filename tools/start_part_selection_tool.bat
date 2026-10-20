@@ -5,8 +5,7 @@ if /i "%~1"=="--find-python" goto find_python_diagnostic
 
 rem The visible launcher only creates a hidden worker and exits immediately.
 if /i not "%~1"=="--hidden" (
-    powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command ^
-        "$args = @('/d', '/c', 'call', '%~sf0', '--hidden', '%~1'); Start-Process -FilePath '%ComSpec%' -ArgumentList $args -WindowStyle Hidden"
+    wscript.exe //B "%~dp0start_part_selection_tool.vbs" %*
     exit /b 0
 )
 
@@ -27,37 +26,12 @@ if not exist "%PYTHONW%" set "PYTHONW=%PYTHON%"
 >>"%LOG%" echo [%date% %time%] Python: %PYTHON%
 >>"%LOG%" echo [%date% %time%] PythonW: %PYTHONW%
 
-if /i "%~2"=="--desktop" goto desktop
-
-"%PYTHON%" -c "import openpyxl" >>"%LOG%" 2>&1
+"%PYTHON%" -B -c "import openpyxl" >>"%LOG%" 2>&1
 if errorlevel 1 (
-    >>"%LOG%" echo [%date% %time%] Installing Python dependencies...
     "%PYTHON%" -m pip install -r requirements.txt >>"%LOG%" 2>&1
-    if errorlevel 1 (
-        >>"%LOG%" echo [%date% %time%] Failed to install Python dependencies.
-        exit /b 1
-    )
-)
-
-"%PYTHON%" -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/config', timeout=1).read(1)" >>"%LOG%" 2>&1
-if not errorlevel 1 (
-    >>"%LOG%" echo [%date% %time%] Service already running; skipped duplicate launch.
-    exit /b 0
-)
-
->>"%LOG%" echo [%date% %time%] Starting http://127.0.0.1:8765/
-"%PYTHONW%" -B part_selection_server.py --host 127.0.0.1 --port 8765 --open >>"%LOG%" 2>&1
-set "SERVER_EXIT=%errorlevel%"
->>"%LOG%" echo [%date% %time%] Server process exited with code %SERVER_EXIT%
-exit /b %SERVER_EXIT%
-
-:desktop
-"%PYTHON%" -B -c "import openpyxl, webview" >>"%LOG%" 2>&1
-if errorlevel 1 (
-    "%PYTHON%" -m pip install -r kicad_plugin\desktop-requirements.txt >>"%LOG%" 2>&1
     if errorlevel 1 exit /b 1
 )
-"%PYTHONW%" -B kicad_plugin\desktop.py --project "%~dp0.." >>"%LOG%" 2>&1
+"%PYTHONW%" -B launch_part_selection.py %* >>"%LOG%" 2>&1
 exit /b %errorlevel%
 
 :find_python
