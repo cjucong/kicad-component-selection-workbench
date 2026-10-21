@@ -284,6 +284,14 @@ class SearchJobsTest(unittest.TestCase):
 
 
 class ProgressiveFrontendTest(unittest.TestCase):
+    def test_progressive_search_polling_starts_fast_and_backs_off(self):
+        html = render_index(SimpleNamespace(project_root=ROOT, config={}))
+        self.assertIn(
+            "const pollDelay = Math.min(250, 80 + Math.floor((Date.now() - started) / 500) * 50);",
+            html,
+        )
+        self.assertIn("setTimeout(resolve, pollDelay)", html)
+
     def test_stock_toggle_only_filters_current_items_without_searching(self):
         html = render_index(SimpleNamespace(project_root=ROOT, config={}))
         self.assertIn('inStockOnly.addEventListener("change", renderCandidateResults)', html)

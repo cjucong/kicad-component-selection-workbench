@@ -253,7 +253,7 @@ def test_stale_or_other_owned_service_is_not_silently_reused(app):
     import desktop
     payload = {'project_root':str(app.project_root),'config_path':str(app.config['config_path']),
                'backend_directory':str(desktop.CORE),'desktop_launcher_version':2}
-    with patch.object(desktop,'service_info',return_value=payload), patch.object(desktop.subprocess,'Popen') as launch:
+    with patch.object(desktop,'port_available',return_value=False), patch.object(desktop,'service_info',return_value=payload), patch.object(desktop.subprocess,'Popen') as launch:
         with pytest.raises(RuntimeError, match='旧版|其他'):
             desktop.ensure_backend(app.project_root,app.config['config_path'],app.project_root,owner_token='new')
     launch.assert_not_called()
@@ -263,10 +263,17 @@ def test_same_project_from_another_installation_is_not_started_twice(app):
     import desktop
     payload = {'project_root':str(app.project_root),'config_path':str(app.config['config_path']),
                'backend_directory':str(app.project_root / 'other-plugin'),'desktop_launcher_version':3}
-    with patch.object(desktop,'service_info',return_value=payload), patch.object(desktop.subprocess,'Popen') as launch:
+    with patch.object(desktop,'port_available',return_value=False), patch.object(desktop,'service_info',return_value=payload), patch.object(desktop.subprocess,'Popen') as launch:
         with pytest.raises(RuntimeError, match='旧版|其他'):
             desktop.ensure_backend(app.project_root,app.config['config_path'],app.project_root,owner_token='new')
     launch.assert_not_called()
+
+
+def test_backend_does_not_health_probe_free_candidate_ports(app):
+    import desktop
+    with patch.object(desktop, 'port_available', return_value=True) as probe:
+        assert desktop.occupied_ports([8765, 19000, 19001]) == []
+    assert probe.call_count == 3
 
 
 def test_stopping_gate_rejects_new_requests(app):

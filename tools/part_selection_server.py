@@ -6622,7 +6622,8 @@ async function searchCandidates(forceRefresh = false) {{
       if (data.done) return;
       if (Date.now() - started > 120000) throw new Error("查询超时，请重试");
       url = `/api/lcsc_search?progressive=1&job=${{encodeURIComponent(data.job_id)}}`;
-      await new Promise(resolve => setTimeout(resolve, 250));
+      const pollDelay = Math.min(250, 80 + Math.floor((Date.now() - started) / 500) * 50);
+      await new Promise(resolve => setTimeout(resolve, pollDelay));
     }}
   }} catch (err) {{
     if (!current() || err.name === "AbortError") return;

@@ -155,6 +155,19 @@ def service_info(port: int) -> object:
         return None
 
 
+def port_available(port: int) -> bool:
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def occupied_ports(ports: list[int]) -> list[int]:
+    return [port for port in ports if not port_available(port)]
+
+
 def project_key(root: Path) -> str:
     return hashlib.sha256(os.path.normcase(str(root.resolve())).encode("utf-8")).hexdigest()[:12]
 
@@ -195,22 +208,26 @@ def ensure_desktop_runtime(logs: Path) -> Path:
 
 
 def ensure_backend(root: Path, config: Path, logs: Path, *, owner_token: str) -> str:
+    startup_started = time.perf_counter()
     first = 18000 + int(project_key(root)[:6], 16) % 18000
     ports = [8765, *(first + offset for offset in range(10))]
+    # Empty ports need no HTTP request; probing each one with a timeout added
+    # up to several seconds to every cold launch.
+    occupied = occupied_ports(ports)
+    logging.info("Backend port scan elapsed_ms=%.1f occupied=%s",
+                 (time.perf_counter() - startup_started) * 1000, occupied)
     # Prefer the stable project-specific port if already running.
-    for port in ports:
+    for port in occupied:
         info = service_info(port)
         if isinstance(info, dict) and info.get('project_root') and Path(info['project_root']).resolve() == root.resolve():
             if not matches_service(info, root, config, owner_token):
                 raise RuntimeError('该工程仍有旧版或其他工作台后台运行。请先退出原工作台；旧版后台需手动退出一次。不要重复启动或结束 KiCad。')
-            logging.info("Reusing matching service on %s", port)
+            logging.info("Reusing matching service on %s elapsed_ms=%.1f",
+                         port, (time.perf_counter() - startup_started) * 1000)
             return f"http://127.0.0.1:{port}/"
     for port in ports:
-        with socket.socket() as probe:
-            try:
-                probe.bind(("127.0.0.1", port))
-            except OSError:
-                continue
+        if not port_available(port):
+            continue
         python = Path(sys.executable)
         pythonw = python.with_name("pythonw.exe")
         if os.name == "nt" and pythonw.exists():
@@ -230,7 +247,8 @@ def ensure_backend(root: Path, config: Path, logs: Path, *, owner_token: str) ->
                 if process.poll() is not None:
                     break
                 if matches_service(service_info(port), root, config, owner_token):
-                    logging.info("Started matching service on %s pid=%s", port, process.pid)
+                    logging.info("Started matching service on %s pid=%s elapsed_ms=%.1f",
+                                 port, process.pid, (time.perf_counter() - startup_started) * 1000)
                     return f"http://127.0.0.1:{port}/"
                 time.sleep(0.15)
         finally:
