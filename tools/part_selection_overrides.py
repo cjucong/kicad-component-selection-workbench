@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import threading
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -176,7 +177,10 @@ def load_overrides(path: Path) -> dict[str, dict[str, Any]]:
         for key, item in value.items():
             if item is None:
                 continue
-            if key == "alternate_parts":
+            if key == "workbench_undo" and isinstance(item, dict):
+                if isinstance(item.get("record"), dict):
+                    cleaned[key] = deepcopy(item)
+            elif key == "alternate_parts":
                 cleaned[key] = normalize_alternate_parts(item)
             elif key == "procurement_choice":
                 cleaned[key] = normalize_procurement_choice(item)
@@ -210,8 +214,25 @@ def save_overrides(path: Path, overrides: dict[str, dict[str, Any]]) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
-def merge_override_record(current: dict[str, Any], update: dict[str, Any], now: str) -> dict[str, Any]:
+def merge_override_record(current: dict[str, Any], update: dict[str, Any], now: str,
+                          *, capture_undo: bool = False) -> dict[str, Any]:
     current = dict(current)
+    if capture_undo and "workbench_undo" not in current:
+        current["workbench_undo"] = {"record": deepcopy(current), "created_at": now}
+    if update.get("clear_workbench_undo"):
+        current.pop("workbench_undo", None)
+    elif update.get("rebase_workbench_undo") and isinstance(current.get("workbench_undo"), dict):
+        snapshot = deepcopy(current["workbench_undo"])
+        baseline = snapshot.get("record", {})
+        adopted = dict(update.get("field_overrides") or {})
+        baseline["field_overrides"] = {**baseline.get("field_overrides", {}), **adopted}
+        baseline["schematic_field_snapshot"] = {**baseline.get("schematic_field_snapshot", {}),
+                                                 **update.get("schematic_field_snapshot", {})}
+        for key in ("schematic_synced_at", "schematic_sync_summary"):
+            if key in update:
+                baseline[key] = update[key]
+        snapshot["record"] = baseline
+        current["workbench_undo"] = snapshot
     for key in (
         "accepted_c_code",
         "manual_c_code",
@@ -251,14 +272,16 @@ def merge_override_record(current: dict[str, Any], update: dict[str, Any], now: 
     return current
 
 
-def save_override(path: Path, ref: str, update: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def save_override(path: Path, ref: str, update: dict[str, Any],
+                  *, capture_undo: bool = False) -> dict[str, dict[str, Any]]:
     norm_ref = normalize_ref(ref)
     if not norm_ref:
         raise ValueError("ref is required")
-    return save_override_updates(path, {norm_ref: update})
+    return save_override_updates(path, {norm_ref: update}, capture_undo=capture_undo)
 
 
-def save_override_updates(path: Path, updates: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def save_override_updates(path: Path, updates: dict[str, dict[str, Any]],
+                          *, capture_undo: bool = False) -> dict[str, dict[str, Any]]:
     with OVERRIDES_UPDATE_LOCK:
         overrides = load_overrides(path)
         now = datetime.now().isoformat(timespec="seconds")
@@ -266,7 +289,8 @@ def save_override_updates(path: Path, updates: dict[str, dict[str, Any]]) -> dic
             norm_ref = normalize_ref(ref)
             if not norm_ref:
                 raise ValueError("ref is required")
-            overrides[norm_ref] = merge_override_record(overrides.get(norm_ref, {}), update, now)
+            overrides[norm_ref] = merge_override_record(overrides.get(norm_ref, {}), update, now,
+                                                       capture_undo=capture_undo)
         if updates:
             save_overrides(path, overrides)
         return overrides

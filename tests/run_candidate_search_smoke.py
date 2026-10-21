@@ -65,6 +65,33 @@ const path = require('node:path');
   await page.locator('#closeCandidateFilters').click();
   await page.locator('#inStockOnly').check();
   assert.match(await page.locator('#candidateFilterCount').innerText(),/显示 1/);
+  await page.locator('#clearCandidateFilters').click();
+  Object.assign(item,{category:'贴片电阻',model:'TEST-RESISTOR',param:'',
+    param_detail:'阻值: 100kΩ; 温度系数: ±25ppm/℃; 工作电压: 75V; 厂商扩展参数: literal'});
+  await page.locator('#candidateKeyword').fill('100k 0603');
+  await page.locator('#candidateKeyword').press('Enter');
+  await page.waitForFunction(()=>document.querySelector('#candidateRows').textContent.includes('TEST-RESISTOR'));
+  assert.match(await page.locator('#candidateRows [data-candidate-col="param"]').innerText(),/温度系数\s*±25ppm\/℃/);
+  assert.match(await page.locator('#candidateRows [data-candidate-col="param"]').innerText(),/工作电压\s*75V/);
+  await page.locator('[data-candidate-filter="parameters"]').click();
+  await page.locator('[data-candidate-facet="param:温度系数"]').check();
+  assert.match(await page.locator('#candidateFilterCount').innerText(),/显示 1/);
+  await page.locator('#closeCandidateFilters').click();
+  await page.locator('#clearCandidateFilters').click();
+  Object.assign(item,{category:'功率电感',model:'TEST-INDUCTOR',
+    param_detail:'感值: 10uH; 直流电阻(DCR): 42mΩ; 类型: 绕线; 额定电流: 2A'});
+  await page.locator('#candidateKeyword').fill('10uH 0805');
+  await page.locator('#candidateKeyword').press('Enter');
+  await page.waitForFunction(()=>document.querySelector('#candidateRows').textContent.includes('TEST-INDUCTOR'));
+  const inductorParam=await page.locator('#candidateRows [data-candidate-col="param"]').innerText();
+  assert.match(inductorParam,/直流电阻\(DCR\)\s*42mΩ/);
+  assert.match(inductorParam,/电感类型\s*绕线/);
+  assert.match(inductorParam,/额定电流\s*2A/);
+  await page.locator('[data-candidate-filter="parameters"]').click();
+  await page.locator('[data-candidate-facet="param:直流电阻(DCR)"]').check();
+  assert.match(await page.locator('#candidateFilterCount').innerText(),/显示 1/);
+  await page.locator('#closeCandidateFilters').click();
+  if(process.env.CANDIDATE_SCREENSHOTS) await page.screenshot({path:path.join(process.env.CANDIDATE_SCREENSHOTS,'inductor-parameters.png')});
   phase='empty';
   await page.locator('#candidateKeyword').fill('no match');
   await page.locator('#candidateKeyword').press('Enter');
@@ -77,7 +104,7 @@ const path = require('node:path');
   assert.match(await status.innerText(),/simulated upstream failure/);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({progress:'passed',partial:'passed',fallback_source:'passed',empty_and_failure:'passed',
-    filters:'passed',layout:[1475,800,390],page_errors:errors}));
+    filters:'passed',resistor_and_inductor_parameters:'passed',layout:[1475,800,390],page_errors:errors}));
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''

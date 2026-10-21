@@ -593,25 +593,39 @@ def _fetch_szlcsc_partner_products(keyword: str, timeout: int) -> list[dict[str,
     return parse_szlcsc_partner_response(data)
 
 
-def product_param_items(product: dict[str, Any]) -> list[str]:
+def product_parameters(product: dict[str, Any]) -> list[dict[str, str]]:
+    """Keep every vendor parameter as a pair, without splitting values on punctuation."""
     items = []
+    seen = set()
     aliases = {
         "temperature coefficient": "温度系数", "temperature coefficient of resistance": "温度系数",
         "tcr": "温度系数", "电阻温度系数": "温度系数", "温度系数": "温度系数",
         "working voltage": "工作电压", "operating voltage": "工作电压", "工作电压": "工作电压",
     }
-    for item in product.get("paramVOList") or product.get("paramPOList") or []:
-        if not isinstance(item, dict):
-            continue
-        name = strip_search_highlights(item.get("paramName") or item.get("name")).strip()
-        value = strip_search_highlights(item.get("paramValue") or item.get("value")).strip()
-        if name and value:
+    for key in ("paramVOList", "paramPOList", "selfParams"):
+        for item in product.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            name = strip_search_highlights(item.get("paramName") or item.get("paramNameEn")
+                                           or item.get("name") or item.get("parameterName")).strip()
+            raw_value = next((item[key] for key in ("paramValue", "paramValueEn", "value", "parameterDetailValue")
+                              if item.get(key) is not None), "")
+            value = strip_search_highlights(raw_value).strip()
+            if not name:
+                continue
             label = re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", name)
             canonical = aliases.get(clean_space(label).casefold())
             if canonical:
                 name = canonical + name[len(label):]
-            items.append(f"{name}: {value}")
+            pair = (name, value)
+            if pair not in seen:
+                seen.add(pair)
+                items.append({"name": name, "value": value})
     return items
+
+
+def product_param_items(product: dict[str, Any]) -> list[str]:
+    return [f"{item['name']}: {item['value']}" for item in product_parameters(product) if item["value"]]
 
 
 def product_param_summary(product: dict[str, Any]) -> str:
@@ -736,7 +750,7 @@ def format_partner_price_ladder(item: dict[str, Any], limit: int = 3) -> str:
     return "; ".join(result)
 
 
-def order_channel_from_lcbook(item: dict[str, Any], product: dict[str, Any] | None = None) -> dict[str, str]:
+def order_channel_from_lcbook(item: dict[str, Any], product: dict[str, Any] | None = None) -> dict[str, Any]:
     product = product or {}
     supplier = clean_space(item.get("provider"))
     model = clean_space(item.get("productCodeManufacturer") or product.get("productModel"))
@@ -750,7 +764,10 @@ def order_channel_from_lcbook(item: dict[str, Any], product: dict[str, Any] | No
         "c_code": normalize_c_code(item.get("productCode") or product.get("productCode")),
         "brand": clean_space(item.get("brandName") or item.get("productGradePlateName") or product.get("brandNameEn")),
         "package": clean_space(item.get("selfStandard") or item.get("encapsulationModel") or product.get("encapStandard")),
-        "param": clean_space(item.get("selfProductIntro") or item.get("productDesc") or product.get("productKeyAttributes")),
+        "param": clean_space(item.get("selfProductIntro") or item.get("productDesc") or item.get("productKeyAttributes")),
+        "param_detail": product_param_detail(item),
+        "parameters": product_parameters(item),
+        "category": text_value(item.get("catalogName") or item.get("lcCatalogName") or item.get("wmCatalogNameEn")),
         "batch_number": clean_space(item.get("batchNumber")),
         "stock": clean_space(stock_source),
         "lead_time": clean_space(item.get("deliveryTimeWayDays") or product.get("deliveryTimeWayDays")),
@@ -770,8 +787,8 @@ def order_channel_from_lcbook(item: dict[str, Any], product: dict[str, Any] | No
     }
 
 
-def product_order_channels(product: dict[str, Any]) -> list[dict[str, str]]:
-    channels: list[dict[str, str]] = []
+def product_order_channels(product: dict[str, Any]) -> list[dict[str, Any]]:
+    channels: list[dict[str, Any]] = []
     lcbook = product.get("lcBookProductVO")
     if isinstance(lcbook, dict):
         channel = order_channel_from_lcbook(lcbook, product)
@@ -782,7 +799,7 @@ def product_order_channels(product: dict[str, Any]) -> list[dict[str, str]]:
         if channel.get("url") or channel.get("supplier") or channel.get("provider_model"):
             channels.append(channel)
 
-    deduped: list[dict[str, str]] = []
+    deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
     for channel in channels:
         key = channel.get("url") or "|".join(
@@ -919,6 +936,7 @@ def parse_lcsc_product(c_code: str, product: dict[str, Any]) -> dict[str, Any]:
         "package": text_value(product.get("encapStandard")),
         "param": product_param_summary(product),
         "param_detail": product_param_detail(product),
+        "parameters": product_parameters(product),
         "price_ladder": format_price_ladder(product),
         "delivery": product_delivery(product),
         "channel": product_channel(product),
@@ -1083,6 +1101,7 @@ def build_candidate_item(keyword: str, product: dict[str, Any]) -> dict[str, Any
         "package": stock["package"],
         "param": stock["param"],
         "param_detail": stock["param_detail"],
+        "parameters": stock["parameters"],
         "stock": stock["stock"],
         "stock_sz": stock["stock_sz"],
         "stock_js": stock["stock_js"],

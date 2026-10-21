@@ -2087,7 +2087,10 @@ class PartSelectionOverridesTest(unittest.TestCase):
         self.assertIn('data-action="open-candidates"', html)
         self.assertIn('data-action="sync-schematic"', row_template)
         self.assertIn('data-col="review">', row_template)
-        self.assertIn('${syncButton}${syncMarker}', row_template)
+        review_cell = row_template.split('<td data-col="review">', 1)[1].split('</td>', 1)[0]
+        self.assertIn('${syncButton}', review_cell)
+        self.assertIn('data-action="undo-workbench"', review_cell)
+        self.assertIn('${syncMarker}', review_cell)
         self.assertIn('data-action="sync-schematic"', html)
         self.assertIn('<td data-col="stock">', row_template)
         self.assertIn('<div data-stock-cell>', row_template)

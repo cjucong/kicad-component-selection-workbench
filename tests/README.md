@@ -16,6 +16,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 
 | 测试类别 | 范围 |
 | --- | --- |
+| `test_workbench_undo.py`、`run_workbench_undo_smoke.py` | 未同步编辑链快照、重开保持、旧记录回退、同步后失效、过期预览及缺位号保护；Chromium 取消/确认、自动保存队列、选料和确认状态恢复、桌面/窄屏边界。仅用一次性工程，不回写生产 CAD |
 | `test_supply_column.py`、`run_supply_column_smoke.py` | 合并主料/供货列、旧列布局及默认配置迁移；Chromium 编码自动保存/清空/重开、库存刷新保持输入焦点、订货渠道链接及桌面/窄屏控件边界。使用合成工程与本地库存响应，不联网或写生产 CAD |
 | `test_part_selection_specs.py`、`test_spec_check_integration.py`、`run_spec_checks_smoke.py` | 阻容感值等价、限制信息、可靠尺寸识别、缺失信息及只读 API 与原理图基线；Chromium 警告弹窗、迟到响应、字段编辑和实时库存反馈 |
 | `test_row_filters.py`、`run_row_filters_smoke.py` | 主表字段/页面多选组合、条件保存和清除；筛选不减少共享库存总需求；Chromium 桌面/窄屏、隐藏列、存储失败及候选窗口隔离 |

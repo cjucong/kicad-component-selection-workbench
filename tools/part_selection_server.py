@@ -20,6 +20,7 @@ import tempfile
 from part_selection_runtime import runtime_directory
 import traceback
 import webbrowser
+from copy import deepcopy
 from dataclasses import asdict
 from collections import OrderedDict
 from datetime import datetime
@@ -1867,6 +1868,92 @@ class PartSelectionApp:
                     save_stock_cache(self.stock_cache_path, cache)
         return result
 
+    def undo_workbench_changes(self, payload: dict[str, object]) -> dict[str, object]:
+        refs = sorted(set(split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))), key=ref_sort_key)
+        if not refs:
+            raise ValueError("请选择要撤回的行")
+        if "confirm" in payload and not isinstance(payload["confirm"], bool):
+            raise ValueError("confirm must be a boolean")
+        with SCHEMATIC_SYNC_TRANSACTION_LOCK, OVERRIDES_UPDATE_LOCK:
+            current = load_overrides(self.overrides_path)
+            actual = self.read_schematic_fields(self.config["schematic_dir"], refs, SCHEMATIC_SYNC_FIELDS)
+            if any(ref not in actual for ref in refs):
+                raise ValueError("原理图中有位号缺失，未撤回任何工作台记录")
+            targets, modes, changes = {}, set(), []
+
+            def values(record, saved):
+                fields = record.get("field_overrides", {})
+                code = normalize_lcsc_c_code(record.get("stock_c_code") or record.get("accepted_c_code")
+                                           or record.get("manual_c_code") or saved.get("lcsc_c_code"))
+                if record.get("decision") in {"ClearSelection", "Reject", "NoChange", "DNP"}:
+                    code = ""
+                return {**{key: str(fields.get(key, saved.get(key, ""))) for key in (*EDITABLE_FIELDS, "description")},
+                        "lcsc_c_code": code, "review_status": record.get("review_status", "Pending"),
+                        "note": record.get("note", ""),
+                        "alternate_parts": record.get("alternate_parts", alternate_parts_from_schematic(
+                            saved.get("lcsc_alt", ""), saved.get("lcsc_alt_info", ""))),
+                        "procurement_choice": record.get("procurement_choice", procurement_choice_from_schematic(
+                            saved.get("procurement_url", ""), saved.get("procurement_info", "")))}
+
+            for ref in refs:
+                record = current.get(ref, {})
+                snapshot = record.get("workbench_undo")
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("record"), dict):
+                    target = deepcopy(snapshot["record"])
+                    if target.get("schematic_synced_at", "") != record.get("schematic_synced_at", ""):
+                        raise ValueError("该行已经同步过原理图，不能撤回此前的修改")
+                    modes.add("snapshot")
+                else:
+                    # Legacy records have no pre-edit history: use only verifiable saved CAD fields.
+                    modes.add("schematic")
+                    saved = actual[ref]
+                    code = normalize_lcsc_c_code(saved.get("lcsc_c_code"))
+                    target = deepcopy(record)
+                    target.update(accepted_c_code=code, manual_c_code=code, stock_c_code=code,
+                                  decision="AcceptManual" if code else "ClearSelection", status="")
+                    target["field_overrides"] = {key: str(saved.get(key, "")) for key in (*EDITABLE_FIELDS, "description")}
+                    target["field_overrides"]["description_c_code"] = code
+                    target["alternate_parts"] = alternate_parts_from_schematic(saved.get("lcsc_alt", ""), saved.get("lcsc_alt_info", ""))
+                    target["procurement_choice"] = procurement_choice_from_schematic(saved.get("procurement_url", ""), saved.get("procurement_info", ""))
+                targets[ref] = target
+                before, after = values(record, actual[ref]), values(target, actual[ref])
+                for key in before:
+                    if before[key] != after[key]:
+                        changes.append({"ref": ref, "field": key, "old": before[key], "new": after[key]})
+            # Preview regrouping too: an undo must never clear a sibling's selected material.
+            hypothetical = {**current, **targets}
+            parts = list(self.schematic_parts().values())
+            target_keys = {tuple(effective_part_fields(part, targets[part.ref])[key] for key in EDITABLE_FIELDS)
+                           for part in parts if part.ref in targets}
+            related = [part for part in parts if tuple(effective_part_fields(
+                part, hypothetical.get(part.ref, {}))[key] for key in EDITABLE_FIELDS) in target_keys]
+            normalizations = row_selection_updates(related, hypothetical)
+            if normalizations:
+                affected = sorted(normalizations, key=ref_sort_key)
+                raise ValueError("撤回后将合并到选料或确认状态冲突的行，可能清空编码；请先处理这些位号：" + ",".join(affected))
+            related_refs = set(refs) | {part.ref for part in related}
+            revision = hashlib.sha256(json.dumps({"refs": refs,
+                "records": {ref: current.get(ref) for ref in related_refs}, "schematic": actual,
+                "related_parts": {part.ref: asdict(part) for part in related}},
+                ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+            result = {"ok": True, "refs": refs, "available": bool(changes), "changes": changes,
+                      "revision": revision, "mode": next(iter(modes)) if len(modes) == 1 else "mixed"}
+            if not payload.get("confirm"):
+                return result
+            if payload.get("revision") != revision:
+                raise ValueError("预览后工作台或原理图发生变化，请重新预览后再撤回")
+            if not changes:
+                raise ValueError("该行没有可撤回的未同步修改")
+            backup = runtime_directory(self.project_root) / f"workbench_undo_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}" / "overrides_before.json"
+            save_overrides(backup, current)
+            for ref, target in targets.items():
+                if target:
+                    current[ref] = target
+                else:
+                    current.pop(ref, None)
+            save_overrides(self.overrides_path, current)
+            return {**result, "restored": True, "backup": str(backup)}
+
     def save_override(self, payload: dict[str, object]) -> dict[str, object]:
         refs = split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))
         update = {
@@ -1917,7 +2004,7 @@ class PartSelectionApp:
                 if len(filtered) != len(alternate_parts):
                     ref_update["alternate_parts"] = filtered
             updates[ref] = ref_update
-        overrides = save_override_updates(self.overrides_path, updates)
+        overrides = save_override_updates(self.overrides_path, updates, capture_undo=True)
         return {"ok": True, "refs": refs, "override": overrides.get(refs[0], {})}
 
     def select_candidate(self, payload: dict[str, object], progress=None) -> dict[str, object]:
@@ -2034,7 +2121,7 @@ class PartSelectionApp:
             filtered = [part for part in alternate_parts if part["c_code"] != code]
             if len(filtered) != len(alternate_parts):
                 update["alternate_parts"] = filtered
-            current[ref] = merge_override_record(previous, update, now)
+            current[ref] = merge_override_record(previous, update, now, capture_undo=True)
         latest = load_overrides(self.overrides_path)
         if any(latest.get(ref, {}) != revisions[ref] for ref in refs):
             raise ValueError("保存前检测到该行发生变化，已保留较新的选料，请重试")
@@ -2094,7 +2181,7 @@ class PartSelectionApp:
                 if selection:
                     ref_update["schematic_field_snapshot"] = {
                         **actual.get(ref, {}), **normalize_schematic_field_snapshot(previous.get("schematic_field_snapshot"))}
-                record = merge_override_record(previous, ref_update, now)
+                record = merge_override_record(previous, ref_update, now, capture_undo=True)
                 if "review_confirmed_at" in selection:
                     record["review_confirmed_at"] = selection["review_confirmed_at"]
                 overrides[ref] = record
@@ -2136,6 +2223,7 @@ class PartSelectionApp:
                     "schematic_field_snapshot": {**existing_snapshot, **values},
                     "schematic_synced_at": synced_at,
                     "schematic_sync_summary": "adopted current KiCad fields",
+                    "rebase_workbench_undo": True,
                 },
             )
             adopted[ref] = values
@@ -2218,7 +2306,7 @@ class PartSelectionApp:
 
         normalized_parts = normalize_alternate_parts(parts)
         for ref in refs:
-            save_override(self.overrides_path, ref, {"alternate_parts": normalized_parts})
+            save_override(self.overrides_path, ref, {"alternate_parts": normalized_parts}, capture_undo=True)
         return {
             "ok": True,
             "refs": refs,
@@ -2263,7 +2351,7 @@ class PartSelectionApp:
                 raise ValueError("valid procurement order URL is required")
 
         for ref in refs:
-            save_override(self.overrides_path, ref, {"procurement_choice": choice})
+            save_override(self.overrides_path, ref, {"procurement_choice": choice}, capture_undo=True)
         return {
             "ok": True,
             "refs": refs,
@@ -2365,11 +2453,12 @@ class PartSelectionApp:
                 for key in EDITABLE_FIELDS
                 if key in expected
             }
-            if not summary and not snapshot:
+            if not summary and not snapshot and not expected:
                 continue
             update: dict[str, object] = {
                 "schematic_synced_at": synced_at,
                 "schematic_sync_summary": summary,
+                "clear_workbench_undo": True,
             }
             if snapshot:
                 update["schematic_field_snapshot"] = snapshot
@@ -2744,6 +2833,7 @@ class PartSelectionApp:
         if preflight.get("ok") and not preflight.get("missing_refs"):
             preflight["phase"] = "already_synced_on_disk"
             log_event("already_synced", verify=preflight)
+            self.record_schematic_sync_overrides({}, ref_field_map)
             return {
                 "ok": True, "already_synced": True, "updated_refs": [],
                 "missing_refs": [], "changes": {}, "pages": {}, "paths": [],
@@ -2964,6 +3054,7 @@ class PartSelectionApp:
             aggregate["kicad_prepare"] = {"ok": True, "skipped": True}
             aggregate["kicad_notify"] = {"ok": True, "skipped": True}
             log_event("bulk_already_synced", verify=preflight)
+            self.record_schematic_sync_overrides({}, ref_field_map)
             return aggregate
 
         log_event("bulk_prepare_started")
@@ -3433,6 +3524,9 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/override":
                     json_response(self, app.save_override(payload))
+                    return
+                if parsed.path == "/api/undo_workbench":
+                    json_response(self, app.undo_workbench_changes(payload))
                     return
                 if parsed.path == "/api/field_override":
                     json_response(self, app.save_field_override(payload))
@@ -5759,6 +5853,36 @@ async function adoptSchematicFields(tr, button) {{
   await loadRows(anchor);
 }}
 
+async function undoWorkbenchChanges(tr, button) {{
+  const refs = tr.dataset.refs || tr.dataset.ref;
+  const anchor = rowAnchor(tr);
+  button.disabled = true;
+  try {{
+    await flushRowEdits();
+    const request = async payload => {{
+      const response = await fetch("/api/undo_workbench", {{method: "POST",
+        headers: {{"Content-Type": "application/json"}}, body: JSON.stringify({{refs, ...payload}})}});
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "撤回失败");
+      return data;
+    }};
+    const preview = await request({{}});
+    if (!preview.available) {{ setState("该行没有可撤回的未同步修改", "saved"); return; }}
+    const label = preview.mode === "snapshot" ? "恢复为工作台本轮修改前的记录"
+      : "部分旧记录没有修改前快照，将按原理图当前已保存的数据恢复";
+    const labels = {{...SYNC_FIELD_LABELS, review_status: "确认状态", note: "备注",
+      alternate_parts: "备选料", procurement_choice: "订货料"}};
+    const lines = [...new Set(preview.changes.map(change => {{
+      if (["description", "alternate_parts", "procurement_choice"].includes(change.field)) return `${{labels[change.field] || change.field}}恢复`;
+      return `${{labels[change.field] || change.field}}: ${{change.old || "(空)"}} → ${{change.new || "(空)"}}`;
+    }}))];
+    if (!window.confirm(`撤回 ${{refs}} 的工作台修改？\\n${{label}}。\\n\\n${{lines.join("\\n")}}\\n\\n不会修改原理图、PCB 或已导入的封装库。`)) return;
+    await request({{confirm: true, revision: preview.revision}});
+    await loadRows(anchor);
+    setState("已撤回本行工作台修改；原理图和 PCB 未改动", "saved");
+  }} finally {{ button.disabled = false; }}
+}}
+
 async function saveReviewStatus(tr) {{
   const payload = {{
     ref: tr.dataset.ref,
@@ -6130,7 +6254,7 @@ function renderRows(rows) {{
           <span class="review-pill ${{reviewStatusClass(reviewStatus)}}" data-review-state title="${{row.review_status_mixed || row.selection_codes_mixed ? "位号确认状态或 C 编码不一致；整行按未确认处理" : ""}}">${{row.review_status_mixed || row.selection_codes_mixed ? "未确认" : esc(reviewStatusText(reviewStatus))}}</span>
           <small class="review-confirmed-at" data-review-confirmed-at title="${{esc(confirmedAtTitle)}}">${{esc(confirmedAtText)}}</small>
         </div>
-        ${{syncButton}}${{syncMarker}}${{fieldReconcileNotice}}${{syncSummary}}
+        ${{syncButton}}<button type="button" class="small action-link" data-action="undo-workbench" title="预览并撤回本行工作台未同步的修改；不会修改原理图、PCB 或封装库">撤回修改</button>${{syncMarker}}${{fieldReconcileNotice}}${{syncSummary}}
       </td>
       <td data-col="refs" class="mono">${{refButtons}}${{splitMarker}}</td>
       <td data-col="page_refs" class="page-refs">${{pageRefButtons}}</td>
@@ -6588,14 +6712,30 @@ function uniqueCandidateParamSegments(...values) {{
 }}
 
 function renderCandidateParam(...values) {{
-  const lines = uniqueCandidateParamSegments(...values).map(line => {{
-    const match = line.match(/^([^:：]{{1,24}})\s*[:：]\s*(.+)$/);
+  const segments = values.flatMap(value => typeof value === "object" && value !== null
+    ? [value] : uniqueCandidateParamSegments(value));
+  const lines = segments.map(line => {{
+    const match = typeof line === "object" ? [null, line.name, line.value]
+      : line.match(/^([^:：]{{1,64}})\s*[:：]\s*(.+)$/);
     if (!match) return `<div class="candidate-param-value">${{esc(line)}}</div>`;
     return `<div class="candidate-param-line"><span class="candidate-param-key">${{esc(match[1])}}</span><span class="candidate-param-value">${{esc(match[2])}}</span></div>`;
   }});
   return lines.length
     ? `<div class="candidate-param-lines">${{lines.join("")}}</div>`
     : "";
+}}
+
+function renderCandidateEntryParam(entry, target = {{}}) {{
+  const source = entry.channel || entry.item || {{}};
+  const kind = candidateParameterKind(entry, target);
+  const pairs = candidateParameterPairs(source, kind);
+  const required = {{resistor: ["温度系数", "工作电压"], inductor: ["直流电阻(DCR)", "电感类型"]}}[kind] || [];
+  const lines = pairs.map(pair => ({{name: pair.label, value: candidateKnownParamValue(pair.value) ? pair.value : "未提供"}}));
+  for (const name of required) {{
+    if (!pairs.some(pair => pair.key === name)) lines.push({{name, value: "未提供"}});
+  }}
+  const summary = source.param && !/[:：]/.test(source.param) ? source.param : "";
+  return renderCandidateParam(summary, ...lines);
 }}
 
 function renderCandidateOrderLines(lines) {{
@@ -6612,7 +6752,7 @@ function renderCandidatePrice(value) {{
     : "价格待确认";
 }}
 
-function renderCandidatePartnerRows(items, selectedQuotes = null) {{
+function renderCandidatePartnerRows(items, selectedQuotes = null, target = {{}}) {{
   const quotes = [];
   const seen = new Set();
   currentProcurementQuotes = new Map();
@@ -6656,7 +6796,7 @@ function renderCandidatePartnerRows(items, selectedQuotes = null) {{
         <div class="mono">${{esc(channel.package || item.package || "")}}</div>
         <div class="candidate-partner-meta">批次：${{esc(channel.batch_number || "待核实")}}</div>
       </td>
-      <td data-candidate-col="param">${{renderCandidateParam(channel.param || item.param || "", channel.param_detail || item.param_detail || "")}}</td>
+      <td data-candidate-col="param">${{renderCandidateEntryParam({{item, channel}}, target)}}</td>
       <td data-candidate-col="code" class="mono">${{code ? `无（关联 ${{esc(code)}}）` : "无"}}</td>
       <td data-candidate-col="channel_stock">
         <div class="candidate-partner-supplier">${{esc(channel.supplier || channel.name || "订货渠道")}}</div>
@@ -6704,7 +6844,7 @@ function renderCandidateRows(items, partnerEntries = null) {{
         <div class="mono">${{esc(item.package || "")}}</div>
         <div class="status">${{esc(item.match_type || "")}}</div>
       </td>
-      <td data-candidate-col="param">${{renderCandidateParam(item.param || "", item.param_detail || "")}}</td>
+      <td data-candidate-col="param">${{renderCandidateEntryParam({{item}}, targetRow)}}</td>
       <td data-candidate-col="code" class="mono">${{item.url ? `<a target="_blank" rel="noopener" data-secondary-search="${{esc(item.c_code || "")}}" href="${{esc(item.url)}}">${{esc(item.c_code || "")}}</a>` : esc(item.c_code || "")}}</td>
       <td data-candidate-col="channel_stock">
         <div>${{esc(item.channel || "")}}</div>
@@ -6720,7 +6860,7 @@ function renderCandidateRows(items, partnerEntries = null) {{
       <td data-candidate-col="price" class="mono">${{renderCandidatePrice(item.price_ladder || item.price || "")}}</td>
     </tr>`;
   }}).join("");
-  candidateRows.innerHTML = primaryRows + renderCandidatePartnerRows(items, partnerEntries);
+  candidateRows.innerHTML = primaryRows + renderCandidatePartnerRows(items, partnerEntries, targetRow);
   applyCandidateColumnOrder();
   applyCandidateSavedWidths();
   makeCandidateColumnsConfigurable();
@@ -6746,46 +6886,76 @@ function candidateResultEntries(items) {{
   return entries;
 }}
 
-function candidateEntryFields(entry) {{
-  const item = entry.item || {{}};
-  const channel = entry.channel;
-  const fields = new Map();
-  const add = (key, value) => {{
-    const text = String(value ?? "").normalize("NFKC").replace(/\s+/g, " ").trim();
-    if (!text || text === "-" || text === "待核实") return;
-    if (!fields.has(key)) fields.set(key, new Set());
-    fields.get(key).add(text);
-  }};
-  add("brand", channel?.brand || item.brand);
-  add("package", channel?.package || item.package);
+function candidateKnownParamValue(value) {{
+  const text = String(value ?? "").normalize("NFKC").trim();
+  return !!text && !/^(?:[-—–]+|未提供|待核实|待确认|未知|暂无|无|n[/]?a|unknown|not specified|null|undefined)$/i.test(text);
+}}
+
+function candidateParameterKind(entry, target = {{}}) {{
+  const category = String(entry.channel?.category || entry.item?.category || "").trim();
+  const text = category || String(target.kind || target.component_kind || target.comment || "").trim();
+  const kinds = [
+    ["resistor", /\\bresistors?\\b|电阻|^R$/i],
+    ["inductor", /\\binductors?\\b|\\bchokes?\\b|电感|^L$/i],
+    ["capacitor", /\\bcapacitors?\\b|电容|^C$/i],
+  ].filter(([, pattern]) => pattern.test(text));
+  return kinds.length === 1 ? kinds[0][0] : "";
+}}
+
+function candidateParameterPairs(source, kind = candidateParameterKind({{item: source}})) {{
   const aliases = {{"容量": "容值", "电容量": "容值", "电容值": "容值", "电阻值": "阻值", "容差": "精度", "公差": "精度",
     "temperature coefficient": "温度系数", "temperature coefficient of resistance": "温度系数",
     "tcr": "温度系数", "电阻温度系数": "温度系数", "温度系数": "温度系数",
     "working voltage": "工作电压", "operating voltage": "工作电压", "工作电压": "工作电压",
-    "最大工作电压": "工作电压", "maximum working voltage": "工作电压", "max working voltage": "工作电压"}};
-  const params = new Map();
-  // A quote overrides matching parent fields without removing other known parameters.
-  for (const source of [item, channel].filter(Boolean)) {{
-    const sourceFields = new Map();
+    "最大工作电压": "工作电压", "maximum working voltage": "工作电压", "max working voltage": "工作电压",
+    "dcr": "直流电阻(DCR)", "dc resistance": "直流电阻(DCR)", "直流电阻": "直流电阻(DCR)",
+    "直流电阻(dcr)": "直流电阻(DCR)", "dc resistance (dcr)": "直流电阻(DCR)",
+    "inductor type": "电感类型", "电感类型": "电感类型"}};
+  if (kind === "inductor") Object.assign(aliases, {{"type": "电感类型", "类型": "电感类型"}});
+  const raw = [];
+  if (Array.isArray(source.parameters) && source.parameters.length) {{
+    for (const pair of source.parameters) if (pair && pair.name) raw.push([pair.name, pair.value]);
+  }} else {{
     for (const value of [source.param, source.param_detail, source.arrange]) {{
       const segments = String(value || "").split(/[;；、\\n\\r]+|[,，](?=\s*[^:：,，;；\\n]{{1,64}}[:：])/);
       for (const segment of segments) {{
         const match = segment.trim().match(/^([^:：]{{1,64}})\s*[:：]\s*(.+)$/);
         if (!match) continue;
-        const label = match[1].replace(/\s+/g, " ").trim();
-        if (/^(型号|制造商型号|品牌|封装|model|mpn|brand|package)$/i.test(label)) continue;
-        const alias = label.replace(/\\s*[(（][^()（）]*[)）]\\s*$/, "").trim().toLowerCase();
-        const key = "param:" + (aliases[alias] || label);
-        const unit = label.match(/[(（]\\s*(ppm\\/(?:°C|℃|K)|[mMkK]?V)\\s*[)）]$/);
-        let paramValue = match[2].trim();
-        if (aliases[alias] && unit && /^[±+-]?\\d+(?:\\.\\d+)?$/.test(paramValue)) paramValue += unit[1];
-        if (!sourceFields.has(key)) sourceFields.set(key, []);
-        sourceFields.get(key).push(paramValue);
+        raw.push([match[1], match[2]]);
       }}
     }}
-    for (const [key, values] of sourceFields) params.set(key, values);
   }}
-  for (const [key, values] of params) for (const value of values) add(key, value);
+  const seen = new Set();
+  return raw.flatMap(([name, value]) => {{
+    const label = String(name).replace(/\\s+/g, " ").trim();
+    const alias = label.replace(/\\s*[(（][^()（）]*[)）]\\s*$/, "").trim().toLowerCase();
+    const key = aliases[alias] || label;
+    const unit = label.match(/[(（]\\s*(ppm\\/(?:°C|℃|K)|[mMkK]?V|[munµμkKM]?(?:Ω|Ω|[Oo][Hh][Mm][Ss]?))\\s*[)）]$/);
+    let paramValue = String(value ?? "").trim();
+    if (aliases[alias] && unit && /^[±+-]?\\d+(?:\\.\\d+)?$/.test(paramValue)) paramValue += unit[1];
+    const id = JSON.stringify([key, paramValue]);
+    if (seen.has(id)) return [];
+    seen.add(id);
+    return [{{key, label: aliases[alias] ? key : label, value: paramValue}}];
+  }});
+}}
+
+function candidateEntryFields(entry) {{
+  const item = entry.item || {{}};
+  const channel = entry.channel;
+  const fields = new Map();
+  const add = (key, value) => {{
+    const text = String(value ?? "").normalize("NFKC").replace(/\\s+/g, " ").trim();
+    if (!candidateKnownParamValue(text)) return;
+    if (!fields.has(key)) fields.set(key, new Set());
+    fields.get(key).add(text);
+  }};
+  add("brand", channel?.brand || item.brand);
+  add("package", channel?.package || item.package);
+  // Electrical parameters belong to this supplier, never to its associated parent row.
+  for (const pair of candidateParameterPairs(channel || item, candidateParameterKind(entry))) {{
+    if (!/^(型号|制造商型号|品牌|封装|model|mpn|brand|package)$/i.test(pair.key)) add("param:" + pair.key, pair.value);
+  }}
   return fields;
 }}
 
@@ -6815,7 +6985,7 @@ function buildCandidateFacets(entries, filters, stockOnly) {{
   }}
   for (const [key, selected] of filters) {{
     if (!facets.has(key)) facets.set(key, new Map());
-    for (const value of selected) if (!facets.get(key).has(value)) facets.get(key).set(value, 0);
+    for (const value of selected) if (candidateKnownParamValue(value) && !facets.get(key).has(value)) facets.get(key).set(value, 0);
   }}
   for (const [key, options] of facets) {{
     for (const entry of filterCandidateEntries(prepared, filters, stockOnly, key)) {{
@@ -7502,6 +7672,7 @@ rowsEl.addEventListener("click", async event => {{
     if (action === "clear-procurement") await updateProcurementChoice(tr, "clear");
     if (action === "adopt-schematic-procurement") await updateProcurementChoice(tr, "adopt_schematic");
     if (action === "sync-schematic") await syncSchematic(tr);
+    if (action === "undo-workbench") await undoWorkbenchChanges(tr, button);
     if (action === "adopt-schematic-fields") await adoptSchematicFields(tr, button);
     if (action === "save-fields") await saveFieldEdits(tr);
     if (action === "reject") await saveRow(tr, "Reject", "");
