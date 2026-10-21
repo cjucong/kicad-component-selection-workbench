@@ -6205,10 +6205,11 @@ function candidateKeywordFromFields(fields) {{
   const passiveType = passiveSearchType(fields);
   if (passiveType) {{
     const explicit = isExplicitPassiveComment(fields.comment);
-    if (!explicit && ["resistor", "capacitor"].includes(passiveType)) {{
+    const ferriteRef = /^FB\\d/i.test(String(fields.refs || "").trim());
+    if (!explicit && !ferriteRef && ["resistor", "capacitor", "inductor"].includes(passiveType)) {{
       const value = String(fields.value || "").split(/[,，;；]/)[0]
         .replace(/\\s*[±+-]?\\s*\\d+(?:\\.\\d+)?\\s*%.*$/, "").trim();
-      const nominal = value.match(/(\\S+)(?:\\s+([pnumkKMGµμ]?(?:[Ff]|Ω|[Oo][Hh][Mm][Ss]?)|[RrkKM])(?=\\s|$))?/);
+      const nominal = value.match(/(\\S+)(?:\\s+([pnumkKMGµμ]?(?:[FfHh]|Ω|[Oo][Hh][Mm][Ss]?)|[RrkKM])(?=\\s|$))?/);
       const nominalValue = nominal ? nominal.slice(1).filter(Boolean).join(" ") : "";
       const footprint = String(fields.footprint || "").split(":").pop().trim();
       const packageMatch = footprint.match(/(?<!\\d)(?:01005|0201|0402|0603|0805|1206|1210|1812|2010|2512)(?!\\d)/);

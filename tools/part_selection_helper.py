@@ -653,15 +653,15 @@ def render_page_refs(page_refs: str) -> str:
 def search_keyword(part: PartInfo) -> str:
     comment = part.comment.strip()
     generic_passive = re.fullmatch(
-        r"(?:(?:chip\s+)?(?:resistor|capacitor)(?:\s*-\s*surface\s+mount)?|res|cap|电阻|电容)?",
+        r"(?:(?:chip\s+)?(?:resistor|capacitor|inductor)(?:\s*-\s*surface\s+mount)?|res|cap|电阻|电容|电感)?",
         comment, re.IGNORECASE,
     )
-    passive_ref = re.match(r"^(?:R|RN|RP|RT|RV|C|CP)\d", part.ref.strip(), re.IGNORECASE)
-    if generic_passive and (comment or passive_ref):
+    passive_ref = re.match(r"^(?:R|RN|RP|RT|RV|C|CP|L)\d", part.ref.strip(), re.IGNORECASE)
+    if generic_passive and (comment or passive_ref) and not re.match(r"^FB\d", part.ref.strip(), re.IGNORECASE):
         value = re.split(r"[,，;；]", part.value, maxsplit=1)[0]
         value = re.sub(r"\s*[±+-]?\s*\d+(?:\.\d+)?\s*%.*$", "", value).strip()
         nominal = re.match(
-            r"(\S+)(?:\s+([pnumkKMGµμ]?(?:[Ff]|Ω|[Oo][Hh][Mm][Ss]?)|[RrkKM])(?=\s|$))?", value,
+            r"(\S+)(?:\s+([pnumkKMGµμ]?(?:[FfHh]|Ω|[Oo][Hh][Mm][Ss]?)|[RrkKM])(?=\s|$))?", value,
         )
         value = " ".join(piece for piece in nominal.groups() if piece) if nominal else ""
         footprint = part.footprint.rsplit(":", 1)[-1].strip()

@@ -91,7 +91,9 @@ def _qualifiers_only(tail, kind):
     rating = rf"(?:{_NUMBER}(?:/{_NUMBER})?)\s*(?:[munkK]?(?i:V(?:AC|DC)?|A|W)|%)"
     dielectric = r"(?:X[5678][RSTUV]|C0G|NP0|Y5V|Z5U)"
     size = "(?:" + "|".join(sorted(_SIZES)) + ")"
-    token = re.compile(rf"(?:{tolerance}|{rating}|{dielectric}|{size})(?![\w.])")
+    current = (rf"|(?i:(?:Rated Current|Saturation Current)\s*[:=]\s*"
+               rf"(?:{_NUMBER}\s*[mun]?A|not specified))") if kind == "L" else ""
+    token = re.compile(rf"(?:{tolerance}|{rating}|{dielectric}|{size}{current})(?![\w.])")
     while tail:
         tail = tail.lstrip(" \t\r\n/,;()")
         if not tail:

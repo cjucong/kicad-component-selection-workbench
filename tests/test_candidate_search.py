@@ -29,6 +29,8 @@ ORDINARY_CASES = [
     ("C6", "capacitor", "10pF 25V C0G", "Capacitor_SMD:C_01005_0402Metric", "10pF 01005"),
     ("R8", "resistor", "1k 1%", "Resistor_SMD:R_01005_0402Metric", "1k 01005"),
     ("R9", "resistor", "100 1/10W 1%", "DSMU:0603", "100 0603"),
+    ("L1", "inductor", "4.7uH, Rated Current: 800mA, Saturation Current: 1A", "DSMU:0805", "4.7uH 0805"),
+    ("L2", "电感", "10 uH, Rated Current: 2A, Saturation Current: not specified", "DSMU:0603", "10 uH 0603"),
 ]
 
 
@@ -50,7 +52,7 @@ class CandidateSearchTest(unittest.TestCase):
                          "RC0603FR-07100KL 100k 0.1% 25ppm/℃ DSMU:0603")
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required for candidate search checks")
-    def test_candidate_keyword_simplifies_only_ordinary_resistors_and_capacitors(self):
+    def test_candidate_keyword_simplifies_ordinary_passives(self):
         page = render_index(SimpleNamespace(project_root=ROOT, config={}))
         names = ["uniqueSearchTerms", "passiveSearchType", "isExplicitPassiveComment",
                  "candidateKeywordFromFields"]
@@ -66,7 +68,9 @@ for (const [fields, expected] of [
  [{refs:'R4',comment:'RC0603FR-07100KL',value:'100k 0.1% 25ppm/℃',footprint:'DSMU:0603'}, 'RC0603FR-07100KL 100k 0.1% 25ppm/℃ DSMU:0603'],
  [{refs:'U1',comment:'AD4630-24BBCZ',value:'ADC',footprint:'BGA-64'}, 'AD4630-24BBCZ'],
  [{refs:'U2',comment:'C4283613',value:'ADC',footprint:'BGA-64'}, 'C4283613'],
- [{refs:'L1',comment:'inductor',value:'10uH',footprint:'0805'}, 'inductor 10uH 0805']
+ [{refs:'L1',comment:'inductor',value:'10uH',footprint:'0805'}, '10uH 0805'],
+ [{refs:'FB1',comment:'inductor',value:'600ohm@100MHz',footprint:'0603'}, 'inductor 600ohm@100MHz 0603'],
+ [{refs:'L1',comment:'XAL4020-102MEC',value:'1uH, Rated Current: 9.6A',footprint:'DSMU:SMD-2C'}, 'XAL4020-102MEC 1uH, Rated Current: 9.6A DSMU:SMD-2C']
 ]) assert.equal(candidateKeywordFromFields(fields), expected);
 '''
         cases = [[{"refs": ref, "comment": comment, "value": value, "footprint": footprint}, expected]

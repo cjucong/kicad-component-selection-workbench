@@ -26,6 +26,29 @@ def test_equivalent_nominal_and_package_match(validate):
     }
 
 
+@pytest.mark.parametrize("value", [
+    "4.7uH, Rated Current: 800mA, Saturation Current: 1A",
+    "4.7uH, Rated Current: 800mA, Saturation Current: not specified",
+])
+def test_inductor_current_labels_preserve_nominal_comparison(validate, value):
+    assert validate(row("L1", value), stock("Inductance: 4.7uH"))["status"] == "matched"
+
+
+def test_inductor_current_numbers_cannot_hide_wrong_inductance(validate):
+    value = "100uH, Rated Current: 32A, Saturation Current: 45A"
+    result = validate(row("L1", value), stock("Inductance: 100nH"))
+    assert result["status"] == "mismatch"
+    assert result["issues"][0]["expected"] == value
+
+
+@pytest.mark.parametrize("ref,value,detail", [
+    ("L1", "4.7uH, Saturation Current: 1uH", "Inductance: 4.7uH"),
+    ("C1", "4.7uF, Rated Current: 1A", "Capacitance: 4.7uF"),
+])
+def test_current_labels_do_not_swallow_other_quantities(validate, ref, value, detail):
+    assert validate(row(ref, value), stock(detail))["status"] == "unknown"
+
+
 @pytest.mark.parametrize("ref,actual,detail", [
     ("C1", "0.1uF", "Capacitance: 100nF"),
     ("C1", "0.1\u03bcF", "\u5bb9\u503c: 100nF"),
