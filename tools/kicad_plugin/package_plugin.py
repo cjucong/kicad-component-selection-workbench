@@ -26,6 +26,8 @@ if __package__:
 else:
     from updater import VERSION, REPOSITORY
 CORE_FILES = (
+    "web/row-filters.js", "web/row-filters.css",
+    "part_selection_specs.py", "web/spec-warnings.js", "web/spec-warnings.css",
     "part_selection_inventory.py", "web/local-inventory.js", "web/local-inventory.css",
     "part_selection_candidate_window.py", "web/candidate-desktop.js",
     "part_selection_server.py", "part_selection_helper.py", "part_selection_overrides.py", "part_selection_fields.py",

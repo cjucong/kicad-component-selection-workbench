@@ -37,6 +37,7 @@ from part_selection_footprints import FootprintChoices
 from part_selection_inventory import (calculate_inventory_status, load_inventory,
                                       merge_inventory_records, parse_inventory_workbook, save_inventory,
                                       inventory_import_time, apply_inventory_matches, inventory_source_owners)
+from part_selection_specs import validate_passive_specs
 
 from part_selection_helper import (
     find_latest_lcsc_csv,
@@ -542,6 +543,16 @@ def row_effective_c_code(row: dict[str, object]) -> str:
         or row.get("lcsc_match_c_code")
         or ""
     ).strip()
+
+
+def row_spec_check(row: dict[str, object]) -> dict[str, object]:
+    code = normalize_lcsc_c_code(row_effective_c_code(row))
+    if not code or row.get('selection_codes_mixed') or row_is_nc(row):
+        return {'status': 'not_applicable', 'issues': [], 'unknown_fields': [], 'c_code': code}
+    stock = row.get('stock') or {}
+    if normalize_lcsc_c_code(stock.get('c_code')) != code:
+        stock = {}
+    return {**validate_passive_specs(row, stock, actual_by_ref=row.get('schematic_fields_by_ref') or {}), 'c_code': code}
 
 
 def row_review_status(row: dict[str, object]) -> str:
@@ -1746,6 +1757,8 @@ class PartSelectionApp:
                 actual_by_ref=actual_by_ref,
                 reconciliation_by_ref=reconciliation,
             )
+            for row in rows:
+                row['spec_check'] = row_spec_check(row)
             self.enrich_local_inventory(rows)
             return sort_bom_rows(rows)
 
@@ -1765,11 +1778,37 @@ class PartSelectionApp:
             actual_by_ref=actual_by_ref,
             reconciliation_by_ref=reconciliation,
         )
+        for row in rows:
+            row['spec_check'] = row_spec_check(row)
         self.enrich_local_inventory(rows)
         return sort_bom_rows(rows)
 
     def stock(self, c_code: str) -> dict[str, object]:
         return lookup_stock_with_cache(self.stock_cache_path, c_code)
+
+    def check_specs(self, payload: dict[str, object]) -> dict[str, object]:
+        requests = payload.get('rows', [])
+        if not isinstance(requests, list) or len(requests) > 5000:
+            raise ValueError('规格核对行数无效')
+        cache = load_stock_cache(self.stock_cache_path)
+        refs = sorted({ref for item in requests if isinstance(item, dict)
+                       for ref in split_refs(str(item.get('refs') or ''))})
+        if len(refs) > 50000:
+            raise ValueError('规格核对位号过多')
+        actual = self.read_schematic_fields(self.config['schematic_dir'], refs, EDITABLE_FIELDS)
+        checks = []
+        for item in requests:
+            if not isinstance(item, dict):
+                raise ValueError('规格核对请求无效')
+            code = normalize_lcsc_c_code(item.get('c_code'))
+            requested_refs = split_refs(str(item.get('refs') or ''))
+            row = {'refs_list': requested_refs, 'refs': ','.join(requested_refs),
+                   'effective_c_code': code, 'stock': cache.get(code) or {},
+                   'schematic_fields_by_ref': {ref: actual[ref] for ref in requested_refs if ref in actual}}
+            if requested_refs:
+                row.update(actual.get(requested_refs[0]) or {})
+            checks.append({'refs': row['refs'], 'c_code': code, 'check': row_spec_check(row)})
+        return {'ok': True, 'checks': checks}
 
     def cached_search_seed(self, keyword: str) -> dict[str, object]:
         code = exact_c_code_keyword(keyword)
@@ -3365,6 +3404,9 @@ def make_handler(app: PartSelectionApp):
                 if parsed.path == "/api/local_inventory/import":
                     json_response(self, app.import_local_inventory(payload))
                     return
+                if parsed.path == "/api/spec_check":
+                    json_response(self, app.check_specs(payload))
+                    return
                 if parsed.path == "/api/path_picker":
                     json_response(self, choose_path(app.config, payload))
                     return
@@ -3474,6 +3516,8 @@ def render_index(app: PartSelectionApp) -> str:
     footprint_css = (Path(__file__).resolve().parent / "web" / "footprint-compare.css").read_text(encoding="utf-8")
     footprint_js = (Path(__file__).resolve().parent / "web" / "footprint-compare.js").read_text(encoding="utf-8")
     row_edits_js = (Path(__file__).resolve().parent / "web" / "row-edits.js").read_text(encoding="utf-8")
+    row_filters_js = (Path(__file__).resolve().parent / "web" / "row-filters.js").read_text(encoding="utf-8")
+    row_filters_css = (Path(__file__).resolve().parent / "web" / "row-filters.css").read_text(encoding="utf-8")
     path_settings_js = (Path(__file__).resolve().parent / "web" / "path-settings.js").read_text(encoding="utf-8")
     path_settings_css = (Path(__file__).resolve().parent / "web" / "path-settings.css").read_text(encoding="utf-8")
     desktop_lifecycle_js = (Path(__file__).resolve().parent / "web" / "desktop-lifecycle.js").read_text(encoding="utf-8")
@@ -3481,6 +3525,8 @@ def render_index(app: PartSelectionApp) -> str:
     candidate_desktop_js = (Path(__file__).resolve().parent / "web" / "candidate-desktop.js").read_text(encoding="utf-8")
     inventory_js = (Path(__file__).resolve().parent / "web" / "local-inventory.js").read_text(encoding="utf-8")
     inventory_css = (Path(__file__).resolve().parent / "web" / "local-inventory.css").read_text(encoding="utf-8")
+    spec_warnings_js = (Path(__file__).resolve().parent / "web" / "spec-warnings.js").read_text(encoding="utf-8")
+    spec_warnings_css = (Path(__file__).resolve().parent / "web" / "spec-warnings.css").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3815,8 +3861,10 @@ tr.hidden-row {{ display: none; }}
 .ref-context-menu button:hover {{ background: #eaf5ff; }}
 </style>
 <style>{footprint_css}</style>
+<style>{row_filters_css}</style>
 <style>{path_settings_css}</style>
 <style>{inventory_css}</style>
+<style>{spec_warnings_css}</style>
 </head>
 <body>
 {icon_sprite}
@@ -4030,6 +4078,7 @@ tr.hidden-row {{ display: none; }}
   </button>
 </div>
 <script>{row_edits_js}</script>
+<script>{row_filters_js}</script>
 <script>
 const state = document.getElementById("state");
 const syncProgress = document.getElementById("syncProgress");
@@ -4819,6 +4868,10 @@ function rowForRefs(row, refs) {{
   clone.page_refs = buildPageRefs(clone.ref_links);
   clone.quantity = refs.length;
   clone.temp_split = true;
+  if (row.spec_check) {{
+    clone.spec_check = {{...row.spec_check, status: "unknown", issues: [], unknown_fields: ["value", "footprint"]}};
+    clone.spec_check_needs_refresh = true;
+  }}
   for (const key of ["per_ref_sync_fields", "schematic_fields_by_ref", "per_ref_selection", "description_by_ref", "notes_by_ref", "field_diffs_by_ref", "external_schematic_updates", "schematic_field_conflicts", "stock_by_ref"]) {{
     if (row[key]) clone[key] = Object.fromEntries(Object.entries(row[key]).filter(([ref]) => selected.has(ref)));
   }}
@@ -5213,7 +5266,8 @@ function filterViewKey() {{
   return JSON.stringify([
     bomSelect.value || "", refsInput.value.trim(),
     Array.from(activeFilters.entries()).sort(([a], [b]) => a.localeCompare(b)),
-    bomSearch.value.trim().toLocaleLowerCase()
+    bomSearch.value.trim().toLocaleLowerCase(),
+    window.workbenchRowFilters?.key() || {{}}
   ]);
 }}
 
@@ -5228,18 +5282,22 @@ function applyActiveFilter() {{
   const changedView = Boolean(activeFilterViewKey && activeFilterViewKey !== nextViewKey);
   if (changedView) rememberFilterScroll();
   let visibleCount = 0;
+  const filterContextRows = [];
   rowsEl.querySelectorAll("tr[data-filter-key]").forEach(tr => {{
     const keys = String(tr.dataset.filterKey || "all").split(/\s+/);
     const row = Object.assign({{}}, rowDataForElement(tr) || {{}}, {{
       comment: fieldValue(tr, "comment"), value: fieldValue(tr, "value"),
       footprint: fieldValue(tr, "footprint"), effective_c_code: currentLcscCode(tr)
     }});
-    const visible = (!activeFilters.size || Array.from(activeFilters.values()).every(filter => keys.includes(filter)))
+    const contextMatch = (!activeFilters.size || Array.from(activeFilters.values()).every(filter => keys.includes(filter)))
       && bomRowMatchesSearch(row, bomSearch.value);
+    if (contextMatch) filterContextRows.push(row);
+    const visible = contextMatch && (window.workbenchRowFilters?.matches(row) ?? true);
     tr.classList.toggle("hidden-row", !visible);
     if (visible) visibleCount += 1;
   }});
   bomSearchCount.textContent = `${{visibleCount}} / ${{currentRows.length}} 行`;
+  window.workbenchRowFilters?.refresh(filterContextRows);
   updateRowsEmptyState(visibleCount);
   if (changedView) {{
     let savedScroll = 0;
@@ -5255,7 +5313,7 @@ function applyActiveFilter() {{
 function updateRowsEmptyState(visibleCount = visibleSyncRows().length) {{
   const panel = document.getElementById("rowsEmptyState");
   panel.hidden = rowsLoading || loadedRowsBom === null || loadedRowsBom !== (bomSelect.value || "") || visibleCount > 0;
-  const filtered = activeFilters.size > 0 || Boolean(bomSearch.value.trim());
+  const filtered = activeFilters.size > 0 || Boolean(bomSearch.value.trim()) || Boolean(window.workbenchRowFilters?.active());
   document.getElementById("rowsEmptyMessage").textContent = currentRows.length
     ? "没有匹配当前筛选的器件" : "当前数据源没有器件";
   document.getElementById("resetRowFilters").hidden = !filtered;
@@ -5264,6 +5322,7 @@ function updateRowsEmptyState(visibleCount = visibleSyncRows().length) {{
 document.getElementById("resetRowFilters").addEventListener("click", () => {{
   bomSearch.value = "";
   activeFilters.clear();
+  window.workbenchRowFilters?.reset();
   updateFilterButtons();
   applyActiveFilter();
   bomSearch.focus();
@@ -5318,6 +5377,9 @@ rowsEl.addEventListener("change", event => {{
 }});
 
 function setStockCells(tr, stock) {{
+  if (normalizeCCode(stock.c_code) !== normalizeCCode(tr.dataset.stockCode)) return;
+  const currentRow = rowDataForElement(tr);
+  if (currentRow && !currentRow.selection_codes_mixed && stockCode(currentRow) === normalizeCCode(stock.c_code)) currentRow.stock = stock;
   tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(stock);
   tr.dataset.stockQueried = stockAlreadyQueried(stock) ? "1" : "0";
   tr.dataset.stockLow = stockIsLow(stock) ? "1" : "0";
@@ -5329,6 +5391,8 @@ function setStockCells(tr, stock) {{
   paramCell.dataset.stockParamText = stockParamText(material);
   paramCell.innerHTML = renderStockParam(material);
   refreshRowState(tr);
+  window.queueLocalInventoryRefresh?.();
+  window.refreshSpecificationWarnings?.(true);
 }}
 
 function setCodeState(tr, status, text = "") {{
@@ -6023,7 +6087,7 @@ function renderRows(rows) {{
     const fieldReconcileNotice = schematicFieldReconcileNotice(row);
     const splitMarker = row.temp_split ? `<div class="split-marker">临时拆行；字段不改会自动合回</div>` : "";
     return `<tr class="${{rowVisualClass(row, selectedStatus, syncNeeded, stock, reviewStatus)}}" data-ref="${{esc(row.ref)}}" data-refs="${{esc(row.refs)}}" data-sync-needed="${{syncNeeded ? "1" : "0"}}" data-missing-ref="${{missingRef ? "1" : "0"}}" data-review-status="${{esc(reviewStatus)}}" data-code-status="${{esc(selectedStatus)}}" data-manual-code="${{(row.manual_c_code || row.stock_c_code) ? "1" : "0"}}" data-has-code="${{code ? "1" : "0"}}" data-is-nc="${{rowIsNc(row) ? "1" : "0"}}" data-stock-low="${{stockIsLow(stock) ? "1" : "0"}}" data-stock-issue="${{stockIsIssue(stock) ? "1" : "0"}}" data-filter-key="${{esc(filterKeys)}}" data-stock-code="${{esc(code)}}" data-stock-queried="${{stockAlreadyQueried(stock) ? "1" : "0"}}" data-original-code="${{esc(original)}}" data-engineering="${{esc(row.accepted_c_code)}}" data-lcsc="${{esc(row.lcsc_match_c_code)}}">
-      <td data-col="row_no" class="mono"><input type="checkbox" data-select-row aria-label="选择第 ${{index + 1}} 行">${{index + 1}}</td>
+      <td data-col="row_no" class="mono"><input type="checkbox" data-select-row aria-label="选择第 ${{index + 1}} 行">${{index + 1}}<span data-spec-warning></span></td>
       <td data-col="review">
         <div class="review-status">
           ${{reviewControl}}
@@ -6067,6 +6131,7 @@ function renderRows(rows) {{
   applyActiveFilter();
   fitDefaultColumnWidths();
   window.refreshLocalInventory?.();
+  window.refreshSpecificationWarnings?.(rows.some(row => row.spec_check_needs_refresh));
 }}
 
 function updateRowsForStock(code, stock) {{
@@ -6139,7 +6204,17 @@ function isExplicitPassiveComment(comment) {{
 function candidateKeywordFromFields(fields) {{
   const passiveType = passiveSearchType(fields);
   if (passiveType) {{
-    const comment = isExplicitPassiveComment(fields.comment) ? fields.comment : passiveType;
+    const explicit = isExplicitPassiveComment(fields.comment);
+    if (!explicit && ["resistor", "capacitor"].includes(passiveType)) {{
+      const value = String(fields.value || "").split(/[,，;；]/)[0]
+        .replace(/\\s*[±+-]?\\s*\\d+(?:\\.\\d+)?\\s*%.*$/, "").trim();
+      const nominal = value.match(/(\\S+)(?:\\s+([pnumkKMGµμ]?(?:[Ff]|Ω|[Oo][Hh][Mm][Ss]?)|[RrkKM])(?=\\s|$))?/);
+      const nominalValue = nominal ? nominal.slice(1).filter(Boolean).join(" ") : "";
+      const footprint = String(fields.footprint || "").split(":").pop().trim();
+      const packageMatch = footprint.match(/(?<!\\d)(?:01005|0201|0402|0603|0805|1206|1210|1812|2010|2512)(?!\\d)/);
+      return uniqueSearchTerms([nominalValue, packageMatch ? packageMatch[0] : footprint]).join(" ");
+    }}
+    const comment = explicit ? fields.comment : passiveType;
     return uniqueSearchTerms([comment, fields.value, fields.footprint]).join(" ");
   }}
   return String(fields.comment || fields.value || "").trim();
@@ -6647,21 +6722,29 @@ function candidateEntryFields(entry) {{
   }};
   add("brand", channel?.brand || item.brand);
   add("package", channel?.package || item.package);
-  const aliases = {{"容量": "容值", "电容量": "容值", "电容值": "容值", "电阻值": "阻值", "容差": "精度", "公差": "精度"}};
+  const aliases = {{"容量": "容值", "电容量": "容值", "电容值": "容值", "电阻值": "阻值", "容差": "精度", "公差": "精度",
+    "temperature coefficient": "温度系数", "temperature coefficient of resistance": "温度系数",
+    "tcr": "温度系数", "电阻温度系数": "温度系数", "温度系数": "温度系数",
+    "working voltage": "工作电压", "operating voltage": "工作电压", "工作电压": "工作电压",
+    "最大工作电压": "工作电压", "maximum working voltage": "工作电压", "max working voltage": "工作电压"}};
   const params = new Map();
   // A quote overrides matching parent fields without removing other known parameters.
   for (const source of [item, channel].filter(Boolean)) {{
     const sourceFields = new Map();
     for (const value of [source.param, source.param_detail, source.arrange]) {{
-      const segments = String(value || "").split(/[;；、\\n\\r]+|[,，](?=\s*[^:：,，;；\\n]{{1,24}}[:：])/);
+      const segments = String(value || "").split(/[;；、\\n\\r]+|[,，](?=\s*[^:：,，;；\\n]{{1,64}}[:：])/);
       for (const segment of segments) {{
-        const match = segment.trim().match(/^([^:：]{{1,24}})\s*[:：]\s*(.+)$/);
+        const match = segment.trim().match(/^([^:：]{{1,64}})\s*[:：]\s*(.+)$/);
         if (!match) continue;
         const label = match[1].replace(/\s+/g, " ").trim();
         if (/^(型号|制造商型号|品牌|封装|model|mpn|brand|package)$/i.test(label)) continue;
-        const key = "param:" + (aliases[label] || label);
+        const alias = label.replace(/\\s*[(（][^()（）]*[)）]\\s*$/, "").trim().toLowerCase();
+        const key = "param:" + (aliases[alias] || label);
+        const unit = label.match(/[(（]\\s*(ppm\\/(?:°C|℃|K)|[mMkK]?V)\\s*[)）]$/);
+        let paramValue = match[2].trim();
+        if (aliases[alias] && unit && /^[±+-]?\\d+(?:\\.\\d+)?$/.test(paramValue)) paramValue += unit[1];
         if (!sourceFields.has(key)) sourceFields.set(key, []);
-        sourceFields.get(key).push(match[2]);
+        sourceFields.get(key).push(paramValue);
       }}
     }}
     for (const [key, values] of sourceFields) params.set(key, values);
@@ -7273,6 +7356,7 @@ async function persistRowInput(entry) {{
   if (field !== "note" && document.body.contains(tr)) markRowNeedsSchematicSync(tr, refs);
   if (field === "footprint") refreshFootprintLibraries();
   window.refreshLocalInventory?.();
+  if (field === "replacement_c_code") window.refreshSpecificationWarnings?.(true);
   if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");
   const merged = (data.merged_into || []).map(item => item.target_refs.join(",") + (item.c_code ? "（" + item.c_code + "）" : "（订货料）")).join("、");
   setState(merged ? `已合并到 ${{merged}}，沿用目标行选型；请核对并同步原理图` : `已自动保存 ${{refs}} 的 ${{field}}`, "saved");
@@ -7934,10 +8018,15 @@ applyCandidateColumnOrder();
 applyCandidateSavedWidths();
 renderColumnPanel();
 applyColumnVisibility();
+if (!candidateOnly) window.workbenchRowFilters = window.RowFilters?.createRowFilters({{
+  document, project: document.querySelector(".project-path-link").textContent,
+  getSettings: loadUiSettings, saveSettings: updateUiSettings, onChange: applyActiveFilter
+}});
 if (!candidateOnly) initializeWorkbenchRows();
 </script>
 <script>{candidate_desktop_js}</script>
 <script>{inventory_js}</script>
+<script>{spec_warnings_js}</script>
 <script>{footprint_js}</script>
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>

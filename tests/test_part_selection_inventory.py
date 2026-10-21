@@ -407,3 +407,30 @@ assert.equal(compare({quantity:10},2,2,3,{nc:true}).status,'nc');
 for(const count of [0,1.5,NaN,1000001]) assert.throws(()=>compare(null,1,1,count));
 ''', str(source)], capture_output=True, text=True, encoding='utf-8', timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not shutil.which('node'), reason='Node required for inventory presentation')
+def test_inventory_messages_use_available_supply_and_never_claim_unknown_stock_sufficient():
+    source = Path(__file__).resolve().parents[1] / 'tools/web/local-inventory.js'
+    result = subprocess.run([shutil.which('node'), '-e', r'''
+const assert=require('node:assert/strict');
+const {localInventoryComparison:compare,localInventoryPresentation:present}=require(process.argv[1]);
+const sufficient=compare({quantity:20,status:'ready'},2,4,3);
+assert.equal(present(sufficient,{},true).label,'现货充足');
+const zero=compare({quantity:0,status:'ready'},2,4,3);
+assert.equal(present(zero,{ok:true,stock:'12'},true).label,'现货充足');
+assert.equal(present(zero,{ok:true,stock:'11'},true).label,'现货不足');
+assert.equal(present(zero,{ok:false,stock:'999'},true).label,'商城现货待查询');
+assert.equal(present(zero,{ok:true,stock:''},true).label,'商城现货待查询');
+assert.equal(present(zero,{ok:true,stock:'26K'},true).label,'现货充足');
+assert.equal(present(zero,{ok:true,stock:'0'},true).label,'现货不足');
+assert.equal(present(zero,{ok:true,stock:'999',c_code:'C100'},true,'C200').label,'商城现货待查询');
+assert.equal(present(zero,{ok:true,stock:'12'},true).local,'本地库存为零（现存 0）');
+const absent=compare(null,2,4,3);
+assert.equal(present(absent,{ok:true,stock:'12'},true).label,'现货充足');
+assert.equal(present(absent,{},false).label,'待选料');
+assert.equal(present(compare({quantity:10,status:'unresolved'},2,4,3),{ok:true,stock:'99'},true).label,'本地库存待核实');
+assert.equal(present(compare(null,2,4,3,{nc:true}),{},false).label,'NC，不计需求');
+assert.equal(present(compare({quantity:8},2,4,3),{ok:true,stock:'4'},true).label,'现货充足');
+''', str(source)], capture_output=True, text=True, encoding='utf-8', timeout=10)
+    assert result.returncode == 0, result.stderr

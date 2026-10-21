@@ -1,5 +1,11 @@
 # 开发接手说明
 
+## 规格警告与主表筛选
+
+`part_selection_specs.py` 是只读标称值/尺寸核对器。`row_spec_check` 校验当前主料与缓存的 C 编码一致后，传入 `schematic_fields_by_ref`，不能用未同步的行编辑替代原理图基线。`POST /api/spec_check` 批量只读缓存和已保存原理图；`web/spec-warnings.js` 在库存/主料变化后合并请求、拒绝过期响应，行号显示警告或待核对。缺失数据和复杂封装保持 unknown，不能宣称安全替代。
+
+主表列筛选见 `web/row-filters.js`，只控制可见性，库存总需求仍以所有已加载行计算。库存显示文案由 `localInventoryPresentation` 统一生成：无本地记录按可用零显示，商城必须有有效且成功查询的数值才能判充足；导入的未关联/冲突记录不自动计入。
+
 ## 本地库存模块
 
 `part_selection_inventory.py` 解析 XLSX/XLSM、按 C 编码去重、显式映射非 C 采购编号、原子保存库存。`local_inventory` 配置默认跟随 `bom_dir` 的 `本地库存.json`，路径迁移必须参与复制确认/冲突检查；不能只改配置后悄悄采用空路径。数据 schema=1，`items` 为 C 编码主键，`unmatched` 保存待匹配型号汇总。只认“同型号已购合计”口径，重复汇总不相加；冲突标 unresolved，不计可用。

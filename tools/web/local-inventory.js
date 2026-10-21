@@ -14,7 +14,23 @@ function localInventoryComparison(record, rowQuantity, totalQuantity, sets, opti
     status: record.quantity >= required ? 'sufficient' : 'insufficient'};
 }
 
-if (typeof module !== 'undefined') module.exports = {localInventoryComparison};
+function localInventoryPresentation(result, market = {}, hasCode = true, selectedCode = '') {
+  const local = result.quantity > 0 ? `本地现存 ${result.quantity}` : '本地库存为零（现存 0）';
+  if (result.status === 'nc') return {label: 'NC，不计需求', local: '', tone: 'nc'};
+  if (result.status === 'unresolved') return {label: '本地库存待核实', local: '本地现存待核实', tone: 'unresolved'};
+  if (result.status === 'sufficient') return {label: '现货充足', local, tone: 'sufficient'};
+  if (!hasCode) return {label: '待选料', local, tone: 'unmatched'};
+  const number = String(market.stock ?? '').replace(/,/g, '').trim().match(/^(\d+(?:\.\d+)?)\s*([kKmM万]?)$/);
+  if (!market.ok || !number || selectedCode && String(market.c_code || '').trim().toUpperCase() !== selectedCode.toUpperCase()) {
+    return {label: '商城现货待查询', local, tone: 'unmatched'};
+  }
+  const multipliers = {k: 1000, m: 1000000, '万': 10000};
+  const available = Number(number[1]) * (multipliers[number[2].toLowerCase()] || 1);
+  const enough = available >= Math.max(0, result.required - (result.quantity || 0));
+  return {label: enough ? '现货充足' : '现货不足', local, tone: enough ? 'sufficient' : 'insufficient'};
+}
+
+if (typeof module !== 'undefined') module.exports = {localInventoryComparison, localInventoryPresentation};
 
 if (typeof document !== 'undefined') (() => {
   if (candidateOnly) return;
@@ -26,31 +42,38 @@ if (typeof document !== 'undefined') (() => {
 
   window.refreshLocalInventory = () => {
     const totals = new Map();
+    const rowsByRef = new Map(currentRows.map(row => [row.ref, row]));
     for (const row of currentRows) {
       const code = stockCode(row);
       if (code && !rowIsNc(row)) totals.set(code, (totals.get(code) || 0) + Number(row.quantity || 0));
     }
     for (const tr of rowsEl.querySelectorAll('tr[data-ref]')) {
-      const row = rowDataForElement(tr), cell = tr.querySelector('[data-local-inventory]');
+      const row = rowsByRef.get(tr.dataset.ref), cell = tr.querySelector('[data-local-inventory]');
       if (!row || !cell) continue;
       const code = stockCode(row), quantity = Number(row.quantity || 0);
       if (!initialized) { cell.textContent = '读取中…'; continue; }
       const result = localInventoryComparison(records[code], quantity, totals.get(code) || quantity, sets,
         {nc: rowIsNc(row), mixed: row.selection_codes_mixed, issue: readIssue});
-      const labels = {sufficient: '充足', insufficient: '不足', unmatched: '未匹配', unresolved: '待核实', nc: 'NC，不计需求'};
-      const difference = result.difference === null ? '' : result.difference < 0 ? `缺口 ${-result.difference}` : `余量 ${result.difference}`;
+      const display = localInventoryPresentation(result, row.stock || {}, Boolean(code), code);
+      const difference = result.status === 'unresolved' || result.status === 'nc' ? '' :
+        (result.difference ?? -result.required) < 0 ? `本地缺口 ${-(result.difference ?? -result.required)}` : `本地余量 ${result.difference}`;
       const suggestions = result.status === 'unmatched' ? Object.entries(records).filter(([key, item]) =>
         key !== code && item.model && String(row.comment || '').trim().toUpperCase() === item.model.trim().toUpperCase()).map(([key]) => key) : [];
       const pending = Object.values(pendingRecords).filter(item => item.model &&
         String(row.comment || '').trim().toUpperCase() === item.model.trim().toUpperCase());
-      cell.innerHTML = `<strong class="local-inventory-${result.status}">${esc(labels[result.status])}</strong>`
-        + (result.status === 'nc' ? '' : `<div>现存 ${result.quantity === null ? '—' : esc(result.quantity)} · 本行需求 ${esc(result.rowRequired)}</div>`)
+      cell.innerHTML = `<strong class="local-inventory-${display.tone}">${esc(display.label)}</strong>`
+        + (result.status === 'nc' ? '' : `<div>${esc(display.local)} · 本行需求 ${esc(result.rowRequired)}</div>`)
         + (result.shared && result.status !== 'nc' ? `<div>同编码合计需求 ${esc(result.required)}</div>` : '')
         + (difference ? `<div class="local-inventory-${result.status}">${esc(difference)}</div>` : '')
-        + (suggestions.length ? `<div>同型号待匹配：${esc(suggestions.join('、'))}</div>` : '')
-        + (pending.length ? `<div class="local-inventory-unresolved">同型号待匹配 ${esc(pending.map(item => item.quantity ?? '待核实').join('、'))}，尚未计入</div>` : '')
+        + (suggestions.length ? `<div>同型号库存待关联：${esc(suggestions.join('、'))}</div>` : '')
+        + (pending.length ? `<div class="local-inventory-unresolved">同型号库存待关联 ${esc(pending.map(item => item.quantity ?? '待核实').join('、'))}，尚未计入</div>` : '')
         + (result.issue ? `<div class="local-inventory-unresolved">${esc(result.issue)}</div>` : '');
     }
+  };
+  let refreshFrame;
+  window.queueLocalInventoryRefresh = () => {
+    if (refreshFrame) return;
+    refreshFrame = requestAnimationFrame(() => { refreshFrame = null; window.refreshLocalInventory(); });
   };
 
   async function request(url, payload) {

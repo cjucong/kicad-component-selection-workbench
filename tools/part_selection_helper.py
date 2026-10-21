@@ -652,6 +652,21 @@ def render_page_refs(page_refs: str) -> str:
 
 def search_keyword(part: PartInfo) -> str:
     comment = part.comment.strip()
+    generic_passive = re.fullmatch(
+        r"(?:(?:chip\s+)?(?:resistor|capacitor)(?:\s*-\s*surface\s+mount)?|res|cap|电阻|电容)?",
+        comment, re.IGNORECASE,
+    )
+    passive_ref = re.match(r"^(?:R|RN|RP|RT|RV|C|CP)\d", part.ref.strip(), re.IGNORECASE)
+    if generic_passive and (comment or passive_ref):
+        value = re.split(r"[,，;；]", part.value, maxsplit=1)[0]
+        value = re.sub(r"\s*[±+-]?\s*\d+(?:\.\d+)?\s*%.*$", "", value).strip()
+        nominal = re.match(
+            r"(\S+)(?:\s+([pnumkKMGµμ]?(?:[Ff]|Ω|[Oo][Hh][Mm][Ss]?)|[RrkKM])(?=\s|$))?", value,
+        )
+        value = " ".join(piece for piece in nominal.groups() if piece) if nominal else ""
+        footprint = part.footprint.rsplit(":", 1)[-1].strip()
+        package = re.search(r"(?<!\d)(?:01005|0201|0402|0603|0805|1206|1210|1812|2010|2512)(?!\d)", footprint)
+        return " ".join(piece for piece in (value, package.group() if package else footprint) if piece)
     if comment.upper() not in GENERIC_COMMENTS:
         base = comment
     else:

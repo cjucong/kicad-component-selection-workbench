@@ -387,7 +387,7 @@ const assert = require('node:assert/strict');
 assert.equal(candidateKeywordFromFields({refs:'U1',comment:'AD4630-24BBCZ',value:'AD4630-24BBCZ',footprint:'BGA-64'}), 'AD4630-24BBCZ');
 assert.equal(candidateKeywordFromFields({refs:'U1',comment:'C4283613',footprint:'0805'}), 'C4283613');
 assert.equal(candidateKeywordFromFields({refs:'R85',comment:'P2TC0805D5002LNTA',value:'50k',footprint:'0805'}), 'P2TC0805D5002LNTA 50k 0805');
-assert.equal(candidateKeywordFromFields({refs:'C1',comment:'Capacitor',value:'100nF',footprint:'0402'}), 'capacitor 100nF 0402');
+assert.equal(candidateKeywordFromFields({refs:'C1',comment:'Capacitor',value:'100nF',footprint:'0402'}), '100nF 0402');
 const row = {refs:'R85,R86',comment:'P2TC0805D5002LNTA',value:'50k',footprint:'0805',effective_c_code:'C4283613',page_refs:'POWER: R85,R86',description:'precision resistor'};
 assert.ok(bomRowMatchesSearch(row,'r85'));
 assert.ok(!bomRowMatchesSearch(row,'R8'));

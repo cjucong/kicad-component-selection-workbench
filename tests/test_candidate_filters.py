@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from part_selection_server import render_index
+from part_stock_lookup import build_candidate_item
 
 
 class CandidateFiltersTest(unittest.TestCase):
@@ -67,6 +69,71 @@ assert.deepEqual(filterCandidateEntries(entries,selected,false).map(e=>e.item.c_
 assert.deepEqual(filterCandidateEntries(entries,selected,true).map(e=>e.item.c_code),['C1']);
 assert.equal(JSON.stringify(items),before);
 assert.equal(selected.get('brand').size,2);
+''')
+
+    def test_resistor_structured_aliases_reach_details_and_filters_without_defaults(self):
+        item = build_candidate_item("100k 0603", {
+            "productCode": "C123", "productModel": "RC0603FR-07100KL",
+            "paramPOList": [
+                {"paramName": "Resistance", "paramValue": "100kOhm"},
+                {"paramName": "Temperature Coefficient", "paramValue": "±100ppm/℃"},
+                {"paramName": "Working Voltage", "paramValue": "75V"},
+            ],
+        })
+        self.assertIn("温度系数: ±100ppm/℃", item["param_detail"])
+        self.assertIn("工作电压: 75V", item["param_detail"])
+        missing = build_candidate_item("100k 0603", {"productModel": "RC0603FR-07100KL"})
+        self.assertEqual(missing["param_detail"], "")
+        self.run_js("const items = " + json.dumps([item, missing]) + r''';
+const entries = candidateResultEntries(items);
+const filters = new Map([['param:温度系数',new Set(['±100ppm/°C'])],['param:工作电压',new Set(['75V'])]]);
+assert.deepEqual(filterCandidateEntries(entries,filters,false), [entries[0]]);
+assert.ok(!candidateEntryFields(entries[1]).has('param:工作电压'));
+''')
+
+    def test_resistor_alias_filters_respect_partner_overrides_and_rated_voltage(self):
+        self.run_js(r'''
+const entries = candidateResultEntries([{param_detail:'温度系数: ±100ppm/°C; 工作电压: 75V; 额定电压: 50V',
+ order_channels:[{url:'https://example.com/quote',
+ param_detail:'Temperature Coefficient: ±50ppm/°C; Working Voltage: 100V'}]}]);
+const filters = new Map([['param:温度系数',new Set(['±50ppm/°C'])],['param:工作电压',new Set(['100V'])]]);
+assert.deepEqual(filterCandidateEntries(entries,filters,false), [entries[1]]);
+const fields = candidateEntryFields(entries[1]);
+assert.deepEqual([...fields.get('param:额定电压')], ['50V']);
+assert.ok(!fields.get('param:工作电压').has('75V'));
+''')
+
+    def test_resistor_structured_labels_with_units_keep_source_values(self):
+        for source_key in ("paramVOList", "paramPOList"):
+            with self.subTest(source_key=source_key):
+                item = build_candidate_item("100k 0603", {source_key: [
+                    {"name": "温度系数(ppm/℃)", "value": "±50"},
+                    {"name": "工作电压(V)", "value": "100"},
+                    {"name": "额定电压", "value": "50V"},
+                ]})
+                self.assertEqual(item["param_detail"], "温度系数(ppm/℃): ±50; 工作电压(V): 100; 额定电压: 50V")
+        self.run_js(r'''
+const fields = candidateEntryFields({item:{param_detail:
+ 'Temperature Coefficient of Resistance (ppm/°C): ±50; Operating Voltage (V): 100'}});
+assert.deepEqual([...fields.get('param:温度系数')], ['±50ppm/°C']);
+assert.deepEqual([...fields.get('param:工作电压')], ['100V']);
+''')
+
+    def test_maximum_working_voltage_aliases_filter_without_rewriting_details(self):
+        items = []
+        for label in ("最大工作电压", "Maximum Working Voltage", "Max Working Voltage"):
+            item = build_candidate_item("100k 0603", {"paramVOList": [
+                {"paramName": label, "paramValue": "75V"},
+            ]})
+            self.assertEqual(item["param_detail"], label + ": 75V")
+            items.append(item)
+        items.append({"param_detail": "额定电压: 75V"})
+        self.run_js("const items = " + json.dumps(items) + r''';
+const entries = candidateResultEntries(items);
+const filters = new Map([['param:工作电压',new Set(['75V'])]]);
+assert.deepEqual(filterCandidateEntries(entries,filters,false), entries.slice(0,3));
+assert.ok(!candidateEntryFields(entries[3]).has('param:工作电压'));
+assert.deepEqual([...candidateEntryFields(entries[3]).get('param:额定电压')], ['75V']);
 ''')
 
     def test_partner_quote_filters_use_the_quote_brand_package_parameters_and_stock(self):

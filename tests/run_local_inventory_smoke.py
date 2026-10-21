@@ -24,7 +24,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   await page.goto(process.env.INVENTORY_TEST_URL);
   await page.waitForSelector('#rows tr[data-refs="R1"]');
   const cell=ref=>page.locator(`#rows tr[data-refs="${ref}"] [data-local-inventory]`);
-  await page.waitForFunction(()=>document.querySelector('#rows [data-local-inventory]').textContent.includes('未匹配'));
+  await page.waitForFunction(()=>document.querySelector('#rows [data-local-inventory]').textContent.includes('本地库存为零'));
   assert.equal(await page.locator('#localInventorySetCount').inputValue(),'3');
   await page.getByRole('button',{name:'数据',exact:true}).click();
   await page.locator('[data-command="importLocalInventory"]').click();

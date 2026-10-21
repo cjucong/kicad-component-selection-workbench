@@ -26,6 +26,8 @@
 
 ## 测试与临时产物
 
+- 规格核对以已保存原理图 Value/Footprint 为基线，缓存必须与当前主料 C 编码一致；等效单位和可靠尺寸别名不误报，缺失或歧义信息不判一致。拆行后重新核对各子组，旧库存/核对请求不得覆盖新主料或新原理图基线。保留 `test_part_selection_specs.py`、`test_spec_check_integration.py`、`test_row_filters.py` 与对应 `run_*_smoke.py`；仅用合成数据和自动清理的一次性工程，不改生产 CAD、记录或真实订单。
+
 - 本地库存测试使用合成 XLSX/XLSM 和 `scratch_project`，真实订单仅可只读核对。`同型号已购合计` 是当前结余、重复订单汇总不累加；D 等非 C 编码保留待匹配且仅显式匹配后计入。同 C 编码跨分组共享库存，NC 不计需求；不能借导入改 CAD 或商城缓存。保留可复用 `test_part_selection_inventory.py`、`run_local_inventory_smoke.py`，测试结束自动清理表格和临时工程。
 
 - 临时工程使用 `tests/_scratch.py` 的 `temporary_project()`，pytest 可用 `scratch_project`；结束、断言失败或异常展开时清理工程和派生缓存，unittest 在 setUp 立即注册 addCleanup。

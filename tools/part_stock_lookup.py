@@ -595,12 +595,21 @@ def _fetch_szlcsc_partner_products(keyword: str, timeout: int) -> list[dict[str,
 
 def product_param_items(product: dict[str, Any]) -> list[str]:
     items = []
+    aliases = {
+        "temperature coefficient": "温度系数", "temperature coefficient of resistance": "温度系数",
+        "tcr": "温度系数", "电阻温度系数": "温度系数", "温度系数": "温度系数",
+        "working voltage": "工作电压", "operating voltage": "工作电压", "工作电压": "工作电压",
+    }
     for item in product.get("paramVOList") or product.get("paramPOList") or []:
         if not isinstance(item, dict):
             continue
         name = strip_search_highlights(item.get("paramName") or item.get("name")).strip()
         value = strip_search_highlights(item.get("paramValue") or item.get("value")).strip()
         if name and value:
+            label = re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", name)
+            canonical = aliases.get(clean_space(label).casefold())
+            if canonical:
+                name = canonical + name[len(label):]
             items.append(f"{name}: {value}")
     return items
 

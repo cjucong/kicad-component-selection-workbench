@@ -54,6 +54,36 @@ assert.equal(currentRows.length,1);
 assert.equal(currentRows[0].quantity,4);
 ''')
 
+    def test_split_does_not_inherit_other_references_spec_warning(self):
+        html = render_index(SimpleNamespace(config={}, project_root=ROOT))
+        functions = re.search(r'function refButton\(.*?(?=function stockCode\()', html, re.S).group()
+        self.run_js('''
+const assert = require('node:assert/strict');
+''' + functions + '''
+const row={ref:'C1',refs:'C1,C2',refs_list:['C1','C2'],ref_links:[],
+ spec_check:{c_code:'C100',status:'mismatch',issues:[{refs:['C2'],field:'value',expected:'1uF',actual:'100nF'}]}};
+const split=rowForRefs(row,['C1']);
+assert.ok(!split.spec_check || !split.spec_check.issues.length);
+assert.equal(split.spec_check_needs_refresh,true);
+assert.equal(row.spec_check.issues[0].refs[0],'C2');
+''')
+
+    def test_late_stock_result_cannot_update_a_new_selection(self):
+        html = render_index(SimpleNamespace(config={}, project_root=ROOT))
+        function = re.search(r'function setStockCells\(.*?(?=function setCodeState\()', html, re.S).group()
+        self.run_js('''
+const assert=require('node:assert/strict');
+const row={effective_c_code:'C200',stock:{c_code:'C200',status:'待查询'}};
+const normalizeCCode=code=>String(code||'').toUpperCase();
+const currentLcscCode=()=>row.effective_c_code,stockCode=()=>row.effective_c_code,rowDataForElement=()=>row;
+let touched=false;
+const tr={dataset:{stockCode:'C200'},querySelector(){touched=true;throw Error('Should reject before DOM update');}};
+''' + function + '''
+setStockCells(tr,{c_code:'C100',ok:true,stock:'999'});
+assert.equal(row.stock.c_code,'C200');
+assert.equal(touched,false);
+''')
+
     def test_autosave_debounces_serializes_and_preserves_newer_edits_and_failures(self):
         self.run_js('''
 const assert = require('node:assert/strict');
