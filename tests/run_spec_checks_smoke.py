@@ -57,6 +57,21 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.waitForTimeout(350);
   assert.equal(await row('C1').locator('.spec-warning-icon').count(),0);
   await page.unroute('**/api/spec_check');
+  // Missing package recognition must name only the uncheckable field.
+  await page.evaluate(()=>{
+   const target=currentRows.find(row=>row.refs==='C1');
+   target.spec_check={c_code:'C100',status:'unknown',issues:[],unknown_fields:['footprint']};
+   refreshSpecificationWarnings();
+  });
+  const pending=row('C1').getByRole('button',{name:'查看待核对规格'});
+  await pending.waitFor();
+  assert.match(await pending.getAttribute('title'),/封装.*缺失或未识别/);
+  assert.doesNotMatch(await pending.getAttribute('title'),/值和封装|参数不足/);
+  await page.evaluate(()=>{
+   currentRows.find(row=>row.refs==='C1').spec_check={c_code:'C100',status:'matched',issues:[],unknown_fields:[]};
+   refreshSpecificationWarnings();
+  });
+  await page.waitForFunction(()=>!document.querySelector('#rows tr[data-refs="C1"] .spec-warning-icon'));
   // An unsynchronized Value edit must not change the saved-schematic comparison.
   await row('C1').locator('[data-field="value"]').fill('1uF');
   await page.waitForTimeout(1000);

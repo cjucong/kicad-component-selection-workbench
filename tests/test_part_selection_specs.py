@@ -97,6 +97,24 @@ def test_known_simple_package_aliases(validate, footprint):
     assert validate(row(footprint=footprint), stock())["status"] == "matched"
 
 
+@pytest.mark.parametrize("footprint", [
+    "DSMU:1808", "1808", "C1808", "Capacitor_SMD:C_1808_4520Metric", "4520Metric",
+])
+def test_high_voltage_capacitor_1808_package_is_comparable(validate, footprint):
+    actual = {ref: {"value": "100pF, 3kV, C0G", "footprint": footprint}
+              for ref in ("C1", "C2")}
+    result = validate(row("C1,C2", "100pF, 3kV, C0G", footprint),
+                      stock("Capacitance: 100pF; Rated Voltage: 3kV; Dielectric: C0G", package="1808"), actual)
+    assert result == {"status": "matched", "issues": [], "unknown_fields": []}
+
+
+def test_1808_cannot_match_1812_or_inconsistent_metric_alias(validate):
+    result = validate(row(footprint="DSMU:1808"), stock(package="1812"))
+    assert result["status"] == "mismatch"
+    assert result["issues"][0]["field"] == "footprint"
+    assert validate(row(footprint="C_1808_4532Metric"), stock(package="1808"))["status"] == "unknown"
+
+
 def test_package_mismatch_is_actionable(validate):
     result = validate(row(footprint="DSMU:0805"), stock())
     assert result == {"status": "mismatch", "issues": [{

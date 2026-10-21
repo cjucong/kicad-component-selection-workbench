@@ -29,7 +29,10 @@ if (typeof document !== 'undefined') (() => {
       const mismatch = check.status === 'mismatch';
       const unknown = !mismatch && check.status === 'unknown';
       if (!mismatch && !unknown) { marker.replaceChildren(); continue; }
-      const detail = mismatch ? specificationSummary(check) : check.error || '商品或原理图参数不足，尚不能核对值和封装';
+      const labels = {value: '标称值', footprint: '封装'};
+      const missing = (check.unknown_fields || []).map(field => labels[field] || field).join('、');
+      const detail = mismatch ? specificationSummary(check) : check.error ||
+        (missing ? `${missing}信息缺失或未识别，暂不能完成此项核对` : '尚未取得可核对的商品或原理图信息');
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'spec-warning-icon' + (unknown ? ' spec-unknown' : '');
