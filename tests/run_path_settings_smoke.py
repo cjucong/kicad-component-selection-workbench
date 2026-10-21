@@ -30,6 +30,34 @@ const path = require('node:path');
       await page.locator('#pathSettingsDialog').waitFor({state:'visible'});
     };
     await open();
+    // Mapping previews are read-only, cancelable, persisted, and work without Enter.
+    await page.locator('#pathFieldMapping summary').click();
+    assert.equal(await page.locator('#mapping-value').inputValue(), '');
+    await page.locator('#mapping-description').fill('参数详情');
+    await page.waitForFunction(()=>document.querySelector('#mapping-description').parentElement.textContent.includes('同步时新建 参数详情'));
+    if (process.env.PATH_SETTINGS_SCREENSHOTS) {
+      await page.screenshot({path:path.join(process.env.PATH_SETTINGS_SCREENSHOTS,'field-mapping-desktop.png')});
+    }
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#pathSettingsDialog footer [data-close-paths]').click();
+    await open();
+    await page.locator('#pathFieldMapping summary').click();
+    assert.equal(await page.locator('#mapping-description').inputValue(), '');
+    await page.locator('#mapping-description').fill('参数详情');
+    await page.locator('#savePathSettings').click();
+    await page.waitForFunction(()=>document.querySelector('#pathSettingsStatus').textContent.includes('已保存并应用'));
+    await page.locator('#pathSettingsDialog footer [data-close-paths]').click();
+    await page.waitForSelector('#rows tr');
+    await open();
+    await page.locator('#pathFieldMapping summary').click();
+    assert.equal(await page.locator('#mapping-description').inputValue(), '参数详情');
+    await page.locator('#mapping-comment').fill('Value');
+    await page.waitForFunction(()=>document.querySelector('#pathMappingStatus').textContent.includes('内置字段'));
+    await page.locator('#savePathSettings').click();
+    await page.waitForFunction(()=>document.querySelector('#pathSettingsStatus').textContent.includes('内置字段'));
+    assert.equal(await page.locator('#pathSettingsDialog').isVisible(), true);
+    await page.locator('#mapping-comment').fill('');
+    await page.waitForFunction(()=>document.querySelector('#pathMappingStatus').textContent === '');
     assert.equal(await page.locator('#path-jump_cursor_behavior').inputValue(),'return');
     await page.locator('#path-jump_cursor_behavior').selectOption('stay');
     assert.equal(await page.locator('#pathAdvanced').getAttribute('open'),null);
@@ -86,6 +114,7 @@ const path = require('node:path');
     assert.equal(await page.locator('#bomSelect').inputValue(),'__schematic__');
     await page.locator('#pathAdvanced summary').click();
     await page.setViewportSize({width:390,height:844});
+    await page.locator('#pathFieldMapping summary').click();
     const bounds = await page.locator('#pathSettingsDialog').boundingBox();
     assert(bounds.x>=0 && bounds.y>=0 && bounds.x+bounds.width<=390 && bounds.y+bounds.height<=844);
     assert.equal(await page.locator('#pathSettingsDialog').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
@@ -175,7 +204,7 @@ const path = require('node:path');
     console.log(JSON.stringify({menu:'passed',cancel:'passed',defaults:'passed',browse_mock:'passed',
       conflict:'passed',migration_cancel:'passed',migration_and_reload:'passed',
       explicit_import_and_schematic_startup:'passed',custom_paths_retained:'passed',
-      runtime_restart_button:'passed',update_controls_mock_bridge:'passed',desktop_mobile_layout:'passed',page_errors:errors}));
+      field_mapping_preview_cancel_persist_conflict:'passed',runtime_restart_button:'passed',update_controls_mock_bridge:'passed',desktop_mobile_layout:'passed',page_errors:errors}));
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''

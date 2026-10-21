@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 from part_selection_overrides import DATA_DIRECTORY, DATA_FILE_NAMES
+from part_selection_fields import (SCHEMATIC_FIELD_PROPERTIES, normalize_field_mapping,
+                                   resolve_properties, ALIASES)
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -160,20 +162,6 @@ def parse_symbol_properties(block: str) -> dict[str, str]:
     return props
 
 
-SCHEMATIC_FIELD_PROPERTIES = {
-    "comment": "Comment",
-    "value": "Value",
-    "footprint": "Footprint",
-    "lcsc_c_code": "LCSC",
-    "lcsc_url": "LCSC_URL",
-    "description": "Description",
-    "lcsc_alt": "LCSC_ALT",
-    "lcsc_alt_info": "LCSC_ALT_INFO",
-    "procurement_url": "PROCUREMENT_URL",
-    "procurement_info": "PROCUREMENT_INFO",
-}
-
-
 def replace_symbol_property_value(block: str, property_name: str, value: object) -> tuple[str, str | None]:
     escaped_name = re.escape(escape_kicad_string(property_name))
     pattern = re.compile(rf'(\(property\s+"{escaped_name}"\s+")((?:\\.|[^"])*)(")')
@@ -196,7 +184,8 @@ def add_symbol_property(block: str, property_name: str, value: object) -> str:
     return block[:close_index] + property_line + "\n  " + block[close_index:]
 
 
-def update_schematic_symbol_fields(doc_dir: Path, refs: list[str], fields: dict[str, object]) -> dict[str, object]:
+def update_schematic_symbol_fields(doc_dir: Path, refs: list[str], fields: dict[str, object], field_mapping=None) -> dict[str, object]:
+    field_mapping = normalize_field_mapping(field_mapping)
     target_refs = {ref.strip().upper() for ref in refs if ref and ref.strip()}
     field_updates = {
         key: str(fields.get(key) or "").strip()
@@ -214,6 +203,7 @@ def update_schematic_symbol_fields(doc_dir: Path, refs: list[str], fields: dict[
     pages: dict[str, str] = {}
     found_refs: set[str] = set()
     changed_paths: list[Path] = []
+    pending_writes = []
 
     for path in sorted(doc_dir.glob("*.kicad_sch")):
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -229,15 +219,18 @@ def update_schematic_symbol_fields(doc_dir: Path, refs: list[str], fields: dict[
             pages[ref] = path.stem
             new_block = block
             ref_changes: dict[str, dict[str, str]] = {}
+            properties = resolve_properties(props, field_mapping)
             for field_key, field_value in field_updates.items():
-                property_name = SCHEMATIC_FIELD_PROPERTIES[field_key]
+                property_name = properties[field_key]
+                before_block = new_block
+                new_block = mirror_builtin_property(new_block, field_key, property_name, field_value, props, field_mapping)
                 new_block, old_value = replace_symbol_property_value(new_block, property_name, field_value)
                 if old_value is None and not field_value:
                     continue
                 if old_value is None:
                     new_block = add_symbol_property(new_block, property_name, field_value)
                     old_value = ""
-                if old_value == field_value:
+                if old_value == field_value and new_block == before_block:
                     continue
                 ref_changes[field_key] = {"old": old_value, "new": field_value}
             if ref_changes:
@@ -248,9 +241,11 @@ def update_schematic_symbol_fields(doc_dir: Path, refs: list[str], fields: dict[
                 file_changed = True
         if file_changed:
             pieces.append(text[last:])
-            path.write_text("".join(pieces), encoding="utf-8")
+            pending_writes.append((path, "".join(pieces)))
             changed_paths.append(path)
 
+    for path, content in pending_writes:
+        path.write_text(content, encoding="utf-8")
     missing_refs = sorted(target_refs - found_refs)
     return {
         "ok": True,
@@ -262,7 +257,24 @@ def update_schematic_symbol_fields(doc_dir: Path, refs: list[str], fields: dict[
     }
 
 
-def update_schematic_symbol_field_map(doc_dir: Path, ref_fields: dict[str, dict[str, object]]) -> dict[str, object]:
+def mirror_builtin_property(block, key, property_name, value, props, mapping):
+    if key not in ('value', 'footprint'):
+        return block
+    name = SCHEMATIC_FIELD_PROPERTIES[key]
+    if property_name != name:
+        block, old = replace_symbol_property_value(block, name, value)
+        if old is None:
+            block = add_symbol_property(block, name, value)
+    if key not in mapping:
+        aliases = {alias.casefold() for alias in ALIASES.get(key, ())}
+        for sibling, previous in props.items():
+            if sibling != property_name and sibling.casefold() in aliases and previous == props.get(property_name):
+                block, _ = replace_symbol_property_value(block, sibling, value)
+    return block
+
+
+def update_schematic_symbol_field_map(doc_dir: Path, ref_fields: dict[str, dict[str, object]], field_mapping=None) -> dict[str, object]:
+    field_mapping = normalize_field_mapping(field_mapping)
     target_updates: dict[str, dict[str, str]] = {}
     for ref, fields in ref_fields.items():
         normalized_ref = str(ref or "").strip().upper()
@@ -285,6 +297,7 @@ def update_schematic_symbol_field_map(doc_dir: Path, ref_fields: dict[str, dict[
     pages: dict[str, str] = {}
     found_refs: set[str] = set()
     changed_paths: list[Path] = []
+    pending_writes = []
 
     for path in sorted(doc_dir.glob("*.kicad_sch")):
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -301,15 +314,18 @@ def update_schematic_symbol_field_map(doc_dir: Path, ref_fields: dict[str, dict[
             pages[ref] = path.stem
             new_block = block
             ref_changes: dict[str, dict[str, str]] = {}
+            properties = resolve_properties(props, field_mapping)
             for field_key, field_value in field_updates.items():
-                property_name = SCHEMATIC_FIELD_PROPERTIES[field_key]
+                property_name = properties[field_key]
+                before_block = new_block
+                new_block = mirror_builtin_property(new_block, field_key, property_name, field_value, props, field_mapping)
                 new_block, old_value = replace_symbol_property_value(new_block, property_name, field_value)
                 if old_value is None and not field_value:
                     continue
                 if old_value is None:
                     new_block = add_symbol_property(new_block, property_name, field_value)
                     old_value = ""
-                if old_value == field_value:
+                if old_value == field_value and new_block == before_block:
                     continue
                 ref_changes[field_key] = {"old": old_value, "new": field_value}
             if ref_changes:
@@ -321,9 +337,11 @@ def update_schematic_symbol_field_map(doc_dir: Path, ref_fields: dict[str, dict[
                 file_changed = True
         if file_changed:
             pieces.append(text[last:])
-            path.write_text("".join(pieces), encoding="utf-8")
+            pending_writes.append((path, "".join(pieces)))
             changed_paths.append(path)
 
+    for path, content in pending_writes:
+        path.write_text(content, encoding="utf-8")
     missing_refs = sorted(set(target_updates) - found_refs, key=ref_sort_key_for_text)
     return {
         "ok": True,
@@ -339,14 +357,15 @@ def read_schematic_symbol_field_values(
     doc_dir: Path,
     refs: list[str],
     field_keys: list[str] | tuple[str, ...],
+    field_mapping=None,
 ) -> dict[str, dict[str, str]]:
+    field_mapping = normalize_field_mapping(field_mapping)
     target_refs = {ref.strip().upper() for ref in refs if ref and ref.strip()}
     wanted_fields = [key for key in field_keys if key in SCHEMATIC_FIELD_PROPERTIES]
     values: dict[str, dict[str, str]] = {}
     if not target_refs or not wanted_fields or not doc_dir.exists():
         return values
 
-    property_to_key = {SCHEMATIC_FIELD_PROPERTIES[key]: key for key in wanted_fields}
     for path in sorted(doc_dir.glob("*.kicad_sch")):
         text = path.read_text(encoding="utf-8", errors="replace")
         for _start, _end, block in iter_symbol_block_spans(text):
@@ -354,9 +373,10 @@ def read_schematic_symbol_field_values(
             ref = props.get("Reference", "").strip().upper()
             if ref not in target_refs:
                 continue
+            properties = resolve_properties(props, field_mapping)
             values[ref] = {
-                field_key: props.get(property_name, "")
-                for property_name, field_key in property_to_key.items()
+                field_key: props.get(properties[field_key], "")
+                for field_key in wanted_fields
             }
     return values
 
@@ -388,7 +408,8 @@ def load_schematic_sheet_names(doc_dir: Path) -> dict[Path, str]:
     return {path: next(iter(values)) for path, values in names.items() if len(values) == 1}
 
 
-def load_schematic_parts(doc_dir: Path) -> dict[str, PartInfo]:
+def load_schematic_parts(doc_dir: Path, field_mapping=None) -> dict[str, PartInfo]:
+    field_mapping = normalize_field_mapping(field_mapping)
     parts: dict[str, PartInfo] = {}
     if not doc_dir.exists():
         return parts
@@ -401,18 +422,15 @@ def load_schematic_parts(doc_dir: Path) -> dict[str, PartInfo]:
             ref = props.get("Reference", "").strip().upper()
             if not re.match(r"^[A-Z]+\d+[A-Z]?$", ref):
                 continue
+            properties = resolve_properties(props, field_mapping)
+            values = {key: props.get(name, '') for key, name in properties.items()}
             parts[ref] = PartInfo(
                 ref=ref,
                 page=sheet_names.get(path.resolve(), path.stem),
-                comment=props.get("Comment", ""),
-                value=props.get("Value", ""),
-                footprint=props.get("Footprint", ""),
-                description=props.get("Description", ""),
-                lcsc_alt=props.get("LCSC_ALT", ""),
-                lcsc_alt_info=props.get("LCSC_ALT_INFO", ""),
-                procurement_url=props.get("PROCUREMENT_URL", ""),
-                procurement_info=props.get("PROCUREMENT_INFO", ""),
-                accepted_c_code=props.get("LCSC", ""),
+                comment=values['comment'], value=values['value'], footprint=values['footprint'],
+                description=values['description'], lcsc_alt=values['lcsc_alt'],
+                lcsc_alt_info=values['lcsc_alt_info'], procurement_url=values['procurement_url'],
+                procurement_info=values['procurement_info'], accepted_c_code=values['lcsc_c_code'],
             )
     return parts
 
@@ -535,8 +553,9 @@ def merge_part_data(
     bom_csv: Path,
     lcsc_csv: Path | None,
     schematic_dir: Path | None = None,
+    field_mapping=None,
 ) -> list[PartInfo]:
-    schematic = load_schematic_parts(schematic_dir or (project_root / "DOC"))
+    schematic = load_schematic_parts(schematic_dir or (project_root / "DOC"), field_mapping)
     source_bom = load_source_bom(bom_csv)
     lcsc_bom = load_lcsc_bom(lcsc_csv)
 

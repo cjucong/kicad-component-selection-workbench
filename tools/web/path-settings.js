@@ -18,6 +18,8 @@
   const defaultDirectory = 'BOM/选料工作台';
   const dataFiles = {output_overrides: '已选物料与字段修改记录.json', stock_cache: '立创库存与参数缓存.json', input_refs: '位号清单.txt'};
   const inputs = new Map();
+  const mappingInputs = new Map();
+  let initialMapping = '{}', mappingTimer, mappingSequence = 0;
   let snapshot, initialValues, initialSource;
   let opening = false, saved = false, saving = false;
   const dialog = document.createElement('dialog');
@@ -33,6 +35,12 @@
           <div class="path-choices"><label><input type="radio" name="path-source" id="pathSourceSchematic">原理图当前数据（默认）</label><label><input type="radio" name="path-source" id="pathSourceImport">导入 BOM 文件</label></div>
           <div id="pathImportRow" hidden><div id="pathImportFields" class="path-fields"></div><p class="path-settings-note">仅本次使用导入文件；下次启动仍读取已保存的原理图。</p></div>
         </fieldset>
+        <details id="pathFieldMapping" class="path-section"><summary>原理图字段映射</summary>
+          <p class="path-settings-note">自动匹配或指定工程属性。缺少的字段在同步时创建并隐藏；自定义值、封装字段同步时也更新 KiCad 内置 Value、Footprint。</p>
+          <div id="pathMappingFields" class="path-fields"></div>
+          <datalist id="pathPropertyNames"></datalist>
+          <p id="pathMappingStatus" role="status" aria-live="polite"></p>
+        </details>
         <fieldset class="path-section"><legend>工程选料数据</legend>
           <div class="path-choices"><label><input type="radio" name="path-data" id="pathDataDefault">工程目录 / BOM / 选料工作台</label><label><input type="radio" name="path-data" id="pathDataCustom">自定义目录</label></div>
           <div id="pathDataFields" class="path-fields"></div>
@@ -64,7 +72,8 @@
     status.classList.toggle('path-error', failed);
   };
   const source = () => imported.checked ? 'import' : 'schematic';
-  const changed = () => initialValues && (source() !== initialSource || fields.some(([key]) => inputs.get(key).value !== initialValues[key]));
+  const draftMapping = () => Object.fromEntries([...mappingInputs].filter(([, input]) => input.value.trim()).map(([key, input]) => [key, input.value.trim()]));
+  const changed = () => initialValues && (source() !== initialSource || fields.some(([key]) => inputs.get(key).value !== initialValues[key]) || JSON.stringify(draftMapping()) !== initialMapping);
   window.hasUnsavedPathSettings = () => dialog.open && !saved && Boolean(changed());
   async function api(url, options) {
     const response = await fetch(url, options);
@@ -73,6 +82,59 @@
     return result;
   }
   const post = (url, body) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  function showMappingPreview(preview) {
+    for (const field of preview.fields) {
+      const line = mappingInputs.get(field.key)?.parentElement.querySelector('.field-mapping-preview');
+      if (!line) continue;
+      const matches = Object.entries(field.matched).map(([name, count]) => `${name}：${count}`);
+      if (field.missing) matches.push(`同步时新建 ${preview.mapping[field.key] || field.default}：${field.missing}`);
+      if (field.conflicts) matches.push(`待手动匹配：${field.conflicts}`);
+      line.textContent = matches.join(' · ') || '无器件';
+      line.classList.toggle('path-error', field.conflicts > 0);
+      const sample = preview.properties.find(item => item.name === (preview.mapping[field.key] || Object.keys(field.matched)[0]));
+      if (sample?.samples.length) line.textContent += '；示例：' + sample.samples.join(' / ');
+    }
+  }
+  function scheduleMappingPreview() {
+    clearTimeout(mappingTimer);
+    const sequence = ++mappingSequence;
+    const message = dialog.querySelector('#pathMappingStatus');
+    message.textContent = '正在检查匹配…';
+    mappingTimer = setTimeout(async () => {
+      try {
+        const result = await post('/api/field_mapping', {field_mapping: draftMapping(), schematic_dir: inputs.get('schematic_dir').value});
+        if (sequence !== mappingSequence || !dialog.open) return;
+        showMappingPreview(result.field_mapping);
+        message.textContent = '';
+      } catch (error) { if (sequence === mappingSequence && dialog.open) message.textContent = error.message; }
+    }, 300);
+  }
+  function buildMapping(preview) {
+    mappingInputs.clear();
+    const panel = dialog.querySelector('#pathMappingFields');
+    const names = dialog.querySelector('#pathPropertyNames');
+    panel.replaceChildren(); names.replaceChildren();
+    for (const property of preview.properties) {
+      const option = document.createElement('option');
+      option.value = property.name;
+      names.append(option);
+    }
+    for (const field of preview.fields) {
+      const row = document.createElement('div'); row.className = 'path-field field-mapping-row';
+      const label = document.createElement('label'); label.htmlFor = 'mapping-' + field.key; label.textContent = field.label;
+      const control = document.createElement('div'); control.className = 'field-mapping-control';
+      const input = document.createElement('input');
+      Object.assign(input, {id: label.htmlFor, value: preview.mapping[field.key] || '', placeholder: '自动匹配（' + field.default + '）', maxLength: 128});
+      input.setAttribute('list', 'pathPropertyNames');
+      input.setAttribute('aria-label', field.label + ' 对应的原理图字段');
+      input.addEventListener('input', scheduleMappingPreview);
+      const hint = document.createElement('span'); hint.className = 'field-mapping-preview';
+      control.append(input, hint); row.append(label, control); panel.append(row);
+      mappingInputs.set(field.key, input);
+    }
+    showMappingPreview(preview);
+    initialMapping = JSON.stringify(draftMapping());
+  }
   const join = (parent, name) => parent.replace(/[\\/]+$/, '') + '/' + name;
   const normalized = value => {
     let path = value.trim().replace(/\\/g, '/').replace(/\/$/, '');
@@ -131,6 +193,7 @@
   }
   inputs.get('bom_dir').addEventListener('input', () => { placeData(inputs.get('bom_dir').value || defaultDirectory); updateDirectory(); });
   for (const key of Object.keys(dataFiles)) inputs.get(key).addEventListener('input', updateDataState);
+  inputs.get('schematic_dir').addEventListener('input', scheduleMappingPreview);
   for (const radio of [schematic, imported]) radio.addEventListener('change', updateSource);
   dataDefault.addEventListener('change', () => { inputs.get('bom_dir').value = defaultDirectory; placeData(defaultDirectory); });
   dataCustom.addEventListener('change', () => inputs.get('bom_dir').focus());
@@ -147,6 +210,7 @@
     if (saving) return;
     if (!saved && changed() && !window.confirm('放弃尚未保存的工程设置？')) return;
     dialog.close();
+    clearTimeout(mappingTimer); mappingSequence++;
     if (saved) window.location.reload();
   }
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
@@ -167,7 +231,7 @@
     controls.forEach(control => { control.disabled = true; });
     try {
       await flushRowEdits();
-      const result = await post('/api/path_settings', {revision: snapshot.revision, values, copy_existing: moving});
+      const result = await post('/api/path_settings', {revision: snapshot.revision, values, field_mapping: draftMapping(), copy_existing: moving});
       snapshot = result.settings;
       saved = true;
       notify('已保存并应用；复制 ' + result.copied_files + ' 个文件。备份：' + result.backup_path + (result.restart_required ? '。运行目录需重启工作台后生效。' : ''));
@@ -190,6 +254,10 @@
       dialog.querySelector('footer [data-close-paths]').textContent = '取消';
       dialog.querySelector('#pathRestart').hidden = true;
       dialog.querySelector('#pathAdvanced').open = false;
+      dialog.querySelector('#pathFieldMapping').open = false;
+      dialog.querySelector('#pathMappingStatus').textContent = '';
+      clearTimeout(mappingTimer); mappingSequence++;
+      buildMapping(snapshot.field_mapping);
       for (const [key, input] of inputs) input.value = snapshot.values[key] || '';
       if (inputs.get('source_bom').value === '__schematic__') inputs.get('source_bom').value = '';
       initialSource = document.querySelector('#bomSelect').value === '__schematic__' ? 'schematic' : 'import';

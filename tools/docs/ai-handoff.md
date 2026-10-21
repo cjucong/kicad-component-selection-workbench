@@ -20,6 +20,14 @@
 
 ## 模块与数据流
 
+### 工程字段映射
+
+`part_selection_fields.py` 集中定义逻辑用途、标准 KiCad 字段、中英文别名和映射校验。`field_mapping` 是配置中的可选对象，空/未指定用途自动匹配；手动字段名按现有精确名称优先、大小写唯一匹配其次。非空标准属性优先；歧义/字段重叠停止读取或写入并提示手动指定。不会自动取 `ALTIUM_VALUE` 作为当前 Value。
+
+`PartSelectionApp.schematic_parts/read_schematic_fields/write_schematic_fields` 把当前工程映射显式传给 helper，不能用全局可变映射污染其他工程。导入 BOM 的原理图补充与导出同样传递映射。`GET /api/path_settings` 附带已保存原理图的字段清单/样例/匹配统计；`POST /api/field_mapping` 仅预览，不改配置或 CAD；保存复用 SettingsGate、版本冲突和外部备份。设置 UI 输入防抖预览，清空即恢复自动匹配，取消不生效。
+
+helper 回写前先解析全部目标文件，映射冲突不留下已写的前几页；正式回写才创建缺失非空属性，默认隐藏。自定义 Value/Footprint 同时镜像 KiCad 内置属性，`verify_schematic_field_values` 核验镜像后才报告成功；自动识别路径只跟随原值一致的值/封装别名，不覆盖不同值的其他历史属性。此功能只同步属性，不替换符号几何、引脚或 PCB。测试见 `test_field_mapping.py` 和 `run_path_settings_smoke.py`，后者是 Chromium/合成工程验证，不操作实际 KiCad。
+
 ### 桌面生命周期
 
 用户入口仅保留 WebView2 独立窗口；删除 `--browser`、`--open` 和自动浏览器回退。localhost HTTP 保留作桌面内部传输及隔离诊断/测试，不再是面向用户的浏览器模式；外部商城链接仍可用 Chrome 打开。

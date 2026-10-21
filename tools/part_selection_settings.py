@@ -17,6 +17,7 @@ from part_selection_overrides import (DATA_FILE_NAMES, DATA_DIRECTORY, SYNC_LOG_
                                       EXPORT_PREFIXES, configuration_defaults, load_config)
 from part_selection_runtime import runtime_directory
 from part_selection_library import find_converter
+from part_selection_fields import normalize_field_mapping, field_mapping_snapshot
 
 
 PATH_FIELDS = (
@@ -93,6 +94,7 @@ def settings_snapshot(config):
         'plugin_directory': str(Path(__file__).resolve().parent),
         'default_data_directory': DATA_DIRECTORY, 'data_file_names': DATA_FILE_NAMES,
         'converter_path': converter, 'schematic_default': schematic_default, 'import_source': import_source,
+        'field_mapping': field_mapping_snapshot(config['schematic_dir'], config.get('field_mapping')),
     }
 
 
@@ -112,6 +114,14 @@ def open_settings_directory(config, payload):
     else:
         subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', str(path)])
     return {'ok': True, 'path': str(path)}
+
+
+def preview_field_mapping(config, payload):
+    mapping = normalize_field_mapping(payload.get('field_mapping'))
+    directory = _path(config['project_root'], str(payload.get('schematic_dir') or config['schematic_dir']))
+    if not directory.is_dir():
+        raise ValueError('原理图目录不存在')
+    return {'ok': True, 'field_mapping': field_mapping_snapshot(directory, mapping)}
 
 
 def _path(root, value):
@@ -281,11 +291,16 @@ def save_settings(config, payload):
         raise ValueError('包含不支持的配置字段或字段类型')
     raw = _raw(path)
     values = {**configuration_defaults(path, raw), **raw, **{k: v.strip() for k, v in updates.items()}}
+    mapping = normalize_field_mapping(payload.get('field_mapping', config.get('field_mapping')))
     if values['jump_cursor_behavior'] not in ('return', 'stay'):
         raise ValueError('请选择跳转后鼠标返回原位或留在原理图')
     if values['open_lcsc_search_on_replace'] not in ('true', 'false'):
         raise ValueError('请选择更换型号时是否自动打开网页搜索')
     targets = _validate(root, path, values)
+    # Mapping is configuration only; saving never changes schematic properties.
+    preview = field_mapping_snapshot(targets['schematic_dir'], mapping)
+    if 'field_mapping' in payload and any(item['conflicts'] for item in preview['fields']):
+        raise ValueError('字段映射仍有冲突，请为冲突字段手动选择不同属性')
     copies = []
     for key in DATA_FIELDS:
         old, new = Path(config[key]).resolve(), targets[key]
@@ -327,6 +342,8 @@ def save_settings(config, payload):
             raise ValueError('配置已被其他窗口修改，请重新打开后再保存')
         # Preserve unknown engineering options and the original project identity.
         raw.update({key: values[key] for key in EDITABLE_FIELDS if key in updates})
+        if 'field_mapping' in payload:
+            raw['field_mapping'] = mapping
         _write_atomic(path, (json.dumps(raw, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
     except Exception:
         for new, data in reversed(created):

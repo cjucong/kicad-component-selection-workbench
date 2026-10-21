@@ -18,6 +18,7 @@ python -B tools/kicad_plugin/desktop.py --config "E:/path/to/project/BOM/选料�
 | --- | --- |
 | `part_selection_server.py` | 本地工作台、API、同步协调 |
 | `part_selection_helper.py`、`part_selection_overrides.py` | 原理图/BOM 读取、配置、记录与字段处理 |
+| `part_selection_fields.py` | 工程级字段自动识别、手动映射、冲突检查与预览；读取/回写共用 |
 | `part_selection_paths.py` | 共享显式工程/配置 CLI 路径解析，随安装包分发 |
 | `start_part_selection_tool.vbs`、`launch_part_selection.py` | 隐藏启动桥，保留 --project/--config；缺目标时选择工程 |
 | `kicad_sexpr.py` | 独立 KiCad S-expression 解析器 |

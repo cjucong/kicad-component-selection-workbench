@@ -30,7 +30,7 @@ from uuid import uuid4
 from functools import partial
 
 from part_selection_search import CandidateSearchJobs
-from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings, open_settings_directory
+from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings, open_settings_directory, preview_field_mapping
 from part_selection_library import LibraryImporter, SelectionJobs
 from part_selection_footprints import FootprintChoices
 
@@ -1497,6 +1497,18 @@ class PartSelectionApp:
     def source_bom(self) -> Path:
         return self.config["source_bom"]
 
+    def schematic_parts(self):
+        options = {"field_mapping": self.config["field_mapping"]} if self.config.get("field_mapping") else {}
+        return load_schematic_parts(self.config["schematic_dir"], **options)
+
+    def read_schematic_fields(self, *args):
+        options = {"field_mapping": self.config["field_mapping"]} if self.config.get("field_mapping") else {}
+        return read_schematic_symbol_field_values(*args, **options)
+
+    def write_schematic_fields(self, *args):
+        options = {"field_mapping": self.config["field_mapping"]} if self.config.get("field_mapping") else {}
+        return update_schematic_symbol_field_map(*args, **options)
+
     def is_schematic_source(self, selected_bom: str = "") -> bool:
         return (selected_bom == SCHEMATIC_SOURCE_BOM if selected_bom
                 else self.source_bom().name == SCHEMATIC_SOURCE_BOM)
@@ -1548,7 +1560,7 @@ class PartSelectionApp:
         if query_refs.strip():
             return read_target_refs(self.project_root, query_refs, None)
         if self.is_schematic_source(selected_bom):
-            return sorted(load_schematic_parts(self.config["schematic_dir"]).keys(), key=ref_sort_key)
+            return sorted(self.schematic_parts().keys(), key=ref_sort_key)
         bom_path = self.resolve_bom_path(selected_bom)
         refs = read_refs_from_bom(bom_path)
         if refs:
@@ -1561,7 +1573,7 @@ class PartSelectionApp:
         overrides: dict[str, dict[str, object]],
     ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, object]]]:
         refs = [str(getattr(part, "ref", "") or "").strip().upper() for part in parts]
-        actual_by_ref = read_schematic_symbol_field_values(
+        actual_by_ref = self.read_schematic_fields(
             self.config["schematic_dir"], refs, SCHEMATIC_SYNC_FIELDS
         )
         changed, states = reconcile_schematic_field_overrides(parts, overrides, actual_by_ref)
@@ -1596,7 +1608,7 @@ class PartSelectionApp:
 
     def rows(self, query_refs: str = "", selected_bom: str = "", include_stock: bool = True) -> list[dict[str, object]]:
         if self.is_schematic_source(selected_bom):
-            schematic = load_schematic_parts(self.config["schematic_dir"])
+            schematic = self.schematic_parts()
             refs = self.refs(query_refs, selected_bom)
             with OVERRIDES_UPDATE_LOCK:
                 overrides = load_overrides(self.overrides_path)
@@ -1619,7 +1631,8 @@ class PartSelectionApp:
         selected_path = self.resolve_bom_path(selected_bom)
         refs = self.refs(query_refs, selected_bom)
         lcsc_bom = selected_path if selected_path.suffix.lower() in {".xlsx", ".xlsm"} or "LCSC" in selected_path.name.upper() else self.lcsc_bom()
-        parts = merge_part_data(refs, self.project_root, selected_path, lcsc_bom, self.config["schematic_dir"])
+        parts = merge_part_data(refs, self.project_root, selected_path, lcsc_bom, self.config["schematic_dir"],
+                                field_mapping=self.config.get("field_mapping"))
         overrides = load_overrides(self.overrides_path)
         actual_by_ref, reconciliation = self.reconcile_parts_with_schematic(parts, overrides)
         rows = group_parts_for_review(parts, overrides)
@@ -1721,7 +1734,7 @@ class PartSelectionApp:
         current_overrides = load_overrides(self.overrides_path)
         preserve_unchanged_notes(update, refs, current_overrides)
         schematic_values = (
-            read_schematic_symbol_field_values(
+            self.read_schematic_fields(
                 self.config["schematic_dir"], refs, ("lcsc_alt", "lcsc_alt_info")
             )
             if primary_code
@@ -1775,7 +1788,7 @@ class PartSelectionApp:
         revisions = context["revisions"] if context else {ref: initial.get(ref, {}) for ref in refs}
         if mode in ("library", "convert") and choice is None:
             if payload.get("phase") == "preview":
-                actual = read_schematic_symbol_field_values(self.config["schematic_dir"], refs, ("footprint",))
+                actual = self.read_schematic_fields(self.config["schematic_dir"], refs, ("footprint",))
                 ids = list(dict.fromkeys(actual.get(ref, {}).get("footprint", "") for ref in refs))
                 if mode == "library":
                     preview = self.footprint_choices.prepare_library(ids, str(item.get("package") or ""))
@@ -1806,7 +1819,7 @@ class PartSelectionApp:
                 current = load_overrides(self.overrides_path)
                 if any(current.get(ref, {}) != revisions[ref] for ref in refs):
                     raise ValueError("预览期间该行已被修改，请重新预览；没有写入封装库")
-                actual = read_schematic_symbol_field_values(self.config["schematic_dir"], refs, ("footprint",))
+                actual = self.read_schematic_fields(self.config["schematic_dir"], refs, ("footprint",))
                 if actual != context["actual"]:
                     raise ValueError("原理图封装发生变化，请重新预览")
                 library = self.footprint_choices.commit(choice)
@@ -1827,8 +1840,8 @@ class PartSelectionApp:
             cache[code] = candidate_stock_result(item)
             cache[code].setdefault("fetched_at", datetime.now().isoformat(timespec="seconds"))
             save_stock_cache(self.stock_cache_path, cache)
-        actual = read_schematic_symbol_field_values(self.config["schematic_dir"], refs, EDITABLE_FIELDS)
-        schematic_alternates = read_schematic_symbol_field_values(
+        actual = self.read_schematic_fields(self.config["schematic_dir"], refs, EDITABLE_FIELDS)
+        schematic_alternates = self.read_schematic_fields(
             self.config["schematic_dir"], refs, ("lcsc_alt", "lcsc_alt_info")
         )
         now = datetime.now().isoformat(timespec="seconds")
@@ -1898,11 +1911,12 @@ class PartSelectionApp:
             if hasattr(self, "config"):
                 bom = str(payload.get("bom") or "")
                 if self.is_schematic_source(bom):
-                    parts = list(load_schematic_parts(self.config["schematic_dir"]).values())
+                    parts = list(self.schematic_parts().values())
                 elif bom or self.source_bom().is_file():
                     source = self.resolve_bom_path(bom)
                     lcsc = source if source.suffix.lower() in {".xlsx", ".xlsm"} or "LCSC" in source.name.upper() else self.lcsc_bom()
-                    parts = merge_part_data(self.refs("", bom), self.project_root, source, lcsc, self.config["schematic_dir"])
+                    parts = merge_part_data(self.refs("", bom), self.project_root, source, lcsc, self.config["schematic_dir"],
+                                            field_mapping=self.config.get("field_mapping"))
             fields = {key: str(value or "").strip() for key, value in update["field_overrides"].items()}
             cache = load_stock_cache(self.stock_cache_path) if parts else {}
             inherited, merges = edited_row_merge_updates(parts, overrides, refs, fields, cache)
@@ -1910,7 +1924,7 @@ class PartSelectionApp:
                 backup = runtime_directory(self.project_root) / f"row_merge_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
                 save_overrides(backup / "overrides_before.json", overrides)
                 (backup / "merge.json").write_text(json.dumps({"fields": fields, "merges": merges}, ensure_ascii=False, indent=2), encoding="utf-8")
-            actual = read_schematic_symbol_field_values(self.config["schematic_dir"], list(inherited), EDITABLE_FIELDS) if inherited else {}
+            actual = self.read_schematic_fields(self.config["schematic_dir"], list(inherited), EDITABLE_FIELDS) if inherited else {}
             now = datetime.now().isoformat(timespec="seconds")
             for ref in refs:
                 previous = overrides.get(ref, {})
@@ -1936,7 +1950,7 @@ class PartSelectionApp:
         fields = [str(key) for key in requested_fields if str(key) in EDITABLE_FIELDS]
         if not fields:
             raise ValueError("no editable fields were requested")
-        actual_by_ref = read_schematic_symbol_field_values(
+        actual_by_ref = self.read_schematic_fields(
             self.config["schematic_dir"], refs, EDITABLE_FIELDS
         )
         missing_refs: list[str] = []
@@ -1981,7 +1995,7 @@ class PartSelectionApp:
 
         overrides = load_overrides(self.overrides_path)
         first_override = overrides.get(refs[0], {})
-        schematic_values = read_schematic_symbol_field_values(
+        schematic_values = self.read_schematic_fields(
             self.config["schematic_dir"], refs, ("lcsc_alt", "lcsc_alt_info")
         )
 
@@ -2061,7 +2075,7 @@ class PartSelectionApp:
             raise ValueError("unsupported procurement action")
 
         if action == "adopt_schematic":
-            schematic_values = read_schematic_symbol_field_values(
+            schematic_values = self.read_schematic_fields(
                 self.config["schematic_dir"], refs, ("procurement_url", "procurement_info")
             )
 
@@ -2208,7 +2222,7 @@ class PartSelectionApp:
         first_ref = refs[0]
         page = str((pages or {}).get(first_ref, "") or "")
         if not page:
-            parts = load_schematic_parts(self.config["schematic_dir"])
+            parts = self.schematic_parts()
             page = parts.get(first_ref).page if first_ref in parts else ""
         return kicad_jump_url(first_ref, page)
 
@@ -2315,11 +2329,17 @@ class PartSelectionApp:
                 )
             }
             field_keys.update(expected[normalized_ref])
-        actual = read_schematic_symbol_field_values(
+        actual = self.read_schematic_fields(
             self.config["schematic_dir"],
             sorted(expected, key=ref_sort_key),
             sorted(field_keys),
         )
+        mirrored = [key for key, name in self.config.get('field_mapping', {}).items()
+                    if key in ('value', 'footprint') and name != {'value': 'Value', 'footprint': 'Footprint'}[key]]
+        builtin = read_schematic_symbol_field_values(
+            self.config['schematic_dir'], sorted(expected, key=ref_sort_key), mirrored,
+            field_mapping={**self.config.get('field_mapping', {}), 'value': 'Value', 'footprint': 'Footprint'},
+        ) if mirrored else {}
         mismatches: dict[str, dict[str, dict[str, str]]] = {}
         missing_refs: list[str] = []
         for ref, fields in expected.items():
@@ -2333,6 +2353,10 @@ class PartSelectionApp:
                     mismatches.setdefault(ref, {})[key] = {
                         "expected": expected_value,
                         "actual": actual_value,
+                    }
+                if key in mirrored and builtin.get(ref, {}).get(key, '') != expected_value:
+                    mismatches.setdefault(ref, {})[key + '_builtin'] = {
+                        'expected': expected_value, 'actual': builtin.get(ref, {}).get(key, ''),
                     }
         return {
             "ok": not mismatches,
@@ -2578,7 +2602,7 @@ class PartSelectionApp:
         kicad_prepare = self.prepare_kicad_for_external_schematic_write(refs)
         log_event("kicad_prepare_complete", result=kicad_prepare)
         self.require_kicad_prepare_success(kicad_prepare)
-        result = update_schematic_symbol_field_map(self.config["schematic_dir"], ref_field_map)
+        result = self.write_schematic_fields(self.config["schematic_dir"], ref_field_map)
         log_event(
             "schematic_write_complete",
             updated_refs=result.get("updated_refs", []),
@@ -2587,7 +2611,7 @@ class PartSelectionApp:
         )
         verify, retry_results = self.ensure_schematic_fields_verified(
             ref_field_map,
-            lambda: update_schematic_symbol_field_map(self.config["schematic_dir"], ref_field_map),
+            lambda: self.write_schematic_fields(self.config["schematic_dir"], ref_field_map),
             "after_write",
         )
         max_verify_attempts = int(verify.get("attempts", 1) or 1)
@@ -2616,7 +2640,7 @@ class PartSelectionApp:
                 result, verify, recovery_prepares, recovery_notifies = self.recover_schematic_after_notify(
                     refs,
                     ref_field_map,
-                    lambda: update_schematic_symbol_field_map(self.config["schematic_dir"], ref_field_map),
+                    lambda: self.write_schematic_fields(self.config["schematic_dir"], ref_field_map),
                     result,
                     verify,
                     log_event,
@@ -2699,7 +2723,7 @@ class PartSelectionApp:
                 raise ValueError("Selected designators are no longer in this BOM; reload before syncing: "
                                  + ",".join(sorted(unknown, key=ref_sort_key)))
             rows = [row for row in rows if selection.intersection(row.get("refs_list", []))]
-        schematic_parts = load_schematic_parts(self.config["schematic_dir"])
+        schematic_parts = self.schematic_parts()
         aggregate: dict[str, object] = {
             "ok": True,
             "rows": len(rows),
@@ -2789,11 +2813,11 @@ class PartSelectionApp:
         log_event("bulk_prepare_complete", result=kicad_prepare)
         if prepare and first_existing_refs:
             self.require_kicad_prepare_success(kicad_prepare)
-        result = update_schematic_symbol_field_map(self.config["schematic_dir"], ref_field_map)
+        result = self.write_schematic_fields(self.config["schematic_dir"], ref_field_map)
         log_event("bulk_write_complete", updated_refs=result.get("updated_refs", []))
         verify, retry_results = self.ensure_schematic_fields_verified(
             ref_field_map,
-            lambda: update_schematic_symbol_field_map(self.config["schematic_dir"], ref_field_map),
+            lambda: self.write_schematic_fields(self.config["schematic_dir"], ref_field_map),
             "after_write",
         )
         log_event("bulk_write_verified", verify=verify)
@@ -2826,7 +2850,7 @@ class PartSelectionApp:
                 result, verify, recovery_prepares, recovery_notifies = self.recover_schematic_after_notify(
                     first_existing_refs,
                     ref_field_map,
-                    lambda: update_schematic_symbol_field_map(self.config["schematic_dir"], ref_field_map),
+                    lambda: self.write_schematic_fields(self.config["schematic_dir"], ref_field_map),
                     result,
                     verify,
                     log_event,
@@ -2861,12 +2885,13 @@ class PartSelectionApp:
         query_refs = str(payload.get("refs", "") or "")
         refs = self.refs(query_refs, selected_bom)
         if self.is_schematic_source(selected_bom):
-            schematic = load_schematic_parts(self.config["schematic_dir"])
+            schematic = self.schematic_parts()
             parts = [schematic[ref] for ref in refs if ref in schematic]
         else:
             selected_path = self.resolve_bom_path(selected_bom)
             lcsc_bom = selected_path if selected_path.suffix.lower() in {".xlsx", ".xlsm"} or "LCSC" in selected_path.name.upper() else self.lcsc_bom()
-            parts = merge_part_data(refs, self.project_root, selected_path, lcsc_bom, self.config["schematic_dir"])
+            parts = merge_part_data(refs, self.project_root, selected_path, lcsc_bom, self.config["schematic_dir"],
+                                    field_mapping=self.config.get("field_mapping"))
         overrides = load_overrides(self.overrides_path)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = self.bom_dir / f"{EXPORT_PREFIXES[1]}{timestamp}.csv"
@@ -3208,6 +3233,9 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/path_picker":
                     json_response(self, choose_path(app.config, payload))
+                    return
+                if parsed.path == "/api/field_mapping":
+                    json_response(self, preview_field_mapping(app.config, payload))
                     return
                 if parsed.path == "/api/open_settings_directory":
                     json_response(self, open_settings_directory(app.config, payload))

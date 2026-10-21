@@ -39,6 +39,12 @@
 .path-settings-dialog .path-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: 0 0 30px; padding: 4px; border: 1px solid #c0c9ce; border-radius: 3px; background: transparent; font-size: 22px; }
 .path-icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .path-settings-note { font-size: 12px; line-height: 1.65; color: #65717d; }
+.field-mapping-control { min-width: 0; }
+.field-mapping-control input { box-sizing: border-box; width: 100%; height: 30px; padding: 4px 7px; border: 1px solid #b6c1c9; border-radius: 3px; font: inherit; }
+.field-mapping-preview { display: block; margin-top: 4px; color: #65717d; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.field-mapping-preview.path-error, #pathMappingStatus { color: #b02d33; }
+#pathFieldMapping summary { cursor: pointer; font-weight: 600; }
+#pathMappingFields { margin-top: 10px; }
 #pathSettingsStatus { margin: 10px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 12px; color: #236b53; }
 #pathSettingsStatus:empty { display: none; }
 #pathSettingsStatus.path-error { color: #b02d33; }

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from part_selection_fields import normalize_field_mapping
 
 
 DATA_DIRECTORY = "BOM/选料工作台"
@@ -137,6 +138,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
     if config_path.exists():
         loaded = json.loads(config_path.read_text(encoding="utf-8-sig"))
     config = {**configuration_defaults(config_path, loaded), **loaded}
+    config['field_mapping'] = normalize_field_mapping(config.get('field_mapping'))
 
     project_root_value = Path(os.path.expandvars(str(config.get("project_root") or "."))).expanduser()
     if project_root_value.is_absolute():
