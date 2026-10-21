@@ -3344,6 +3344,7 @@ def render_index(app: PartSelectionApp) -> str:
     path_settings_css = (Path(__file__).resolve().parent / "web" / "path-settings.css").read_text(encoding="utf-8")
     desktop_lifecycle_js = (Path(__file__).resolve().parent / "web" / "desktop-lifecycle.js").read_text(encoding="utf-8")
     plugin_updates_js = (Path(__file__).resolve().parent / "web" / "plugin-updates.js").read_text(encoding="utf-8")
+    candidate_desktop_js = (Path(__file__).resolve().parent / "web" / "candidate-desktop.js").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3356,6 +3357,20 @@ def render_index(app: PartSelectionApp) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BOM 器件选型工作台</title>
+<script>const candidateOnly = new URLSearchParams(location.search).get('view') === 'candidate';
+if (candidateOnly) document.documentElement.classList.add('candidate-only');</script>
+<style>
+html.candidate-only body > header, html.candidate-only body > main,
+html.candidate-only .workbench-statusbar {{ display: none !important; }}
+html.candidate-only body {{ padding: 0; }}
+html.candidate-only #candidateModal {{ padding: 0; background: transparent; }}
+html.candidate-only #candidateWindow {{ position: fixed !important; inset: 0 !important;
+ width: 100% !important; height: 100% !important; max-width: none; max-height: none;
+ min-width: 0; min-height: 0; border: 0; border-radius: 0; box-shadow: none; }}
+html.candidate-only #candidateWindow > .modal-head,
+html.candidate-only #candidateWindow > [data-resize],
+html.candidate-only #candidateMinimizedBar {{ display: none !important; }}
+</style>
 <style>
 body, input, textarea, [contenteditable], td, th, button {{ -webkit-user-select: text !important; user-select: text !important; }}
 body {{ --sticky-toolbar-height: 0px; --sticky-filter-height: 0px; --statusbar-height: 28px; margin: 0; padding-bottom: var(--statusbar-height); font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif; color: #26323a; background: #fff; letter-spacing: 0; }}
@@ -6021,7 +6036,8 @@ async function updateAlternateParts(tr, action, extra = {{}}) {{
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "保存备选料失败");
   setState(`备选料已更新：${{payload.refs || payload.ref}}`, "saved");
-  await loadRows(anchor);
+  if (candidateOnly) await window.notifyNativeCandidateSaved();
+  else await loadRows(anchor);
   return data;
 }}
 
@@ -6042,7 +6058,8 @@ async function updateProcurementChoice(tr, action, choice = {{}}) {{
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "保存订货料失败");
   setState(`订货料已更新：${{payload.refs || payload.ref}}`, "saved");
-  await loadRows(anchor);
+  if (candidateOnly) await window.notifyNativeCandidateSaved();
+  else await loadRows(anchor);
   return data;
 }}
 
@@ -6058,11 +6075,17 @@ function updateCandidateWindowControls() {{
 }}
 
 function restoreCandidates() {{
+  if (!candidateOnly && window.pywebview?.api?.candidate_window) {{ void window.restoreNativeCandidates(); return; }}
   if (!candidateModal.classList.contains("open")) return;
   candidateModal.classList.remove("minimized");
 }}
 
 function minimizeCandidates() {{
+  if (window.pywebview?.api?.candidate_window) {{
+    if (candidateOnly) void window.pywebview.api.candidate_window('minimize');
+    else void window.minimizeNativeCandidates();
+    return;
+  }}
   if (!candidateModal.classList.contains("open")) return;
   candidateMinimizedTitle.textContent = candidateTitle.textContent || "更换型号";
   candidateModal.classList.add("minimized");
@@ -6163,6 +6186,7 @@ function beginCandidateResize(event) {{
 }}
 
 async function openCandidates(tr) {{
+  if (!candidateOnly && window.pywebview?.api?.candidate_window) return window.openNativeCandidates(tr);
   if (candidateTargetRow && candidateTargetRow.dataset.candidateSaving === "1") {{
     restoreCandidates();
     return;
@@ -6211,7 +6235,11 @@ function formatReviewTime(value) {{
   return new Intl.DateTimeFormat("zh-CN", {{year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false}}).format(date);
 }}
 
-function closeCandidates() {{
+function closeCandidates(afterSave = false) {{
+  if (candidateOnly && afterSave !== true && !window.nativeCandidateCanExit()) {{
+    candidateSearchProgress.textContent = "正在保存或转换，请完成后再关闭窗口";
+    return;
+  }}
   if (candidateTargetRow && candidateTargetRow.dataset.candidateSaving === "1") return;
   invalidateCandidateSearch();
   candidateModal.classList.remove("open", "minimized");
@@ -6220,6 +6248,7 @@ function closeCandidates() {{
   candidateTargetKey = "";
   currentCandidateItems = new Map();
   currentProcurementQuotes = new Map();
+  if (candidateOnly) window.closeNativeCandidates();
 }}
 
 function officialSearchUrl(keyword) {{
@@ -6724,9 +6753,10 @@ async function chooseCandidate(code) {{
       if (!saved.ok || !data.ok) throw new Error(data.error || "保存封装选择失败");
     }}
     delete tr.dataset.candidateSaving;
-    closeCandidates();
+    if (candidateOnly) await window.notifyNativeCandidateSaved();
+    closeCandidates(true);
     setState("主料已保存；正在刷新分组…", "saved");
-    await loadRows(anchor);
+    if (!candidateOnly) await loadRows(anchor);
     const fieldSummary = "Value：" + (replaceValue ? "按选型更新" : "保留原值") + "；Comment：" + (replaceComment ? "按器件类型更新" : "保留原值");
     const librarySummary = data.library && data.library.symbol ? "已保存转换符号与封装库" : "已采用现有库封装";
     setState(footprintMode !== "keep" ? librarySummary + "；" + fieldSummary + "。请同步原理图；已放置符号与 PCB 未自动更换" : "已保存主料及物料参数；" + fieldSummary + "；保留现有 KiCad 封装。请同步原理图", "saved");
@@ -6756,7 +6786,7 @@ async function selectProcurement(quoteKey) {{
     order_url: channel.url || "",
     related_lcsc_code: channel.c_code || item.c_code || ""
   }});
-  closeCandidates();
+  closeCandidates(true);
 }}
 
 async function addCandidateAsAlternate(code) {{
@@ -6788,7 +6818,7 @@ async function addCandidateAsAlternate(code) {{
       url: item.url || ""
     }}
   }});
-  closeCandidates();
+  closeCandidates(true);
 }}
 
 async function loadStockProgressively(rows) {{
@@ -7301,6 +7331,9 @@ candidateRows.addEventListener("click", async event => {{
     if (button.dataset.action === "select-procurement") await selectProcurement(button.dataset.quoteKey || "");
   }} catch (err) {{
     setState(err.message, "error");
+    if (candidateOnly) candidateSearchProgress.textContent = err.message;
+  }} finally {{
+    window.finishNativeCandidateAction?.();
   }}
 }});
 
@@ -7758,8 +7791,9 @@ applyCandidateColumnOrder();
 applyCandidateSavedWidths();
 renderColumnPanel();
 applyColumnVisibility();
-initializeWorkbenchRows();
+if (!candidateOnly) initializeWorkbenchRows();
 </script>
+<script>{candidate_desktop_js}</script>
 <script>{footprint_js}</script>
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>

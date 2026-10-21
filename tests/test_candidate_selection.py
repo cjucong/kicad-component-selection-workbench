@@ -451,7 +451,7 @@ const item = {c_code:'C4283613',model:'P2TC0805D5002LNTA',package:'0805',param_d
 const calls = [];
 const button = {disabled:false};
 const ctx = {
-  rowDataForElement: ()=>null,
+  rowDataForElement: ()=>null, candidateOnly:false,
   candidateTargetRow: {dataset:{ref:'R85',refs:'R85,R86'}},
   candidateSearchController: {abort:()=>calls.push('abort')},
   candidateSearchToken: 0,

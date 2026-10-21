@@ -20,6 +20,12 @@
 
 ## 模块与数据流
 
+### 独立选型窗口
+
+`part_selection_candidate_window.py::CandidateWindows` 在同一 WebView2 宿主内按需复用一个独立系统窗口，页面为当前后台的 `?view=candidate`，不额外启动服务，也不加载工作台全表。`web/candidate-desktop.js` 将选中行的数据交给候选页，保存后通知父页读取记录；相同请求仅恢复现有 DOM，明确关闭或切换器件才重新查询。主桥接只增加受限 `candidate_window`，子桥接只暴露自己的窗口操作，不授予退出后台或安装更新的权限。标题栏关闭事件须在线程中转交 JS，不能阻塞 WinForms UI 线程。退出主窗先冻结空闲子页、正常停止后台，再销毁两窗；失败解除冻结，忙碌时保留窗口。不要将网页浮层拖动边界误作系统窗口边界。
+
+空白点击收起仅接受同一目标的短距离按下/抬起，排除表单、按钮、链接和对话框；拖选文字越界不触发。原有内页浮层只用于无宿主的隔离测试，不恢复面向用户的浏览器启动模式。验证见 `test_candidate_native_window.py`、`run_candidate_window_smoke.py` 和原生生命周期冒烟的 candidate 阶段；合成商城响应不能当成真实联网性能验证。
+
 ### 工程字段映射
 
 `part_selection_fields.py` 集中定义逻辑用途、标准 KiCad 字段、中英文别名和映射校验。`field_mapping` 是配置中的可选对象，空/未指定用途自动匹配；手动字段名按现有精确名称优先、大小写唯一匹配其次。非空标准属性优先；歧义/字段重叠停止读取或写入并提示手动指定。不会自动取 `ALTIUM_VALUE` 作为当前 Value。

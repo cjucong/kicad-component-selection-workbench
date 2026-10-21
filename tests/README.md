@@ -83,3 +83,7 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 查看 `python -B tests/run_kicad_plugin_smoke.py --help` 和 `python -B tests/run_easykiconverter_smoke.py --help` 后按需执行，只使用自动清理的隔离工程。桌面冒烟另需 `tools/kicad_plugin/desktop-requirements.txt` 与 `jsonschema`，部分步骤会联网。可复用的依赖运行时允许保留在外部缓存，并与一次性测试结果区分。
 
 单元测试、打包和模拟 loader 检查不能证明实际 KiCad 按钮、窗口交互、网络转换或跨机器兼容已通过；本说明不声明这些真实冒烟已执行。
+
+`test_candidate_native_window.py` 回归独立候选窗口的复用、地址/参数限制、桥接最小权限、保存忙碌拒绝退出、退出失败恢复和双窗清理。`python -B tests/run_candidate_window_smoke.py` 用 Chromium/合成商城响应验证候选独立页、父页桥接、收起后搜索筛选保持、不重复查询、保存回传、失败恢复、空白点击及拖选越界。可用工程外绝对路径 `CANDIDATE_WINDOW_SCREENSHOT` 保存截图。
+
+`run_desktop_lifecycle_smoke.py` 还验证真实 WebView2 独立窗口移到父窗外、收起恢复、主料保存后刷新父页、忙碌拒绝关闭和退出销毁。`--only-candidate` 可只运行此阶段；商城响应在子页模拟、正式保存仅写一次性工程，不打开真实商城或修改生产 CAD。这验证原生窗口程序移动，不等同于人工跨屏拖动或真实 KiCad 按钮测试。

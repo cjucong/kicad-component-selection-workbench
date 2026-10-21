@@ -389,6 +389,7 @@ def main(argv=None) -> int:
         updater = PluginUpdater(HERE)
         updater.register()
         from part_selection_lifecycle import DesktopLifecycle, DesktopBridge
+        from part_selection_candidate_window import CandidateWindows
         token = secrets.token_urlsafe(32)
         url = ensure_backend(root, config, logs, owner_token=token)
         lifecycle = DesktopLifecycle(url, token)
@@ -397,6 +398,7 @@ def main(argv=None) -> int:
         window = webview.create_window(title, url, width=1380, height=900, min_size=(800, 500),
                                        text_select=True, js_api=DesktopBridge(lifecycle))
         lifecycle.window = window
+        lifecycle.candidates = CandidateWindows(lifecycle, webview.create_window, enable_browser_shortcuts)
         window.events.loaded += lambda: enable_browser_shortcuts(window)
         window.events.closing += lifecycle.on_closing
         webview.start(gui="edgechromium", private_mode=False,

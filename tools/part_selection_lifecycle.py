@@ -85,6 +85,11 @@ class DesktopBridge:
     def finish_exit(self, restart=False, update=False):
         return self._lifecycle.finish_exit(restart, update)
 
+    def candidate_window(self, action, value=None):
+        if self._lifecycle.candidates is None:
+            return {'ok': False, 'error': '当前宿主不支持独立选型窗口，请重新安装插件'}
+        return self._lifecycle.candidates.main_action(action, value)
+
     def plugin_update(self, action, value=None):
         lifecycle = self._lifecycle
         if not lifecycle.lock.acquire(blocking=False):
@@ -123,6 +128,7 @@ class DesktopLifecycle:
         self.lock = threading.Lock()
         self.updater = None
         self.install_update = False
+        self.candidates = None
 
     def on_closing(self):
         if self.allow_close:
@@ -185,15 +191,24 @@ class DesktopLifecycle:
                 raise ValueError('仅允许当前工作台请求退出')
             if update and (not self.updater or not self.updater.pending):
                 raise ValueError('请先下载并校验更新')
+            if self.candidates:
+                self.candidates.check_exit()
             self._stop_backend()
             self.install_update = bool(self.updater and self.updater.pending and (
                 update or self.updater.status()['mode']=='auto'))
             self.restart = restart
             self.allow_close = True
+            if self.candidates:
+                self.candidates.dispose()
             self.window.destroy()
             return {'ok':True}
         except Exception as exc:
             logging.exception('Desktop close deferred')
+            if self.candidates and not self.allow_close:
+                try:
+                    self.candidates.cancel_exit()
+                except Exception:
+                    logging.exception('Could not resume candidate window')
             return {'ok':False,'error':str(exc)}
         finally:
             self.lock.release()

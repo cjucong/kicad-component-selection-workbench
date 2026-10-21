@@ -320,10 +320,10 @@ def test_real_owner_exit_triggers_graceful_service_shutdown(app):
     assert app.settings_gate.stopping
 
 
-def test_bridge_exposes_only_exit_and_restricted_update_actions():
+def test_bridge_exposes_only_restricted_desktop_actions():
     from part_selection_lifecycle import DesktopBridge
     bridge = DesktopBridge(Mock())
-    assert [name for name in dir(bridge) if not name.startswith('_')]==['finish_exit', 'plugin_update']
+    assert [name for name in dir(bridge) if not name.startswith('_')]==['candidate_window', 'finish_exit', 'plugin_update']
 
 
 def test_frontend_exit_flushes_edits_and_retains_window_on_busy_or_failure():

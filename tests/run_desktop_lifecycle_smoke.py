@@ -23,6 +23,20 @@ def child(root, phase):
     def create(*args, **kwargs):
         kwargs['hidden'] = True
         window = original_create(*args, **kwargs)
+        if not hasattr(kwargs['js_api'], '_lifecycle'):
+            def mock_search():
+                window.evaluate_js("""
+                    const originalFetch = window.fetch.bind(window);
+                    window.fetch = (url, options) => String(url).startsWith('/api/lcsc_search')
+                      ? Promise.resolve(new Response(JSON.stringify({ok:true,done:true,items:[{
+                        c_code:'C123456',model:'TEST-CAP',brand:'Test Maker',package:'0603',
+                        stock:'1000',param:'220nF X7R 50V',param_detail:'Capacitance: 220nF'
+                      }],sources:{domestic:'ready'},revision:1}),{headers:{'Content-Type':'application/json'}}))
+                      : originalFetch(url, options);
+                    null;
+                """)
+            window.events.loaded += mock_search
+            return window
 
         def exercise():
             try:
@@ -32,7 +46,67 @@ def child(root, phase):
                         state = window.evaluate_js("JSON.stringify({url:location.href,ready:document.readyState,rows:document.querySelectorAll('#rows tr').length,state:document.querySelector('#state')?.textContent,bridge:!!window.pywebview?.api?.finish_exit,text:document.body.innerText.slice(0,1000)})")
                         raise RuntimeError('Workbench did not load: '+str(state))
                     time.sleep(0.1)
-                if phase=='uninitialized':
+                if phase=='candidate':
+                    print('candidate: opening',flush=True)
+                    lifecycle = kwargs['js_api']._lifecycle
+                    window.evaluate_js("document.querySelector('#rows [data-action=\\\"open-candidates\\\"]').click(); null")
+                    while not lifecycle.candidates._ready.is_set():
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Native candidate child did not load')
+                        time.sleep(0.1)
+                    candidate = lifecycle.candidates._window
+                    print('candidate: loaded',flush=True)
+                    while not candidate.evaluate_js("!!window.pywebview?.api?.candidate_window && document.querySelector('#candidateModal').classList.contains('open')"):
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Native candidate request did not arrive')
+                        time.sleep(0.1)
+                    candidate.evaluate_js("candidateKeyword.value='native retained query'; null")
+                    print('candidate: request ready',flush=True)
+                    window.resize(800,500)
+                    window.move(40,40)
+                    candidate.resize(760,480)
+                    candidate.move(880,70)
+                    print('candidate: moved',flush=True)
+                    assert candidate.x >= window.x + window.width, 'Child remains bounded inside main window'
+                    assert not hasattr(candidate._js_api, 'finish_exit')
+                    assert lifecycle.candidates.main_action('minimize')['ok']
+                    print('candidate: hidden',flush=True)
+                    window.evaluate_js("document.querySelector('#candidateMinimizedBar').click(); null")
+                    time.sleep(0.3)
+                    assert candidate.evaluate_js("candidateKeyword.value")=='native retained query'
+                    assert candidate.evaluate_js("document.querySelector('header').getBoundingClientRect().height===0")
+                    candidate.evaluate_js("candidateTargetRow.dataset.candidateSaving='1'; null")
+                    assert not lifecycle.finish_exit()['ok'], 'Busy selection must retain the host'
+                    candidate.destroy()
+                    time.sleep(0.3)
+                    assert lifecycle.candidates._request is not None
+                    candidate.evaluate_js("delete candidateTargetRow.dataset.candidateSaving; null")
+                    window.evaluate_js("document.querySelector('#rows [data-action=\\\"open-candidates\\\"]').click(); null")
+                    deadline = time.monotonic()+15
+                    while not candidate.evaluate_js("!!document.querySelector('#candidateRows [data-action=\\\"choose-candidate\\\"]')"):
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Mock candidate did not render')
+                        time.sleep(0.1)
+                    candidate.evaluate_js("document.querySelector('#candidateRows [data-action=\\\"choose-candidate\\\"]').click(); null")
+                    while lifecycle.candidates._request is not None or not window.evaluate_js("document.querySelector('#rows').textContent.includes('C123456')"):
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Child selection did not update parent rows')
+                        time.sleep(0.1)
+                    window.evaluate_js("document.querySelector('#rows [data-action=\\\"open-candidates\\\"]').click(); null")
+                    while lifecycle.candidates._request is None:
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Child did not reopen after saving')
+                        time.sleep(0.1)
+                    # Native close defers to JS and retains the host; exit disposes the child.
+                    candidate.destroy()
+                    print('candidate: close requested',flush=True)
+                    while lifecycle.candidates._request is not None:
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Child native close did not hide the tool window')
+                        time.sleep(0.1)
+                    window.evaluate_js("document.getElementById('exitWorkbench').click()")
+                    print('candidate: exit requested',flush=True)
+                elif phase=='uninitialized':
                     window.evaluate_js("delete window.requestDesktopExit; document.querySelector('#rows').replaceChildren(); null")
                     window.destroy()
                 elif phase=='close':
@@ -88,6 +162,7 @@ def main():
     parser.add_argument('--python',type=Path,default=Path(sys.executable),help='Interpreter with desktop requirements/WebView2')
     parser.add_argument('--child',type=Path)
     parser.add_argument('--phase',default='close')
+    parser.add_argument('--only-candidate',action='store_true')
     args = parser.parse_args()
     if args.child:
         child(args.child,args.phase)
@@ -97,24 +172,32 @@ def main():
         (root / 'sample.kicad_pro').write_text('{}')
         schematic = '(kicad_sch (symbol (property "Reference" "C1") (property "Comment" "capacitor") (property "Value" "100nF") (property "Footprint" "Library:0603")))'
         (root / 'sample.kicad_sch').write_text(schematic)
-        (root / 'settings.json').write_text(json.dumps({'schematic_dir':'.','source_bom':'__schematic__'}))
+        (root / 'settings.json').write_text(json.dumps({'schematic_dir':'.','source_bom':'__schematic__',
+                                                      'open_lcsc_search_on_replace':False}))
         flags = {'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}
         env = {**os.environ,'PYTHONDONTWRITEBYTECODE':'1',
                'KICAD_PART_SELECTION_HOME':str(root.parent / 'desktop'), 'PYTHONIOENCODING':'utf-8'}
-        for phase in ('close','restart','uninitialized'):
-            result = subprocess.run([str(args.python),'-B',str(Path(__file__).resolve()),'--child',str(root),'--phase',phase],
-                capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90,env=env,**flags)
+        for phase in (('candidate',) if args.only_candidate else ('close','restart','uninitialized','candidate')):
+            try:
+                result = subprocess.run([str(args.python),'-B',str(Path(__file__).resolve()),'--child',str(root),'--phase',phase],
+                    capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90,env=env,**flags)
+            except subprocess.TimeoutExpired as exc:
+                raise AssertionError(f'Native smoke timed out: {exc.stdout!r}\n{exc.stderr!r}') from exc
             if result.returncode:
                 raise AssertionError(result.stdout+'\n'+result.stderr)
             assert (root / (phase+'.ok')).exists()
-        assert (root / 'final.ok').exists(), (root / 'restarted.log').read_text(errors='replace')
-        records = json.loads((root / 'BOM/part_selection_overrides.json').read_text(encoding='utf-8'))
-        assert records['C1']['field_overrides']['value']=='220nF'
+        if not args.only_candidate:
+            assert (root / 'final.ok').exists(), (root / 'restarted.log').read_text(errors='replace')
+            records = json.loads((root / 'BOM/part_selection_overrides.json').read_text(encoding='utf-8'))
+            assert records['C1']['field_overrides']['value']=='220nF'
         assert (root / 'sample.kicad_sch').read_text()==schematic
-        print(json.dumps({'real_webview2':'passed','native_close_autosave':'passed',
-                          'port_release_and_reopen':'passed','restart_and_exit_menu':'passed',
-                          'uninitialized_window_close':'passed',
-                          'production_cad_written':False}))
+        checks = {'real_webview2':'passed','native_candidate_move_restore_close':'passed',
+                  'native_candidate_save_refresh':'passed','busy_selection_exit_protection':'passed',
+                  'production_cad_written':False}
+        if not args.only_candidate:
+            checks.update(native_close_autosave='passed',port_release_and_reopen='passed',
+                          restart_and_exit_menu='passed',uninitialized_window_close='passed')
+        print(json.dumps(checks))
 
 
 if __name__=='__main__':
