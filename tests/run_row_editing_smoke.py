@@ -92,7 +92,7 @@ const assert = require('node:assert/strict');
       await page.screenshot({path:process.env.ROW_EDIT_SCREENSHOT});
     }
     assert.equal(await selectedAgain.locator('[data-field="note"]').inputValue(),'已核对耐压');
-    assert.match(await selectedAgain.locator('[data-effective-code]').innerText(),/C123456/);
+    assert.equal(await selectedAgain.locator('[data-field="replacement_c_code"]').inputValue(),'C123456');
     // IME composition must not save intermediate content or treat Enter as submit.
     const value = selectedAgain.locator('[data-field="value"]');
     await value.focus();

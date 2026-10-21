@@ -3689,6 +3689,13 @@ tr.hidden-row {{ display: none; }}
 .stock-low {{ background: #fff3cd; color: #8a5a00; border-color: #f3cf74; }}
 .stock-bad {{ background: #ffe4e6; color: #b42318; border-color: #f3a7ad; }}
 .stock-card {{ display: grid; gap: 3px; }}
+.supply-primary {{ display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 5px; }}
+.supply-primary input.edit {{ flex: 1 1 95px; min-width: 80px; width: 95px; margin: 0; }}
+.supply-icon {{ display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px; width: 24px; height: 26px; padding: 2px; box-sizing: border-box; }}
+.supply-icon[hidden] {{ display: none; }}
+.supply-order {{ margin: 4px 0; overflow-wrap: anywhere; }}
+.stock-details {{ color: #52606d; font-size: 11px; }}
+.stock-details summary {{ cursor: pointer; width: fit-content; }}
 .alternate-cell {{ display: grid; gap: 5px; align-content: center; }}
 .alternate-list {{ display: grid; gap: 4px; }}
 .alternate-item {{ display: grid; grid-template-columns: 18px minmax(72px, auto) minmax(110px, 1fr) auto; gap: 4px 6px; align-items: center; padding: 4px 5px; border: 1px solid #d8e1ea; border-radius: 4px; background: #f8fbfd; }}
@@ -3999,7 +4006,7 @@ tr.hidden-row {{ display: none; }}
 <thead>
 <tr>
 <th data-col="row_no" style="width:64px"><input type="checkbox" id="selectVisibleRows" aria-label="选择当前筛选结果" title="选择当前筛选结果">行号</th><th data-col="review" style="width:240px">确认料 / 同步差异</th><th data-col="refs" style="width:150px">位号</th><th data-col="page_refs" style="width:220px">页面位号</th><th data-col="quantity" style="width:70px">单套用量</th><th data-col="comment" style="width:110px">Comment</th><th data-col="value" style="width:110px">Value</th><th data-col="footprint" style="width:95px">Footprint<span id="footprintLibrarySummary" class="footprint-library-summary"></span></th>
-<th data-col="c_code" style="width:180px">C编码</th><th data-col="stock" style="width:220px">库存</th><th data-col="local_inventory" style="width:170px">本地库存</th><th data-col="order" style="width:90px">MOQ/MPQ</th><th data-col="price" style="width:100px">价格</th><th data-col="param" style="width:320px">物料参数</th><th data-col="alternates" style="width:360px">备选料</th><th data-col="note" style="width:220px">备注</th>
+<th data-col="stock" style="width:280px">选用物料 / 供货</th><th data-col="local_inventory" style="width:170px">本地库存</th><th data-col="order" style="width:90px">MOQ/MPQ</th><th data-col="price" style="width:100px">价格</th><th data-col="param" style="width:320px">物料参数</th><th data-col="alternates" style="width:360px">备选料</th><th data-col="note" style="width:220px">备注</th>
 </tr>
 </thead>
 <tbody id="rows"></tbody>
@@ -4340,14 +4347,14 @@ function isActiveStockRun(run) {{
 
 const UI_STORAGE_KEY = "pxie4137_part_selection_ui_v2";
 const DEFAULT_VIEW_STORAGE_KEY = `${{UI_STORAGE_KEY}}_default_v1`;
-const UI_SCHEMA_VERSION = 6;
+const UI_SCHEMA_VERSION = 7;
 let defaultColumnWidthFrame = 0;
 let candidateColumnWidthFrame = 0;
 const DEFAULT_COLUMNS = [
   ["row_no", "行号"], ["review", "确认料"],
   ["refs", "位号"], ["page_refs", "页面位号"], ["quantity", "单套用量"],
   ["comment", "Comment"], ["value", "Value"], ["footprint", "Footprint"],
-  ["c_code", "C编码"], ["stock", "库存"], ["local_inventory", "本地库存"],
+  ["stock", "选用物料 / 供货"], ["local_inventory", "本地库存"],
   ["order", "MOQ/MPQ"], ["price", "价格"], ["param", "物料参数"],
   ["alternates", "备选料"], ["note", "备注"]
 ];
@@ -4356,6 +4363,23 @@ const CANDIDATE_COLUMNS = [
   ["channel_stock", "渠道 / 库存交期"], ["param", "参数详情"], ["code", "C编码"],
   ["order", "MOQ/MPQ"], ["price", "价格梯度"]
 ];
+
+function migrateSupplyColumns(view) {{
+  if (Array.isArray(view.columnOrder)) {{
+    view.columnOrder = [...new Set(view.columnOrder.map(key => key === "c_code" ? "stock" : key))];
+  }}
+  const hidden = view.hiddenColumns;
+  if (hidden && Object.prototype.hasOwnProperty.call(hidden, "c_code")) {{
+    hidden.stock = hidden.stock === true && hidden.c_code === true;
+    delete hidden.c_code;
+  }}
+  const widths = view.columnWidths;
+  if (widths && Object.prototype.hasOwnProperty.call(widths, "c_code")) {{
+    widths.stock = Math.max(220, Number(widths.stock || widths.c_code) || 280);
+    delete widths.c_code;
+  }}
+  return view;
+}}
 
 function loadUiSettings() {{
   try {{
@@ -4372,12 +4396,11 @@ function loadUiSettings() {{
       settings.columnOrder = order.filter(key => key !== "search");
       delete (settings.hiddenColumns || {{}}).search;
       delete (settings.columnWidths || {{}}).search;
-      if (settings.columnOrder.includes("c_code") && settings.columnOrder.includes("stock")) {{
-        settings.columnOrder = settings.columnOrder.filter(key => key !== "stock");
-        settings.columnOrder.splice(settings.columnOrder.indexOf("c_code") + 1, 0, "stock");
+      if (!settings.schemaVersion || settings.schemaVersion < 6) {{
+        settings.hiddenColumns = Object.assign({{}}, settings.hiddenColumns || {{}}, {{note: true}});
       }}
-      settings.hiddenColumns = Object.assign({{}}, settings.hiddenColumns || {{}}, {{note: true}});
-      delete settings.hiddenColumns.search;
+      migrateSupplyColumns(settings);
+      delete (settings.hiddenColumns || {{}}).search;
       if (settings.columnWidths) delete settings.columnWidths.search;
       settings.schemaVersion = UI_SCHEMA_VERSION;
       saveUiSettings(settings);
@@ -4421,11 +4444,8 @@ function loadDefaultViewConfig() {{
   const view = JSON.parse(saved);
   if (Array.isArray(view.columnOrder)) {{
     view.columnOrder = view.columnOrder.filter(key => key !== "search");
-    if (view.columnOrder.includes("c_code") && view.columnOrder.includes("stock")) {{
-      view.columnOrder = view.columnOrder.filter(key => key !== "stock");
-      view.columnOrder.splice(view.columnOrder.indexOf("c_code") + 1, 0, "stock");
-    }}
   }}
+  migrateSupplyColumns(view);
   delete (view.hiddenColumns || {{}}).search;
   if (view.columnWidths) delete view.columnWidths.search;
   const update = Object.fromEntries(DEFAULT_VIEW_FIELDS
@@ -4527,7 +4547,7 @@ function columnWidthLimits(key, candidate) {{
   }} : {{
     row_no: [64, 80], review: [210, 300], refs: [100, 200], page_refs: [130, 240],
     quantity: [70, 95], comment: [120, 240], value: [100, 190], footprint: [130, 250],
-    c_code: [160, 220], stock: [190, 290], local_inventory: [145, 210], order: [80, 115],
+    stock: [220, 310], local_inventory: [145, 210], order: [80, 115],
     price: [100, 160], param: [220, 360], alternates: [220, 380], note: [160, 280]
   }};
   return limits[key] || [80, 280];
@@ -5122,20 +5142,25 @@ function stockAlreadyQueried(stock) {{
 function renderStock(stock) {{
   const status = stock.status || "";
   const visual = stockVisual(stock);
-  const url = stock.url ? `<a target="_blank" rel="noopener" data-secondary-search="${{esc(stock.c_code || "")}}" href="${{esc(stock.url)}}">${{esc(stock.c_code || "")}}</a>` : esc(stock.c_code || "");
-  const delivery = stock.delivery ? `<br>${{esc(stock.delivery)}}` : "";
-  const channel = stock.channel ? `<br>${{esc(stock.channel)}}` : "";
-  const detail = stock.ok ? `总: <span class="${{visual.detailClass}}">${{esc(stock.stock)}}</span><br>SZ: ${{esc(stock.stock_sz)}} / JS: ${{esc(stock.stock_js)}} / HK: ${{esc(stock.stock_hk)}}${{delivery}}${{channel}}` : esc(stock.error || status);
-  const fetchedAt = stock.fetched_at ? `<br><span class="stock-time">查询时间: ${{esc(String(stock.fetched_at).replace("T", " "))}}</span>` : "";
-  return `<div class="stock-card ${{visual.detailClass}}"><span class="stock-pill ${{visual.pill}}">${{esc(visual.text)}}</span><div>${{url}}<br>${{detail}}${{fetchedAt}}</div></div>`;
+  const detail = stock.ok ? `库存 ${{esc(stock.stock || "0")}}${{stock.delivery ? ` · ${{esc(stock.delivery)}}` : ""}}` : esc(stock.error || status);
+  const extra = [stock.channel, stock.stock_sz != null ? `深圳 ${{stock.stock_sz}} / 江苏 ${{stock.stock_js || 0}} / 香港 ${{stock.stock_hk || 0}}` : "",
+    stock.fetched_at ? `查询时间: ${{String(stock.fetched_at).replace("T", " ")}}` : ""].filter(Boolean);
+  return `<div class="stock-card ${{visual.detailClass}}"><div><span class="stock-pill ${{visual.pill}}">${{esc(visual.text)}}</span> ${{detail}}</div>${{extra.length ? `<details class="stock-details"><summary>库存详情</summary>${{extra.map(esc).join("<br>")}}</details>` : ""}}</div>`;
 }}
 
 function renderStockCell(stock) {{
   if (Array.isArray(stock?.entries)) {{
     const entries = stock.entries.map(item => `<div class="stock-ref-entry"><strong>${{esc(item.ref)}}</strong> · ${{renderStock(item.stock || {{}})}}</div>`).join("");
-  return `<button type="button" class="small action-link" data-action="open-candidates">更换型号</button><div class="stock-mixed-list">${{entries}}</div><button type="button" class="small stock-query" data-action="query-stock">刷新组内库存</button>`;
+  return `<div class="stock-mixed-list">${{entries}}</div><button type="button" class="small stock-query" data-action="query-stock">刷新组内库存</button>`;
   }}
-  return `<button type="button" class="small action-link" data-action="open-candidates">更换型号</button>${{renderStock(stock)}}<button type="button" class="small stock-query" data-action="query-stock">查询库存</button>`;
+  if (!stock.c_code) return '<div class="stock-wait">未选立创自营料</div>';
+  return `${{renderStock(stock)}}<button type="button" class="small stock-query" data-action="query-stock">查询库存</button>`;
+}}
+
+function renderSupplyOrder(row) {{
+  const order = row?.procurement_choice || {{}};
+  if (!/^https?:/i.test(order.order_url || "")) return "";
+  return `<div class="supply-order">${{esc(order.supplier || "订货渠道")}} · <a href="${{esc(order.order_url)}}" target="_blank" rel="noopener" data-secondary-url="${{esc(order.order_url)}}" data-secondary-label="订货料下单链接">订货链接</a></div>`;
 }}
 
 function rowDataForElement(tr) {{
@@ -5397,11 +5422,22 @@ function setStockCells(tr, stock) {{
 
 function setCodeState(tr, status, text = "") {{
   tr.dataset.codeStatus = status;
+  const statusInput = tr.querySelector("input[type='hidden'][data-field='status']");
+  if (statusInput) statusInput.value = statusInput.dataset.savedValue = status;
   tr.dataset.hasCode = currentLcscCode(tr) ? "1" : "0";
   refreshRowState(tr);
   const stateEl = tr.querySelector("[data-code-state]");
-  stateEl.className = `status-pill ${{statusClass(status)}}`;
-  stateEl.textContent = text || statusText(status);
+  if (stateEl) {{
+    stateEl.className = `status-pill ${{statusClass(status)}}`;
+    stateEl.textContent = text || statusText(status);
+  }}
+  const link = tr.querySelector("[data-primary-code-link]");
+  if (link) {{
+    const code = currentLcscCode(tr);
+    link.hidden = !code;
+    link.href = lcscUrl(code);
+    link.dataset.secondarySearch = code;
+  }}
 }}
 
 function rowPayload(tr, decision, acceptedCode) {{
@@ -6059,7 +6095,7 @@ function renderRows(rows) {{
   rowsEl.innerHTML = rows.map((row, index) => {{
     const ov = row.override || {{}};
     const effective = row.effective_c_code || "";
-    const replacement = (ov.decision === "AcceptManual" || ov.status === "ChangedToNewCode") ? (ov.manual_c_code || ov.accepted_c_code || effective) : (row.stock_c_code || "");
+    const replacement = effective;
     const note = row.note || "";
     const selectedStatus = statusValue(row, ov);
     const reviewStatus = row.review_status || ov.review_status || "Pending";
@@ -6102,19 +6138,18 @@ function renderRows(rows) {{
       <td data-col="comment"><textarea class="edit field-edit" data-field="comment" title="原始 Comment: ${{esc(row.original_comment_values || row.comment || "")}}">${{esc(row.comment)}}</textarea>${{fieldDiff(row, "comment")}}</td>
       <td data-col="value"><textarea class="edit field-edit mono" data-field="value" title="原始 Value: ${{esc(row.original_value_values || row.value || "")}}">${{esc(row.value)}}</textarea>${{fieldDiff(row, "value")}}</td>
       <td data-col="footprint">${{footprintEditor(row)}}${{fieldDiff(row, "footprint")}}</td>
-      <td data-col="c_code">
-        <div>主料: <span class="mono" data-effective-code>${{esc(effective || "未选料")}}</span></div>
-        <input class="edit mono" data-field="replacement_c_code" placeholder="替换C编码" value="${{esc(replacement)}}">
-        <select class="edit" data-field="status">
-          ${{[
-            ["Original", "当前主料"],
-            ["ChangedToNewCode", "已改动为新编码"],
-            ["Rejected", "不接受/留空"]
-          ].map(item => `<option value="${{item[0]}}" ${{item[0] === selectedStatus ? "selected" : ""}}>${{item[1]}}</option>`).join("")}}
-        </select>
-        <div><span class="status-pill ${{statusClass(selectedStatus)}}" data-code-state>${{esc(statusText(selectedStatus))}}</span></div>
+      <td data-col="stock">
+        <div class="supply-primary">
+          <button type="button" class="small action-link" data-action="open-candidates">更换型号</button>
+          <input class="edit mono" data-field="replacement_c_code" aria-label="主料 C 编码" placeholder="未选 C 编码" value="${{esc(replacement)}}" spellcheck="false">
+          <a class="supply-icon" data-primary-code-link data-secondary-search="${{esc(effective)}}" href="${{esc(lcscUrl(effective))}}" target="_blank" rel="noopener" title="在立创查询此 C 编码" aria-label="在立创查询此 C 编码" ${{effective ? "" : "hidden"}}><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-search"></use></svg></a>
+          <button type="button" class="small supply-icon" data-action="clear-primary" title="清空主料 C 编码" aria-label="清空主料 C 编码"><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button>
+        </div>
+        <span data-effective-code hidden>${{esc(effective)}}</span>
+        <input type="hidden" data-field="status" value="${{esc(selectedStatus)}}">
+        ${{renderSupplyOrder(row)}}
+        <div data-stock-cell>${{renderStockCell(stock)}}</div>
       </td>
-      <td data-col="stock" data-stock-cell>${{renderStockCell(stock)}}</td>
       <td data-col="local_inventory" data-local-inventory></td>
       <td data-col="order" class="mono" data-stock-order>${{esc(stock.moq || "")}} / ${{esc(stock.mpq || "")}}</td>
       <td data-col="price" class="mono" data-stock-price>${{esc(stock.price || "")}}</td>
@@ -7447,6 +7482,12 @@ rowsEl.addEventListener("click", async event => {{
     if (action === "eng") await saveRow(tr, "AcceptEngineering", tr.dataset.engineering);
     if (action === "lcsc") await saveRow(tr, "AcceptLCSC", tr.dataset.lcsc);
     if (action === "query-stock") await queryRowStock(tr);
+    if (action === "clear-primary") {{
+      const input = tr.querySelector("[data-field='replacement_c_code']");
+      input.value = "";
+      queueRowInput(input);
+      await flushRowEdits();
+    }}
     if (action === "manual") {{
       const manual = tr.querySelector("[data-field='manual_c_code']").value.trim();
       await saveRow(tr, "AcceptManual", manual);

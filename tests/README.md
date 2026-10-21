@@ -16,6 +16,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 
 | 测试类别 | 范围 |
 | --- | --- |
+| `test_supply_column.py`、`run_supply_column_smoke.py` | 合并主料/供货列、旧列布局及默认配置迁移；Chromium 编码自动保存/清空/重开、库存刷新保持输入焦点、订货渠道链接及桌面/窄屏控件边界。使用合成工程与本地库存响应，不联网或写生产 CAD |
 | `test_part_selection_specs.py`、`test_spec_check_integration.py`、`run_spec_checks_smoke.py` | 阻容感值等价、限制信息、可靠尺寸识别、缺失信息及只读 API 与原理图基线；Chromium 警告弹窗、迟到响应、字段编辑和实时库存反馈 |
 | `test_row_filters.py`、`run_row_filters_smoke.py` | 主表字段/页面多选组合、条件保存和清除；筛选不减少共享库存总需求；Chromium 桌面/窄屏、隐藏列、存储失败及候选窗口隔离 |
 | `test_part_selection_inventory.py`、`run_local_inventory_smoke.py` | 汇总列优先、去重/冲突、待匹配采购编码、确认令牌与变更检测、原子失败保护、共享库存/NC/套数、路径迁移、HTTP 与真实 Chromium 导入/持久化/列设置；只用合成表格及一次性工程 |
