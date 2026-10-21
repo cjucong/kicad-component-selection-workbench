@@ -7,6 +7,7 @@ import argparse
 import csv
 import ctypes
 import html
+import hashlib
 import json
 import mimetypes
 import os
@@ -33,6 +34,9 @@ from part_selection_search import CandidateSearchJobs
 from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings, open_settings_directory, preview_field_mapping
 from part_selection_library import LibraryImporter, SelectionJobs
 from part_selection_footprints import FootprintChoices
+from part_selection_inventory import (calculate_inventory_status, load_inventory,
+                                      merge_inventory_records, parse_inventory_workbook, save_inventory,
+                                      inventory_import_time, apply_inventory_matches, inventory_source_owners)
 
 from part_selection_helper import (
     find_latest_lcsc_csv,
@@ -1469,10 +1473,12 @@ class PartSelectionApp:
         self.bom_dir = self.config["bom_dir"]
         self.overrides_path = self.config["output_overrides"]
         self.stock_cache_path = self.config["stock_cache"]
+        self.local_inventory_path = self.config["local_inventory"]
         self.search_jobs = CandidateSearchJobs(self.lcsc_search, self.cached_search_seed)
         self.selection_jobs = SelectionJobs(self.select_candidate)
         self.footprint_choices = FootprintChoices(self.project_root, self.config.get("converter_executable"))
         self.selection_save_lock = threading.RLock()
+        self.inventory_previews = OrderedDict()
 
     def save_path_settings(self, payload):
         with self.settings_gate.editing(), self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
@@ -1490,12 +1496,126 @@ class PartSelectionApp:
             self.bom_dir = updated['bom_dir']
             self.overrides_path = updated['output_overrides']
             self.stock_cache_path = updated['stock_cache']
+            self.local_inventory_path = updated['local_inventory']
+            self.inventory_previews.clear()
             self.footprint_choices = FootprintChoices(self.project_root, updated.get('converter_executable'))
             result['settings'] = settings_snapshot(self.config)
             return result
 
     def source_bom(self) -> Path:
         return self.config["source_bom"]
+
+    def preview_local_inventory(self, payload: dict[str, object]) -> dict[str, object]:
+        source = Path(str(payload.get("path") or "")).expanduser()
+        if not source.is_absolute():
+            raise ValueError("请选择库存 Excel 文件")
+        source = source.resolve()
+        if not source.is_file() or source.stat().st_size > 20 * 1024 * 1024:
+            raise ValueError('请选择不超过 20 MB 的库存 Excel 文件')
+        fingerprint = hashlib.sha256(source.read_bytes()).hexdigest()
+        preview = parse_inventory_workbook(source, str(payload.get("sheet") or ""))
+        if hashlib.sha256(source.read_bytes()).hexdigest() != fingerprint:
+            raise ValueError("文件已改变，请重新预览")
+        with self.selection_save_lock:
+            existing = load_inventory(self.local_inventory_path)
+            explicit_matches = payload.get('matches', {})
+            if not isinstance(explicit_matches, dict):
+                raise ValueError('库存匹配必须为对象')
+            owners = inventory_source_owners(existing)
+            matches = {key: owners[key] for key in preview.get('unmatched', {}) if key in owners}
+            for key, code in explicit_matches.items():
+                if key in owners and str(code).upper() != owners[key]:
+                    raise ValueError(f'该库存已绑定 {owners[key]}，不能重复归属其他 C 编码')
+            matches.update(explicit_matches)
+            preview = apply_inventory_matches(preview, matches)
+            token = uuid4().hex
+            counts = {"added": 0, "updated": 0, "repeated": 0}
+            for code, item in preview['items'].items():
+                old = existing['items'].get(code)
+                item['previous_quantity'] = old.get('quantity') if old else None
+                if item['status'] != 'ready':
+                    item['action'] = '待核实'
+                else:
+                    action = 'added' if not old else 'repeated' if old.get('quantity') == item['quantity'] and old.get('status', 'ready') == 'ready' else 'updated'
+                    item['action'] = {'added': '新增', 'updated': '更新', 'repeated': '重复'}[action]
+                    counts[action] += 1
+            preview['summary'].update(counts)
+            self.inventory_previews[token] = {'preview': preview, 'source': source,
+                'fingerprint': fingerprint, 'inventory': existing, 'created': time.monotonic()}
+            while len(self.inventory_previews) > 8:
+                self.inventory_previews.popitem(last=False)
+        return {'ok': True, **preview, 'preview_id': token}
+
+    def import_local_inventory(self, payload: dict[str, object]) -> dict[str, object]:
+        if payload.get("confirmed") is not True:
+            raise ValueError("导入前请先在预览中确认")
+        with self.selection_save_lock:
+            saved = self.inventory_previews.get(str(payload.get('preview_id') or ''))
+            if not saved or time.monotonic() - saved['created'] > 600:
+                raise ValueError("预览已失效，请重新预览后确认")
+            if hashlib.sha256(saved['source'].read_bytes()).hexdigest() != saved['fingerprint']:
+                raise ValueError("源文件已改变，请重新预览")
+            preview = saved['preview']
+            if not preview['items'] and not preview.get('unmatched'):
+                raise ValueError("没有可导入的库存记录")
+            existing = load_inventory(self.local_inventory_path)
+            if existing != saved['inventory']:
+                raise ValueError("库存已被其他窗口修改，请重新预览")
+            merged = merge_inventory_records(existing, preview)
+            stamp = inventory_import_time()
+            for code in preview['items']:
+                merged['items'][code].update({'source_name': preview['source_name'],
+                                             'source_sheet': preview['sheet'], 'imported_at': stamp})
+            for key in preview.get('unmatched', {}):
+                merged['unmatched'][key].update({'source_name': preview['source_name'],
+                                                'source_sheet': preview['sheet'], 'imported_at': stamp})
+            before = existing.get("items", {})
+            added = updated = repeated = 0
+            for code, item in preview["items"].items():
+                if item.get("status") != "ready":
+                    continue
+                old = before.get(code)
+                if not old:
+                    added += 1
+                elif old.get("quantity") == item.get("quantity"):
+                    repeated += 1
+                else:
+                    updated += 1
+            save_inventory(self.local_inventory_path, merged)
+            self.inventory_previews.pop(str(payload['preview_id']), None)
+        return {"ok": True, "path": str(self.local_inventory_path),
+                "summary": {"added": added, "updated": updated, "repeated": repeated,
+                            "unresolved": preview["summary"]["unresolved"], "invalid": preview["summary"]["invalid"],
+                            "unmatched": preview['summary']['unmatched']}}
+
+    def enrich_local_inventory(self, rows):
+        try:
+            saved = load_inventory(self.local_inventory_path)
+            inventory, unmatched = saved['items'], saved.get('unmatched', {})
+            issue = ''
+        except (ValueError, OSError) as error:
+            inventory, unmatched, issue = {}, {}, f'本地库存读取失败：{error}'
+        totals = {}
+        for row in rows:
+            code = row_effective_c_code(row)
+            if code and not row.get('selection_codes_mixed') and not row_is_nc(row):
+                totals[code] = totals.get(code, 0) + int(row.get('quantity') or 0)
+        for row in rows:
+            code = row_effective_c_code(row)
+            total = totals.get(code, int(row.get('quantity') or 0))
+            result = calculate_inventory_status(inventory.get(code), total, 3)
+            result.update({'c_code': code, 'row_quantity': int(row.get('quantity') or 0),
+                           'issue': issue or inventory.get(code, {}).get('issue', '')})
+            if issue or row.get('selection_codes_mixed'):
+                result.update({'status': 'unresolved', 'inventory': None, 'difference': None})
+            if row_is_nc(row):
+                result['status'] = 'nc'
+            model = str(row.get('comment') or '').strip().upper()
+            result['model_suggestions'] = [key for key, item in inventory.items()
+                if key != code and model and model == str(item.get('model') or '').strip().upper()]
+            result['pending_model_inventory'] = [item for item in unmatched.values()
+                if model and model == str(item.get('model') or '').strip().upper()]
+            row['local_inventory'] = result
 
     def schematic_parts(self):
         options = {"field_mapping": self.config["field_mapping"]} if self.config.get("field_mapping") else {}
@@ -1626,6 +1746,7 @@ class PartSelectionApp:
                 actual_by_ref=actual_by_ref,
                 reconciliation_by_ref=reconciliation,
             )
+            self.enrich_local_inventory(rows)
             return sort_bom_rows(rows)
 
         selected_path = self.resolve_bom_path(selected_bom)
@@ -1644,6 +1765,7 @@ class PartSelectionApp:
             actual_by_ref=actual_by_ref,
             reconciliation_by_ref=reconciliation,
         )
+        self.enrich_local_inventory(rows)
         return sort_bom_rows(rows)
 
     def stock(self, c_code: str) -> dict[str, object]:
@@ -3175,6 +3297,12 @@ def make_handler(app: PartSelectionApp):
             if parsed.path == "/api/boms":
                 json_response(self, {"boms": app.available_boms(), "default_bom": SCHEMATIC_SOURCE_BOM, "project_root": str(app.project_root)})
                 return
+            if parsed.path == "/api/local_inventory":
+                try:
+                    json_response(self, {'ok': True, **load_inventory(app.local_inventory_path)})
+                except (ValueError, OSError) as error:
+                    json_response(self, {'ok': False, 'error': str(error)}, status=HTTPStatus.BAD_REQUEST)
+                return
             if parsed.path == "/api/stock":
                 c_code = parse_qs(parsed.query).get("code", [""])[0]
                 json_response(self, {"stock": app.stock(c_code)})
@@ -3230,6 +3358,12 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/path_settings":
                     json_response(self, app.save_path_settings(payload))
+                    return
+                if parsed.path == "/api/local_inventory/preview":
+                    json_response(self, app.preview_local_inventory(payload))
+                    return
+                if parsed.path == "/api/local_inventory/import":
+                    json_response(self, app.import_local_inventory(payload))
                     return
                 if parsed.path == "/api/path_picker":
                     json_response(self, choose_path(app.config, payload))
@@ -3345,6 +3479,8 @@ def render_index(app: PartSelectionApp) -> str:
     desktop_lifecycle_js = (Path(__file__).resolve().parent / "web" / "desktop-lifecycle.js").read_text(encoding="utf-8")
     plugin_updates_js = (Path(__file__).resolve().parent / "web" / "plugin-updates.js").read_text(encoding="utf-8")
     candidate_desktop_js = (Path(__file__).resolve().parent / "web" / "candidate-desktop.js").read_text(encoding="utf-8")
+    inventory_js = (Path(__file__).resolve().parent / "web" / "local-inventory.js").read_text(encoding="utf-8")
+    inventory_css = (Path(__file__).resolve().parent / "web" / "local-inventory.css").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3680,6 +3816,7 @@ tr.hidden-row {{ display: none; }}
 </style>
 <style>{footprint_css}</style>
 <style>{path_settings_css}</style>
+<style>{inventory_css}</style>
 </head>
 <body>
 {icon_sprite}
@@ -3700,6 +3837,7 @@ tr.hidden-row {{ display: none; }}
     <button type="button" data-menu-trigger aria-expanded="false">数据</button>
     <div class="menu-popup">
       <button type="button" data-command="refreshSchematicRows">刷新原理图当前数据</button>
+      <button type="button" data-command="importLocalInventory">导入本地库存…</button>
       <button type="button" data-command="queryMissingStock">查询未查库存</button>
       <button type="button" data-command="queryAllStock">刷新全部库存</button>
       <button type="button" data-command="syncSelectedSchematic">同步所选行</button>
@@ -3731,6 +3869,8 @@ tr.hidden-row {{ display: none; }}
   <span class="section-title">库存查询</span><div class="section-actions">
   <button type="button" id="queryMissingStock" class="tool-button" disabled aria-label="查询未查库存" data-tooltip="仅查询没有库存缓存的主料及备选料，已有查询结果保留。">{toolbar_content('package-search', '查询未查')}</button>
   <button type="button" id="queryAllStock" class="tool-button" disabled aria-label="刷新全部库存" data-tooltip="重新联网查询全部主料及备选料库存，更新旧缓存。">{toolbar_content('refresh-cw', '刷新全部')}</button>
+  <button type="button" id="importLocalInventory" class="tool-button" aria-label="导入本地库存" data-tooltip="从 Excel 预览并导入现存物料；同型号已购合计为库存量。">{toolbar_content('folder-open', '本地库存')}</button>
+  <label class="inventory-set-count">套数 <input type="number" id="localInventorySetCount" min="1" max="1000000" step="1" value="3" aria-label="装配套数"></label>
   </div>
 </section>
 <section class="toolbar-section action-section" aria-label="写入原理图">
@@ -3811,7 +3951,7 @@ tr.hidden-row {{ display: none; }}
 <thead>
 <tr>
 <th data-col="row_no" style="width:64px"><input type="checkbox" id="selectVisibleRows" aria-label="选择当前筛选结果" title="选择当前筛选结果">行号</th><th data-col="review" style="width:240px">确认料 / 同步差异</th><th data-col="refs" style="width:150px">位号</th><th data-col="page_refs" style="width:220px">页面位号</th><th data-col="quantity" style="width:70px">单套用量</th><th data-col="comment" style="width:110px">Comment</th><th data-col="value" style="width:110px">Value</th><th data-col="footprint" style="width:95px">Footprint<span id="footprintLibrarySummary" class="footprint-library-summary"></span></th>
-<th data-col="c_code" style="width:180px">C编码</th><th data-col="stock" style="width:220px">库存</th><th data-col="order" style="width:90px">MOQ/MPQ</th><th data-col="price" style="width:100px">价格</th><th data-col="param" style="width:320px">物料参数</th><th data-col="alternates" style="width:360px">备选料</th><th data-col="note" style="width:220px">备注</th>
+<th data-col="c_code" style="width:180px">C编码</th><th data-col="stock" style="width:220px">库存</th><th data-col="local_inventory" style="width:170px">本地库存</th><th data-col="order" style="width:90px">MOQ/MPQ</th><th data-col="price" style="width:100px">价格</th><th data-col="param" style="width:320px">物料参数</th><th data-col="alternates" style="width:360px">备选料</th><th data-col="note" style="width:220px">备注</th>
 </tr>
 </thead>
 <tbody id="rows"></tbody>
@@ -4158,7 +4298,7 @@ const DEFAULT_COLUMNS = [
   ["row_no", "行号"], ["review", "确认料"],
   ["refs", "位号"], ["page_refs", "页面位号"], ["quantity", "单套用量"],
   ["comment", "Comment"], ["value", "Value"], ["footprint", "Footprint"],
-  ["c_code", "C编码"], ["stock", "库存"],
+  ["c_code", "C编码"], ["stock", "库存"], ["local_inventory", "本地库存"],
   ["order", "MOQ/MPQ"], ["price", "价格"], ["param", "物料参数"],
   ["alternates", "备选料"], ["note", "备注"]
 ];
@@ -4338,7 +4478,7 @@ function columnWidthLimits(key, candidate) {{
   }} : {{
     row_no: [64, 80], review: [210, 300], refs: [100, 200], page_refs: [130, 240],
     quantity: [70, 95], comment: [120, 240], value: [100, 190], footprint: [130, 250],
-    c_code: [160, 220], stock: [190, 290], order: [80, 115],
+    c_code: [160, 220], stock: [190, 290], local_inventory: [145, 210], order: [80, 115],
     price: [100, 160], param: [220, 360], alternates: [220, 380], note: [160, 280]
   }};
   return limits[key] || [80, 280];
@@ -5911,6 +6051,7 @@ function renderRows(rows) {{
         <div><span class="status-pill ${{statusClass(selectedStatus)}}" data-code-state>${{esc(statusText(selectedStatus))}}</span></div>
       </td>
       <td data-col="stock" data-stock-cell>${{renderStockCell(stock)}}</td>
+      <td data-col="local_inventory" data-local-inventory></td>
       <td data-col="order" class="mono" data-stock-order>${{esc(stock.moq || "")}} / ${{esc(stock.mpq || "")}}</td>
       <td data-col="price" class="mono" data-stock-price>${{esc(stock.price || "")}}</td>
       <td data-col="param" class="param-text" data-stock-param data-stock-param-text="${{esc(stockParamText(stock))}}">${{renderStockParam(stock)}}</td>
@@ -5925,6 +6066,7 @@ function renderRows(rows) {{
   applyColumnVisibility();
   applyActiveFilter();
   fitDefaultColumnWidths();
+  window.refreshLocalInventory?.();
 }}
 
 function updateRowsForStock(code, stock) {{
@@ -7130,6 +7272,7 @@ async function persistRowInput(entry) {{
   }}
   if (field !== "note" && document.body.contains(tr)) markRowNeedsSchematicSync(tr, refs);
   if (field === "footprint") refreshFootprintLibraries();
+  window.refreshLocalInventory?.();
   if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");
   const merged = (data.merged_into || []).map(item => item.target_refs.join(",") + (item.c_code ? "（" + item.c_code + "）" : "（订货料）")).join("、");
   setState(merged ? `已合并到 ${{merged}}，沿用目标行选型；请核对并同步原理图` : `已自动保存 ${{refs}} 的 ${{field}}`, "saved");
@@ -7794,6 +7937,7 @@ applyColumnVisibility();
 if (!candidateOnly) initializeWorkbenchRows();
 </script>
 <script>{candidate_desktop_js}</script>
+<script>{inventory_js}</script>
 <script>{footprint_js}</script>
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>

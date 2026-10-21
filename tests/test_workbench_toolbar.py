@@ -44,7 +44,7 @@ class WorkbenchToolbarTest(unittest.TestCase):
         self.assertEqual(len(markup.ids), len(set(markup.ids)))
         expected = {
             "原理图数据": ["bomSelect", "refreshSchematicRows"],
-            "库存查询": ["queryMissingStock", "queryAllStock"],
+            "库存查询": ["queryMissingStock", "queryAllStock", "importLocalInventory", "localInventorySetCount"],
             "写入原理图": ["syncSelectedSchematic", "syncAllSchematic"],
             "表格导出": ["exportPumpMenu", "pumpExportMode", "exportPumpTable", "exportChanges"],
             "列表视图": ["toggleColumns", "columnPanel", "autoSizeColumns", "columnList", "defaultViewMenu", "saveDefaultView", "loadDefaultView"],
@@ -116,7 +116,8 @@ assert.deepEqual(workbenchCounts([]),{groups:0,refs:0,needsSync:0,unconfirmed:0}
         from kicad_plugin.package_plugin import package_files
         files = package_files()
         for name in ("web/toolbar-icons.svg", "web/LUCIDE-LICENSE", "part_selection_footprints.py",
-                     "web/footprint-compare.js", "web/footprint-compare.css"):
+                     "web/footprint-compare.js", "web/footprint-compare.css", "part_selection_inventory.py",
+                     "web/local-inventory.js", "web/local-inventory.css"):
             self.assertIn("plugins/app/" + name, files.keys())
 
 

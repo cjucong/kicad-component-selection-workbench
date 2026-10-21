@@ -8,6 +8,7 @@
     ['schematic_dir', '原理图目录', 'pathAdvancedFields', 'folder'],
     ['output_overrides', '已选物料与字段修改记录', 'pathAdvancedFields', 'file'],
     ['stock_cache', '库存与参数缓存文件', 'pathAdvancedFields', 'file'],
+    ['local_inventory', '本地库存文件', 'pathAdvancedFields', 'file'],
     ['input_refs', '位号清单文件', 'pathAdvancedFields', 'file'],
     ['lcsc_bom_pattern', '立创 BOM 匹配规则', 'pathAdvancedFields'],
     ['runtime_cache', '临时缓存父目录', 'pathAdvancedFields', 'folder'],
@@ -16,7 +17,7 @@
     ['open_lcsc_search_on_replace', '更换型号时自动打开网页搜索', 'pathReplacementFields', 'choice'],
   ];
   const defaultDirectory = 'BOM/选料工作台';
-  const dataFiles = {output_overrides: '已选物料与字段修改记录.json', stock_cache: '立创库存与参数缓存.json', input_refs: '位号清单.txt'};
+  const dataFiles = {output_overrides: '已选物料与字段修改记录.json', stock_cache: '立创库存与参数缓存.json', input_refs: '位号清单.txt', local_inventory: '本地库存.json'};
   const inputs = new Map();
   const mappingInputs = new Map();
   let initialMapping = '{}', mappingTimer, mappingSequence = 0;

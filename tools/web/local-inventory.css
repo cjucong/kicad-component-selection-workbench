@@ -1,0 +1,35 @@
+.inventory-set-count { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.inventory-set-count input { width: 68px; min-width: 0; box-sizing: border-box; height: 27px; margin: 0; }
+.inventory-set-count input[aria-invalid="true"] { outline: 1px solid #b52c3b; }
+.local-inventory-sufficient { color: #147947; }
+.local-inventory-insufficient { color: #b52c3b; }
+.local-inventory-unmatched, .local-inventory-nc { color: #637177; }
+.local-inventory-unresolved { color: #8c6013; }
+td[data-local-inventory] { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+#localInventoryDialog { width: 780px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid #93a3ad; border-radius: 5px; color: #28343a; background: #fff; box-sizing: border-box; }
+#localInventoryDialog[open] { display: flex; flex-direction: column; }
+#localInventoryDialog::backdrop { background: #16252e55; }
+#localInventoryDialog header, #localInventoryDialog footer { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: #f3f6f7; }
+#localInventoryDialog header { border-bottom: 1px solid #d6dfe3; justify-content: space-between; }
+#localInventoryDialog h2 { margin: 0; font-size: 16px; }
+#localInventoryDialog header button { font-size: 22px; width: 30px; height: 30px; padding: 0; }
+#localInventoryDialog footer { justify-content: flex-end; border-top: 1px solid #d6dfe3; }
+.inventory-body { min-height: 0; padding: 12px 14px; overflow: auto; }
+.inventory-file { display: grid; grid-template-columns: auto minmax(0, 1fr) 32px; align-items: center; gap: 8px; }
+.inventory-file input { min-width: 0; width: 100%; box-sizing: border-box; }
+.inventory-file button { width: 32px; height: 30px; padding: 4px; }
+.inventory-sheet { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.inventory-sheet label { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.inventory-sheet select { max-width: 240px; min-width: 0; }
+#inventoryStatus { font-size: 12px; overflow-wrap: anywhere; }
+.inventory-table-wrap { overflow: auto; max-height: 42vh; border-block: 1px solid #d6dfe3; }
+#localInventoryDialog table { width: 100%; min-width: 520px; margin: 0; table-layout: auto; }
+#localInventoryDialog th { position: sticky; top: 0; background: #eef3f5; white-space: nowrap; }
+#localInventoryDialog td, #localInventoryDialog th { padding: 7px; font-size: 12px; text-align: left; overflow-wrap: anywhere; }
+#inventoryIssues { font-size: 12px; margin-top: 10px; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .inventory-file { grid-template-columns: minmax(0, 1fr) 32px; }
+  .inventory-file input { grid-column: 1; }
+  .inventory-file button { grid-column: 2; grid-row: 2; }
+  .inventory-sheet select { max-width: 180px; }
+}

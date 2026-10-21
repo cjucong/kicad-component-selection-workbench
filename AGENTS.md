@@ -26,6 +26,8 @@
 
 ## 测试与临时产物
 
+- 本地库存测试使用合成 XLSX/XLSM 和 `scratch_project`，真实订单仅可只读核对。`同型号已购合计` 是当前结余、重复订单汇总不累加；D 等非 C 编码保留待匹配且仅显式匹配后计入。同 C 编码跨分组共享库存，NC 不计需求；不能借导入改 CAD 或商城缓存。保留可复用 `test_part_selection_inventory.py`、`run_local_inventory_smoke.py`，测试结束自动清理表格和临时工程。
+
 - 临时工程使用 `tests/_scratch.py` 的 `temporary_project()`，pytest 可用 `scratch_project`；结束、断言失败或异常展开时清理工程和派生缓存，unittest 在 setUp 立即注册 addCleanup。
 - 临时 ZIP、下载、截图、日志、转换和备份放在仓库及目标工程之外。使用 `runtime_directory(project_root)`，不得将外部缓存用 junction/symlink 链回工程。
 - `KICAD_PART_SELECTION_CACHE` 是绝对、工程外同盘的缓存父目录，按工程路径哈希隔离；`KICAD_PART_SELECTION_HOME` 是绝对、工程外的桌面环境与日志基目录。

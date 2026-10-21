@@ -18,6 +18,7 @@ from part_selection_fields import normalize_field_mapping
 
 DATA_DIRECTORY = "BOM/选料工作台"
 CONFIG_NAME = "工作台配置.json"
+LOCAL_INVENTORY_NAME = "本地库存.json"
 DATA_FILE_NAMES = {
     "output_overrides": "已选物料与字段修改记录.json",
     "stock_cache": "立创库存与参数缓存.json",
@@ -39,6 +40,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "source_bom": "__schematic__",
     "lcsc_bom_pattern": "BOM/*LCSC*.csv",
     **{key: f"{DATA_DIRECTORY}/{name}" for key, name in DATA_FILE_NAMES.items()},
+    "local_inventory": f"{DATA_DIRECTORY}/{LOCAL_INVENTORY_NAME}",
     "kicad_protocol": "kicad-sch-search",
     "jump_cursor_behavior": "return",
     "open_lcsc_search_on_replace": "true",
@@ -129,7 +131,10 @@ def _resolve_path(project_root: Path, value: str | Path) -> Path:
 def configuration_defaults(config_path: Path, loaded: dict) -> dict[str, Any]:
     # Explicit older/custom configurations retain their original implicit paths.
     legacy = config_path.name != CONFIG_NAME and loaded.get("data_layout_version", 0) < 2
-    return {**DEFAULT_CONFIG, **(LEGACY_PATHS if legacy else {})}
+    defaults = {**DEFAULT_CONFIG, **(LEGACY_PATHS if legacy else {})}
+    if "local_inventory" not in loaded:
+        defaults["local_inventory"] = str(Path(loaded.get("bom_dir") or defaults["bom_dir"]) / LOCAL_INVENTORY_NAME)
+    return defaults
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
@@ -150,7 +155,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
 
     config["config_path"] = config_path
     config["project_root"] = project_root
-    for key in ("schematic_dir", "bom_dir", "source_bom", "input_refs", "output_overrides", "stock_cache"):
+    for key in ("schematic_dir", "bom_dir", "source_bom", "input_refs", "output_overrides", "stock_cache", "local_inventory"):
         config[key] = _resolve_path(project_root, config[key])
     if config.get("converter_executable"):
         config["converter_executable"] = _resolve_path(project_root, config["converter_executable"])

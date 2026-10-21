@@ -16,6 +16,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 
 | 测试类别 | 范围 |
 | --- | --- |
+| `test_part_selection_inventory.py`、`run_local_inventory_smoke.py` | 汇总列优先、去重/冲突、待匹配采购编码、确认令牌与变更检测、原子失败保护、共享库存/NC/套数、路径迁移、HTTP 与真实 Chromium 导入/持久化/列设置；只用合成表格及一次性工程 |
 | `test_auto_column_widths.py`、`test_workbench_toolbar.py` | 自动列宽按钮位置、列宽计算与持久化，以及整页生成 JavaScript 的语法校验（包括 Python 字符串转义） |
 | `test_workbench_interactions.py` | 初始化 HTTP/JSON/空来源失败及重试、未加载/切换来源时按钮保护、打包模块独立进程导入（防止测试顺序掩盖依赖问题） |
 | `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 搜索、筛选、库存、订货与请求竞态 |

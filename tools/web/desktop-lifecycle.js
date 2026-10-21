@@ -11,6 +11,7 @@
     const wasInert = document.body.inert;
     try {
       if (bulkSyncRunning) throw new Error('正在同步原理图，请完成后再关闭或重启工作台');
+      if (window.localInventoryBusy) throw new Error('正在导入本地库存，请完成后再关闭或重启工作台');
       if (window.pluginUpdateBusy) throw new Error('正在检查或下载插件更新，请完成后再关闭');
       if (document.querySelector('[data-composing="1"]')) throw new Error('请先完成输入法编辑');
       if (window.hasUnsavedPathSettings?.() && !window.confirm('路径配置尚未保存，放弃这些配置改动并退出？')) return;

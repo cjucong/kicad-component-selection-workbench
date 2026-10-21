@@ -101,6 +101,7 @@ def test_ref_search_normalizes_full_group_before_filtering_and_allows_reselectio
     app.bom_dir = scratch_project / "BOM"
     app.overrides_path = app.bom_dir / "overrides.json"
     app.stock_cache_path = app.bom_dir / "stock.json"
+    app.local_inventory_path = app.bom_dir / "本地库存.json"
     app.config = {"schematic_dir": scratch_project / "DOC"}
     source = {part.ref: part for part in parts()}
     with patch("part_selection_server.load_schematic_parts", return_value=source), \

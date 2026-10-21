@@ -22,12 +22,12 @@ from part_selection_fields import normalize_field_mapping, field_mapping_snapsho
 
 PATH_FIELDS = (
     'schematic_dir', 'bom_dir', 'source_bom', 'input_refs',
-    'output_overrides', 'stock_cache', 'converter_executable',
+    'output_overrides', 'stock_cache', 'local_inventory', 'converter_executable',
     'runtime_cache', 'desktop_home',
 )
 EDITABLE_FIELDS = (*PATH_FIELDS, 'project_name', 'lcsc_bom_pattern', 'jump_cursor_behavior',
                    'open_lcsc_search_on_replace')
-DATA_FIELDS = ('input_refs', 'output_overrides', 'stock_cache')
+DATA_FIELDS = ('input_refs', 'output_overrides', 'stock_cache', 'local_inventory')
 LOG_NAMES = (SYNC_LOG_NAME, 'part_selection_schematic_sync_log.csv')
 EXPORT_PATTERNS = tuple(prefix + '*.csv' for prefix in (*EXPORT_PREFIXES,
     'part_selection_pump_table_', 'part_selection_change_log_'))
@@ -290,7 +290,8 @@ def save_settings(config, payload):
     if set(updates) - set(EDITABLE_FIELDS) or any(not isinstance(v, str) for v in updates.values()):
         raise ValueError('包含不支持的配置字段或字段类型')
     raw = _raw(path)
-    values = {**configuration_defaults(path, raw), **raw, **{k: v.strip() for k, v in updates.items()}}
+    trimmed = {k: v.strip() for k, v in updates.items()}
+    values = {**configuration_defaults(path, {**raw, **trimmed}), **raw, **trimmed}
     mapping = normalize_field_mapping(payload.get('field_mapping', config.get('field_mapping')))
     if values['jump_cursor_behavior'] not in ('return', 'stay'):
         raise ValueError('请选择跳转后鼠标返回原位或留在原理图')

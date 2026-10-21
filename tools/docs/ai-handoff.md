@@ -1,5 +1,13 @@
 # 开发接手说明
 
+## 本地库存模块
+
+`part_selection_inventory.py` 解析 XLSX/XLSM、按 C 编码去重、显式映射非 C 采购编号、原子保存库存。`local_inventory` 配置默认跟随 `bom_dir` 的 `本地库存.json`，路径迁移必须参与复制确认/冲突检查；不能只改配置后悄悄采用空路径。数据 schema=1，`items` 为 C 编码主键，`unmatched` 保存待匹配型号汇总。只认“同型号已购合计”口径，重复汇总不相加；冲突标 unresolved，不计可用。
+
+`GET /api/local_inventory` 返回库存；POST `preview` / `import` 位于 `/api/local_inventory/`。预览只读并生成有界十分钟令牌，确认请求使用令牌、重新核对源文件哈希和库存基线，不能信任前端传回的库存条目。D 编号等由用户在预览中通过 `matches` 明确指定 C 编码；同型号建议不是自动匹配。仅保留型号/品牌/封装/订单来源，拒绝复制完整订单或个人资料。
+
+`web/local-inventory.js` 使用既有 UI 设置键 `localInventorySetCount`（默认 3、范围 1–1,000,000），按当前有效主料、所有已加载分组的同编码总需求比较共享库存，NC 不消耗；隐藏/筛选不减少需求。输入、渲染和 C 编码保存后局部刷新库存格，不重建全表。商城库存逻辑保持独立，不把本地库存参数写进原理图。库存导入期间禁止关闭/重启。
+
 [工具首页](../README.md) | [使用与配置](part-selection.md) | [插件安装](kicad-plugin.md) | [测试](../../tests/README.md)
 
 ## 仓库边界
