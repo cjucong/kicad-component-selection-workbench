@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def child(root, phase):
     sys.path.insert(0,str(ROOT / 'tools/kicad_plugin'))
     import desktop
+    from updater import VERSION
     import webview
     original_create = webview.create_window
     failure = []
@@ -111,7 +112,7 @@ def child(root, phase):
                     window.destroy()
                 elif phase=='close':
                     window.evaluate_js("document.querySelector('#openPluginUpdates').click(); null")
-                    while not window.evaluate_js("document.querySelector('#pluginVersion').textContent.includes('0.1.5')"):
+                    while not window.evaluate_js("document.querySelector('#pluginVersion').textContent.includes(" + json.dumps(VERSION) + ")"):
                         if time.monotonic()>deadline:
                             raise RuntimeError('Native update bridge did not respond')
                         time.sleep(0.1)

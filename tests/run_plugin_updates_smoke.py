@@ -51,6 +51,15 @@ const css=fs.readFileSync(path.join(source,'tools/web/path-settings.css'),'utf8'
   finally{await page.close();}
  }
  try{
+  await check('latest_public_version_visible_without_update',async page=>{
+   await page.locator('#pluginUpdatesDialog footer [data-close-update]').click();
+   await page.evaluate(()=>Object.assign(window.updateState,{available:false,latest_version:'0.1.5'}));
+   await page.locator('#openPluginUpdates').click();
+   await page.waitForFunction(()=>!window.pluginUpdateBusy);
+   assert.match(await page.locator('#pluginVersion').innerText(),/最新正式版本：0.1.5/);
+   assert.match(await page.locator('#pluginUpdateStatus').innerText(),/没有更高的正式发布版本/);
+   assert.equal(await page.locator('#downloadPluginUpdate').isHidden(),true);
+  });
   await check('preferences_failure_reverts',async page=>{
    await page.evaluate(()=>window.failAction='preferences');
    await page.locator('#pluginUpdateMode').selectOption('auto');

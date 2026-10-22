@@ -60,6 +60,8 @@ python -B tools/kicad_plugin/desktop.py --project "E:/work/Board/Board.kicad_pro
 
 维护者修改 `tools/kicad_plugin/updater.py` 的 `VERSION`，测试通过、提交并推送后创建对应 `vX.Y.Z` 标签；`.github/workflows/release.yml` 在 Windows 运行回归，生成同名 ZIP 和更新清单，上传草稿后一起公开发布。包含第三方转换器的完整分发包仍按转换器文档准备，本在线代码更新包不重复分发或升级转换器。
 
+“没有更高的正式发布版本”仅表示已安装版本与 GitHub 正式发布版本的比较结果，不代表源码 main 没有新提交。维护者交付供其他电脑更新的功能时，须递增版本、推送对应标签，并确认 Actions 成功且 `releases/latest/download/workbench-update.json` 已指向新版本；只推源码或本机重装不算完成发布。禁止用不同内容覆盖同一个正式版本号。更新面板显示当前版本、最新正式版本和上次成功检查时间；同事收不到更新时，先核对这三项。新版本发布后，手动检查需距上次成功检查至少一分钟，再下载并重启更新。
+
 ### 手动更新和卸载
 
 Git 安装：关闭助手与对应后台、退出 KiCad，进入源码目录运行 `git pull --ff-only`（本地有改动先保留处理），然后重新运行 `python -B tools/kicad_plugin/package_plugin.py --install`。Download ZIP 安装：将新 ZIP 解压到新的源码目录，在其中运行同一安装命令。安装器备份旧插件，轻量更新保留已安装的转换器，随后重新打开 KiCad。

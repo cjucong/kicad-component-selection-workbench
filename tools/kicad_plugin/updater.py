@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import zipfile
 
-VERSION = '0.1.5'
+VERSION = '0.1.6'
 REPOSITORY = 'cjucong/kicad-component-selection-workbench'
 IDENTIFIER = 'com.smu.part-selection'
 MAX_DOWNLOAD = 40 * 1024 * 1024
@@ -53,6 +53,7 @@ class PluginUpdater:
         self.pending = None
         self.last_error = ''
         self.last_checked = ''
+        self.latest_version = ''
         self._retry_until = 0
         self.current = VERSION
         marker = self.target / 'build-info.json'
@@ -81,7 +82,7 @@ class PluginUpdater:
         retry = self._retry_seconds()
         return {'ok':True, 'installed':self.installed, 'current_version':self.current,
                 'mode':self._preferences(), 'available':bool(self.offer),
-                'latest_version':self.offer['version'] if self.offer else '',
+                'latest_version':self.latest_version,
                 'notes':self.offer['notes'] if self.offer else '',
                 'release_url':self.offer['release_url'] if self.offer else '',
                 'ready':bool(self.pending), 'last_error':self.last_error or (RATE_LIMIT_MESSAGE if retry else ''),
@@ -163,6 +164,7 @@ class PluginUpdater:
                 raise ValueError(f'{RATE_LIMIT_MESSAGE}；约 {retry} 秒后可重试')
             self.last_error = ''
             previous_offer, previous_pending = self.offer, self.pending
+            previous_latest = self.latest_version
             self.offer = None
             try:
                 cached = self._cached_release(force)
@@ -176,6 +178,7 @@ class PluginUpdater:
                         raise
                     self.offer = None
                     self.pending = None
+                    self.latest_version = ''
                     self.last_checked = datetime.now(timezone.utc).isoformat()
                     return {**self.status(), 'message':'尚无正式发布版本；当前安装可继续使用'}
                 version = release.get('tag_name', '').removeprefix('v')
@@ -199,6 +202,7 @@ class PluginUpdater:
                     self.offer = {'version':version,'url':expected,'sha256':digest[7:], 'size':size,
                         'notes':str(release.get('body') or '')[:12000],
                         'release_url':f'https://github.com/{REPOSITORY}/releases/tag/v{version}'}
+                self.latest_version = '' if release.get('draft') or release.get('prerelease') else version
                 checked_at = cached['checked_at'] if cached else time.time()
                 self.last_checked = datetime.fromtimestamp(checked_at, timezone.utc).isoformat()
                 if self.offer != previous_offer:
@@ -216,6 +220,7 @@ class PluginUpdater:
                 return result
             except Exception as exc:
                 self.offer, self.pending = previous_offer, previous_pending
+                self.latest_version = previous_latest
                 self.last_error = str(exc)
                 raise
 

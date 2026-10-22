@@ -43,7 +43,20 @@ def test_release_check_reports_a_new_version_and_remembers_preferences(installed
 @pytest.mark.parametrize('version', ['0.0.1', VERSION])
 def test_release_check_does_not_offer_downgrades(installed, monkeypatch, version):
     monkeypatch.setattr(installed, '_json', lambda url: release(version))
-    assert not installed.check()['available']
+    result = installed.check()
+    assert not result['available']
+    assert result['latest_version'] == version
+    assert installed.status()['latest_version'] == version
+
+
+def test_previous_public_install_receives_current_release(installed, monkeypatch):
+    (installed.target / 'build-info.json').write_text(json.dumps({'version':'0.1.5'}))
+    previous = PluginUpdater(installed.target, installed.home)
+    monkeypatch.setattr(previous, '_json', lambda url: release(VERSION))
+    result = previous.check()
+    assert result['available']
+    assert result['current_version'] == '0.1.5'
+    assert result['latest_version'] == VERSION
 
 
 def test_source_checkout_cannot_be_replaced(scratch_project):

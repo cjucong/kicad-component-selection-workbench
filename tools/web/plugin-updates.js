@@ -33,7 +33,7 @@
   }
   function render(result) {
     state = result;
-    dialog.querySelector('#pluginVersion').textContent = '当前版本：' + result.current_version + (result.latest_version ? '　最新版本：' + result.latest_version : '');
+    dialog.querySelector('#pluginVersion').textContent = '当前版本：' + result.current_version + (result.latest_version ? '　最新正式版本：' + result.latest_version : '');
     mode.value = result.mode;
     installButton.hidden = !result.ready || !result.installed;
     downloadButton.hidden = !result.available || result.ready || !result.installed;
@@ -50,7 +50,7 @@
     menu.textContent = result.ready ? '插件更新…（已下载）' : result.available ? '插件更新…（有新版本）' : '插件更新…';
     notify(!result.installed ? '源码运行不覆盖更新，请更新 Git 仓库后重新安装。' :
       result.last_error || (result.ready ? '更新包已校验，可重启并更新。工程记录和现有转换器将保留。' :
-      result.message || (result.available ? '发现新版本。' : result.last_checked ? '已检查，无更新版本。' : '尚未检查更新。')), Boolean(result.last_error));
+      result.message || (result.available ? '发现新版本。' : result.last_checked ? '已检查，当前没有更高的正式发布版本。' : '尚未检查更新。')), Boolean(result.last_error));
   }
   async function busy(work) {
     if (window.pluginUpdateBusy) return;
