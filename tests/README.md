@@ -38,7 +38,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_test_artifacts.py` | 临时产物清理 |
 | `run_*_smoke.py` | 按需真实窗口、安装包或联网转换冒烟 |
 
-电感回归还覆盖 `Rated Current` / `Saturation Current` 的数字和 `not specified` 标签：只解析感值，不把电流当成另一个感值；错误电流单位和将电流标签用于电容不判一致。候选搜索回归覆盖前后端普通电感的简洁搜索及特例型号搜索。
+电感回归还覆盖 `RMS Current` / `Sat Current`（以及旧版 `Rated Current` / `Saturation Current`）的数字和 `not specified` 标签：只解析感值，不把电流当成另一个感值；错误电流单位和将电流标签用于电容不判一致。候选搜索回归覆盖前后端普通电感的简洁搜索及特例型号搜索。
 
 位号输入专项（Windows PowerShell 5.1）：
 

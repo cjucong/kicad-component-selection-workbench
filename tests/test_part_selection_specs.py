@@ -129,6 +129,7 @@ def test_resistor_tcr_is_not_a_capacitor_qualifier(validate):
 @pytest.mark.parametrize("value", [
     "4.7uH, Rated Current: 800mA, Saturation Current: 1A",
     "4.7uH, Rated Current: 800mA, Saturation Current: not specified",
+    "4.7uH, RMS Current: 800mA, Sat Current: 1A",
 ])
 def test_inductor_current_labels_preserve_nominal_comparison(validate, value):
     assert validate(row("L1", value), stock("Inductance: 4.7uH"))["status"] == "matched"

@@ -48,11 +48,11 @@ assert.equal(vp.compose(vp.buildModel('capacitor','100nF, 50V min',pairs),['nomi
 
 def test_inductor_current_dcr_and_type_are_labeled():
     run_js(r'''
-const pairs=[['感值','10uH'],['额定电流','2A'],['饱和电流','3A'],['直流电阻(DCR)','50mΩ'],['电感类型','屏蔽电感']]
+const pairs=[['感值','10uH'],['温升电流','2A'],['饱和电流(Isat)','3A'],['直流电阻(DCR)','50mΩ'],['电感类型','屏蔽电感']]
  .map(([key,value])=>({key,value}));
 const model=vp.buildModel('inductor','10uH, Rated Current: 1A, Saturation Current: not specified, DCR: 80mΩ, Type: 非屏蔽',pairs);
 assert.equal(vp.compose(model,model.options.filter(o=>o.available).map(o=>o.key)),
- '10uH, Rated Current: 2A, Saturation Current: 3A, DCR: 50mΩ, Type: 屏蔽电感');
+ '10uH, RMS Current: 2A, Sat Current: 3A, DCR: 50mΩ, Type: 屏蔽电感');
 ''')
 
 
@@ -87,10 +87,10 @@ assert.equal(vp.selectedSource(row,'C202').parameters,undefined);
 def test_units_in_labels_are_retained_and_unknown_placeholders_disabled():
     run_js(r'''
 const model=vp.buildModel('inductor','10uH',[
- {key:'感值(uH)',value:'10'},{key:'额定电流(A)',value:'2'},
- {key:'饱和电流(mA)',value:'3000'},{key:'直流电阻(DCR)',value:'渠道未返回'}]);
-assert.equal(vp.compose(model,['nominal','rated','saturation','dcr']),
- '10uH, Rated Current: 2A, Saturation Current: 3000mA');
+ {key:'感值(uH)',value:'10'},{key:'温升电流(A)',value:'2'},
+ {key:'饱和电流(Isat)(mA)',value:'3000'},{key:'直流电阻(DCR)',value:'渠道未返回'}]);
+assert.equal(vp.compose(model,['nominal','rms','sat','dcr']),
+ '10uH, RMS Current: 2A, Sat Current: 3000mA');
 assert(!model.options.find(o=>o.key==='dcr').available);
 const resistor=vp.buildModel('resistor','100k',[
  {key:'温度系数(ppm/℃)',value:'±5'},{key:'精度(%)',value:'±0.1'}]);

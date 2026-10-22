@@ -16,8 +16,8 @@ const ValueParameters = (() => {
     ],
     inductor: [
       ['nominal', '感值', ['感值', '电感值', '电感量', 'inductance']],
-      ['rated', '额定电流', ['额定电流', 'rated current', 'current rating']],
-      ['saturation', '饱和电流', ['饱和电流', 'saturation current']],
+      ['rms', 'RMS Current', ['温升电流', 'rms current', 'rms', '额定电流', 'rated current', 'current rating']],
+      ['sat', 'Sat Current', ['饱和电流', '饱和电流(isat)', 'sat current', 'sat', 'isat', 'saturation current']],
       ['dcr', '直流电阻 (DCR)', ['直流电阻(dcr)', '直流电阻', 'dcr', 'dc resistance']],
       ['type', '电感类型', ['电感类型', '类型', 'type', 'inductor type']],
       ['tolerance', '精度', ['精度', '容差', '公差', 'tolerance']],
@@ -28,8 +28,8 @@ const ValueParameters = (() => {
   const ohm = '(?:Ω|Ω|ohms?|R)';
   const patterns = kind => [
     ...(kind === 'inductor' ? [
-      ['rated', `(?:Rated Current|额定电流)\\s*[:：=]\\s*(?:${number}\\s*[munµμ]?A|not specified)`],
-      ['saturation', `(?:Saturation Current|饱和电流)\\s*[:：=]\\s*(?:${number}\\s*[munµμ]?A|not specified)`],
+      ['rms', `(?:RMS(?: Current)?|Rated Current|温升电流|额定电流)\\s*[:：=]\\s*(?:${number}\\s*[munµμ]?A|not specified)`],
+      ['sat', `(?:Sat(?: Current)?|Saturation Current|饱和电流(?:\\s*[(（]Isat[)）])?|Isat)\\s*[:：=]\\s*(?:${number}\\s*[munµμ]?A|not specified)`],
       ['dcr', `(?:DCR|直流电阻(?:\\(DCR\\))?)\\s*[:：=]\\s*${number}\\s*[munµμkKM]?${ohm}`],
       ['type', '(?:Type|电感类型)\\s*[:：=]\\s*.+'],
     ] : []),
@@ -83,7 +83,7 @@ const ValueParameters = (() => {
   const unitSuffix = /\s*[(（]\s*(ppm(?:\/(?:°C|℃|K))?|[pnumµμkKM]?(?:Ω|Ω|ohms?|F|H|A|V|W)|%)\s*[)）]$/i;
   function formatted(key, text) {
     const value = String(text).trim().replace(/[µμ]/g, 'u').replace(/\+\/-/g, '±');
-    const prefix = {rated: 'Rated Current: ', saturation: 'Saturation Current: ', dcr: 'DCR: ', type: 'Type: '}[key];
+    const prefix = {rms: 'RMS Current: ', sat: 'Sat Current: ', dcr: 'DCR: ', type: 'Type: '}[key];
     return prefix ? prefix + value : value;
   }
 

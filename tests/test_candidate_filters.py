@@ -290,7 +290,7 @@ assert.deepEqual([...(fields.get('param:直流电阻(DCR)') || [])], ['42mΩ']);
 assert.deepEqual([...(fields.get('param:电感类型') || [])], ['绕线']);
 renderCandidateRows([item]);
 assert.ok(!candidateRows.innerHTML.includes('未提供'));
-assert.ok(candidateRows.innerHTML.includes('额定电流'));
+assert.ok(candidateRows.innerHTML.includes('RMS Current'));
 const icFields = candidateEntryFields({item:{category:'Microcontrollers',param_detail:'Type: MCU'}});
 assert.deepEqual([...icFields.get('param:Type')], ['MCU']);
 assert.ok(!icFields.has('param:电感类型'));

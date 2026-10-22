@@ -6963,6 +6963,10 @@ function candidateParameterPairs(source, kind = candidateParameterKind({{item: s
     "tcr": "温度系数", "电阻温度系数": "温度系数", "温度系数": "温度系数",
     "working voltage": "工作电压", "operating voltage": "工作电压", "工作电压": "工作电压",
     "最大工作电压": "工作电压", "maximum working voltage": "工作电压", "max working voltage": "工作电压",
+    "温升电流": "RMS Current", "rms current": "RMS Current", "rms": "RMS Current",
+    "额定电流": "RMS Current", "rated current": "RMS Current", "current rating": "RMS Current",
+    "饱和电流": "Sat Current", "饱和电流(isat)": "Sat Current", "sat current": "Sat Current",
+    "sat": "Sat Current", "isat": "Sat Current", "saturation current": "Sat Current",
     "dcr": "直流电阻(DCR)", "dc resistance": "直流电阻(DCR)", "直流电阻": "直流电阻(DCR)",
     "直流电阻(dcr)": "直流电阻(DCR)", "dc resistance (dcr)": "直流电阻(DCR)",
     "inductor type": "电感类型", "电感类型": "电感类型"}};
