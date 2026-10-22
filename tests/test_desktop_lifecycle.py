@@ -213,6 +213,30 @@ def test_automatic_update_waits_for_normal_exit_and_does_not_force_restart():
     assert lifecycle.install_update and not lifecycle.restart
 
 
+def test_other_workbench_keeps_explicit_update_window_and_backend_open():
+    lifecycle, window = controller()
+    lifecycle.updater = Mock(pending={'verified':True})
+    lifecycle.updater.check_installation_sessions.side_effect = ValueError('OtherBoard PID 1234')
+    with patch.object(lifecycle, '_stop_backend') as stop:
+        result = lifecycle.finish_exit(True, True)
+    assert not result['ok'] and 'OtherBoard PID 1234' in result['error']
+    assert not lifecycle.allow_close and not lifecycle.install_update
+    stop.assert_not_called()
+    window.destroy.assert_not_called()
+
+
+def test_auto_update_with_other_workbench_does_not_prevent_normal_close():
+    lifecycle, window = controller()
+    lifecycle.updater = Mock(pending={'verified':True})
+    lifecycle.updater.status.return_value = {'mode':'auto'}
+    lifecycle.updater.check_installation_sessions.side_effect = ValueError('OtherBoard PID 1234')
+    with patch.object(lifecycle, '_stop_backend') as stop:
+        assert lifecycle.finish_exit(False)['ok']
+    assert lifecycle.allow_close and not lifecycle.install_update
+    stop.assert_called_once()
+    window.destroy.assert_called_once()
+
+
 def test_foreign_webpage_or_unknown_action_cannot_manage_updates():
     from part_selection_lifecycle import DesktopBridge
     lifecycle, window = controller()

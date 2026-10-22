@@ -152,8 +152,117 @@ def test_other_live_workbench_blocks_installation(installed, monkeypatch):
     active = installed.home / 'active'
     active.mkdir(parents=True)
     (active / f'{os.getppid()}.json').write_text('{}')
-    with pytest.raises(ValueError, match='其他工程'):
-        installed.prepare()
+    assert installed.prepare()['ready']
+    with pytest.raises(ValueError, match=str(os.getppid())):
+        installed.apply()
+
+
+def test_reused_pid_does_not_block_update(installed, monkeypatch):
+    prepare_release(installed, monkeypatch)
+    active = installed.home / 'active/98765.json'
+    active.parent.mkdir(parents=True)
+    active.write_text(json.dumps({'pid':98765, 'started':100.0, 'project':'old-project'}))
+    monkeypatch.setattr(installed, '_process_info', lambda pid: (True, 200.0))
+    installed.prepare()
+    assert installed.apply()['ok']
+    assert not active.exists()
+
+
+def test_legacy_session_with_reused_pid_is_pruned(installed, monkeypatch):
+    import os
+    prepare_release(installed, monkeypatch)
+    active = installed.home / 'active/98765.json'
+    active.parent.mkdir(parents=True)
+    active.write_text(json.dumps({'pid':98765}))
+    os.utime(active, (100,100))
+    monkeypatch.setattr(installed, '_process_info', lambda pid: (True, 200.0))
+    installed.prepare()
+    assert installed.apply()['ok']
+    assert not active.exists()
+
+
+def test_live_session_reports_project_and_pid(installed, monkeypatch):
+    prepare_release(installed, monkeypatch)
+    active = installed.home / 'active/98765.json'
+    active.parent.mkdir(parents=True)
+    active.write_text(json.dumps({'pid':98765, 'started':100.0, 'project':'OtherBoard'}))
+    monkeypatch.setattr(installed, '_process_info', lambda pid: (True, 100.0))
+    assert installed.prepare()['ready']
+    with pytest.raises(ValueError, match='OtherBoard.*98765'):
+        installed.apply()
+    assert active.exists()
+
+
+def test_unqueryable_session_is_not_silently_ignored(installed, monkeypatch):
+    prepare_release(installed, monkeypatch)
+    active = installed.home / 'active/98765.json'
+    active.parent.mkdir(parents=True)
+    active.write_text(json.dumps({'pid':98765, 'started':100.0}))
+    monkeypatch.setattr(installed, '_process_info', lambda pid: (None, None))
+    installed.prepare()
+    with pytest.raises(ValueError, match='98765'):
+        installed.apply()
+    assert active.exists()
+
+
+def test_register_records_process_identity_and_project(installed):
+    import os
+    installed.register(project='ExampleBoard')
+    record = installed.home / 'active' / f'{os.getpid()}.json'
+    data = json.loads(record.read_text(encoding='utf-8'))
+    assert data['project']=='ExampleBoard'
+    if os.name == 'nt':
+        assert data['started'] is not None
+    assert installed._process_info(os.getpid())[0] is True
+    installed.unregister()
+    assert not record.exists()
+
+
+def test_dead_process_session_is_pruned(installed, monkeypatch):
+    active = installed.home / 'active/98765.json'
+    active.parent.mkdir(parents=True)
+    active.write_text('{"pid":98765}')
+    monkeypatch.setattr(installed, '_process_info', lambda pid: (False, None))
+    installed.check_installation_sessions()
+    assert not active.exists()
+
+
+def test_current_workbench_is_not_another_session(installed):
+    installed.register(project='CurrentBoard')
+    try:
+        installed.check_installation_sessions()
+    finally:
+        installed.unregister()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows process identity integration')
+def test_native_process_lifetime_identity_is_queried(installed):
+    import os
+    import subprocess
+    import time
+    process = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(60)'],
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        alive, started = installed._process_info(process.pid)
+        assert alive is True and 0 < started <= time.time()
+        active = installed.home / 'active' / f'{process.pid}.json'
+        active.parent.mkdir(parents=True)
+        active.write_text(json.dumps({'pid':process.pid,'started':started,'project':'NativeTestBoard'}))
+        with pytest.raises(ValueError, match='NativeTestBoard'):
+            installed.check_installation_sessions()
+        active.write_text(json.dumps({'pid':process.pid}))
+        os.utime(active, (started - 60, started - 60))
+        installed.check_installation_sessions()
+        assert not active.exists(), 'A process born after a legacy record must not be mistaken for its owner'
+        active.write_text(json.dumps({'pid':process.pid,'started':started,'project':'NativeTestBoard'}))
+        process.terminate()
+        process.wait(timeout=10)
+        installed.check_installation_sessions()
+        assert not active.exists()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
 
 
 def test_extra_staged_file_is_rejected(installed, monkeypatch):

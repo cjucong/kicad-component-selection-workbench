@@ -387,7 +387,7 @@ def main(argv=None) -> int:
             return 0
         from updater import PluginUpdater
         updater = PluginUpdater(HERE)
-        updater.register()
+        updater.register(project=root)
         from part_selection_lifecycle import DesktopLifecycle, DesktopBridge
         from part_selection_candidate_window import CandidateWindows
         token = secrets.token_urlsafe(32)

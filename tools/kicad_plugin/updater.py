@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import zipfile
 
-VERSION = '0.1.6'
+VERSION = '0.1.7'
 REPOSITORY = 'cjucong/kicad-component-selection-workbench'
 IDENTIFIER = 'com.smu.part-selection'
 MAX_DOWNLOAD = 40 * 1024 * 1024
@@ -239,47 +239,90 @@ class PluginUpdater:
         finally:
             path.unlink(missing_ok=True)
 
-    def register(self):
+    def register(self, project=''):
         if not self.installed:
             return
         with self._installation_lock():
-            atomic_json(self.home / 'active' / f'{os.getpid()}.json', {'pid':os.getpid()})
+            _, started = self._process_info(os.getpid())
+            atomic_json(self.home / 'active' / f'{os.getpid()}.json',
+                        {'pid':os.getpid(), 'started':started, 'project':str(project)})
 
     def unregister(self):
         (self.home / 'active' / f'{os.getpid()}.json').unlink(missing_ok=True)
 
+    @staticmethod
+    def _process_info(pid):
+        """Return liveness and birth time; unknown access must never permit a swap."""
+        if os.name != 'nt':
+            try:
+                os.kill(pid, 0)
+                return True, None
+            except ProcessLookupError:
+                return False, None
+            except PermissionError:
+                return None, None
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+        kernel.GetProcessTimes.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x00100000 | 0x1000, False, pid)
+        if not handle:
+            return (False if ctypes.get_last_error() == 87 else None), None
+        try:
+            wait = kernel.WaitForSingleObject(handle, 0)
+            if wait == 0:
+                return False, None
+            if wait != 258:
+                return None, None
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in times)):
+                return True, None
+            ticks = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+            return True, ticks / 10_000_000 - 11_644_473_600
+        finally:
+            kernel.CloseHandle(handle)
+
     def _other_sessions(self):
+        blockers = []
         for path in (self.home / 'active').glob('*.json'):
+            if not path.stem.isdecimal() or not 0 < int(path.stem) <= 0xffffffff:
+                raise ValueError(f'更新会话记录无效，请核查：{path}')
             pid = int(path.stem)
             if pid == os.getpid():
                 continue
-            if os.name == 'nt':
-                import ctypes
-                kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-                kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
-                kernel.OpenProcess.restype = ctypes.c_void_p
-                kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-                handle = kernel.OpenProcess(0x00100000, False, pid)
-                if handle:
-                    kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-                    kernel.WaitForSingleObject.restype = ctypes.c_uint32
-                    try:
-                        alive = kernel.WaitForSingleObject(handle, 0) != 0
-                    finally:
-                        kernel.CloseHandle(handle)
-                else:
-                    alive = ctypes.get_last_error()!=87
-            else:
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except ProcessLookupError:
-                    alive = False
-                except PermissionError:
-                    alive = True
-            if alive:
-                raise ValueError('请先关闭使用同一插件的其他工程工作台，再安装更新')
-            path.unlink(missing_ok=True)
+            try:
+                record = json.loads(path.read_text(encoding='utf-8'))
+                if not isinstance(record, dict):
+                    record = {}
+            except (OSError, ValueError):
+                record = {}
+            alive, started = self._process_info(pid)
+            recorded = record.get('started')
+            identified = type(recorded) in (int, float) and math.isfinite(recorded)
+            # Old records contain only PID. A process born after the record is a reuse.
+            reused = (started is not None and
+                      (abs(started - recorded) > 0.000001 if identified
+                       else started > path.stat().st_mtime + 1))
+            if alive is False or reused:
+                path.unlink(missing_ok=True)
+                continue
+            project = str(record.get('project') or '工程未知')[:500]
+            state = '仍在运行' if alive else '无法核实状态'
+            blockers.append(f'{project}（PID {pid}，{state}）')
+        if blockers:
+            raise ValueError('请先关闭使用同一插件的其他工程工作台，再安装更新：' +
+                             '；'.join(blockers) + '。无需关闭 KiCad；若窗口已关闭，请核对插件残留进程。' +
+                             f'会话记录：{self.home / "active"}')
+
+    def check_installation_sessions(self):
+        with self.lock, self._installation_lock():
+            self._other_sessions()
 
     def _archive_files(self, archive):
         files, seen, total = {}, set(), 0
@@ -328,7 +371,6 @@ class PluginUpdater:
                 raise ValueError('源码运行不支持覆盖更新，请更新 Git 仓库后重新安装插件')
             if not self.offer:
                 raise ValueError('请先检查更新')
-            self._other_sessions()
             self.home.mkdir(parents=True, exist_ok=True)
             path = self.home / 'download.zip'
             try:

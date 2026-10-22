@@ -191,11 +191,20 @@ class DesktopLifecycle:
                 raise ValueError('仅允许当前工作台请求退出')
             if update and (not self.updater or not self.updater.pending):
                 raise ValueError('请先下载并校验更新')
+            install_update = bool(self.updater and self.updater.pending and (
+                update or self.updater.status()['mode']=='auto'))
+            if install_update:
+                try:
+                    self.updater.check_installation_sessions()
+                except Exception:
+                    if update:
+                        raise
+                    logging.exception('Automatic plugin installation deferred; other workbenches may still be active')
+                    install_update = False
             if self.candidates:
                 self.candidates.check_exit()
             self._stop_backend()
-            self.install_update = bool(self.updater and self.updater.pending and (
-                update or self.updater.status()['mode']=='auto'))
+            self.install_update = install_update
             self.restart = restart
             self.allow_close = True
             if self.candidates:
