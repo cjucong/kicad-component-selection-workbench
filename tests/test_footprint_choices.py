@@ -69,24 +69,26 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertTrue(all(p.read_bytes() == data for p, data in before.items()))
         self.assertFalse((self.root / 'sym-lib-table').exists())
 
-    def test_merge_suffix_and_symbol_reference_and_idempotent_reuse(self):
+    def test_merge_save_as_and_symbol_reference_and_idempotent_reuse(self):
         preview = self.prepare()
         before = self.old.read_bytes()
-        result = self.service.commit(self.choice(preview))
+        self.assertIn('conflict', self.service.commit(self.choice(preview)))
+        selected = self.choice(preview, name='Chosen0603')
+        result = self.service.commit(selected)
         self.assertTrue(Path(result['backup']).is_absolute())
         self.assertFalse(Path(result['backup']).is_relative_to(self.root))
         self.assertTrue(Path(result['backup']).is_dir())
-        self.assertEqual(result['footprint'], 'DSMU:0603_C123')
+        self.assertEqual(result['footprint'], 'DSMU:Chosen0603')
         self.assertEqual(self.old.read_bytes(), before)
-        imported = self.pretty / '0603_C123.kicad_mod'
+        imported = self.pretty / 'Chosen0603.kicad_mod'
         self.assertTrue(imported.exists())
-        self.assertIn('(footprint "0603_C123"', imported.read_text())
+        self.assertIn('(footprint "Chosen0603"', imported.read_text())
         sym_lib, _ = result['symbol'].split(':', 1)
         symbols = list(self.root.glob('Libraries/DSMU/LCSC/symbols/*.kicad_sym'))
         self.assertEqual(len(symbols), 1)
-        self.assertIn('DSMU:0603_C123', symbols[0].read_text())
+        self.assertIn('DSMU:Chosen0603', symbols[0].read_text())
         self.assertIn(sym_lib, (self.root / 'sym-lib-table').read_text())
-        self.assertEqual(self.service.commit(self.choice(preview))['footprint'], result['footprint'])
+        self.assertEqual(self.service.commit(selected)['footprint'], result['footprint'])
 
     def test_new_library_and_independent_library(self):
         for mode in ('new', 'independent'):
@@ -230,9 +232,9 @@ class FootprintChoicesTest(unittest.TestCase):
             return original_open(path, *args, **kwargs)
         with patch.object(Path, 'open', fail_table):
             with self.assertRaises(OSError):
-                self.service.commit(self.choice(preview))
+                self.service.commit(self.choice(preview, name='Chosen0603'))
         self.assertEqual(table.read_bytes(), before)
-        self.assertFalse((self.pretty / '0603_C123.kicad_mod').exists())
+        self.assertFalse((self.pretty / 'Chosen0603.kicad_mod').exists())
         self.assertEqual(list(self.root.glob('Libraries/DSMU/LCSC/symbols/*.kicad_sym')), [])
 
     def test_rename_preview_is_local_only_and_restricted_to_original_geometry(self):
@@ -267,15 +269,74 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertNotIn('symbol', result)
         self.assertEqual(self.service.commit(self.choice(preview, source='rename', name='R0603')), result)
 
-    def test_rename_conflict_suffixes_instead_of_overwriting_shared_footprints(self):
+    def test_rename_conflict_requires_choice_without_writing_or_suffixing(self):
         target = self.pretty / 'R0603.kicad_mod'
         target.write_text(module('R0603', width=1.2))
+        (self.pretty / 'Other.kicad_mod').write_text(module('Other', width=1.4))
         before = target.read_bytes()
         preview = self.service.prepare_rename(['DSMU:0603'], 'R0603', code='C123')
         self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        files = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
         result = self.service.commit(self.choice(preview, source='rename', name='R0603'))
-        self.assertEqual(result['footprint'], 'DSMU:R0603_C123')
+        self.assertEqual(result['conflict']['footprint'], 'DSMU:R0603')
         self.assertEqual(target.read_bytes(), before)
+        self.assertFalse((self.pretty / 'R0603_C123.kicad_mod').exists())
+        self.assertNotIn('result', self.service.previews[preview['preview_id']])
+        self.assertEqual(files, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_rename_overwrite_requires_bound_token_and_backs_up_original(self):
+        from part_selection_footprints import rename_content
+        target = self.pretty / 'R0603.kicad_mod'
+        target.write_text(module('R0603', width=1.2))
+        (self.pretty / 'Other.kicad_mod').write_text(module('Other', width=1.4))
+        before = target.read_bytes()
+        preview = self.service.prepare_rename(['DSMU:0603'], 'R0603', code='C123')
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        choice = self.choice(preview, source='rename', name='R0603')
+        offer = self.service.commit(choice)['conflict']
+        for extra in ({'collision_token':'forged'}, {'name':'Other'}, {'source':'converted'}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.service.commit({**choice, 'collision':'overwrite', 'collision_token':offer['token'], **extra})
+        result = self.service.commit({**choice, 'collision':'overwrite', 'collision_token':offer['token']})
+        self.assertEqual(result['footprint'], 'DSMU:R0603')
+        self.assertTrue(result['overwritten'])
+        self.assertEqual(rename_content(target.read_text()), rename_content(self.old.read_text()))
+        backup = Path(result['backup'])
+        transaction = json.loads((backup / 'transaction.json').read_text())
+        index = [Path(p) for p in transaction['files']].index(target.relative_to(self.root))
+        self.assertEqual((backup / str(index)).read_bytes(), before)
+        self.assertFalse((self.pretty / 'R0603_C123.kicad_mod').exists())
+
+    def test_changed_destination_requires_new_overwrite_approval(self):
+        target = self.pretty / 'R0603.kicad_mod'
+        preview = self.prepare()
+        target.write_text(module('R0603', width=1.2))
+        choice = self.choice(preview, name='R0603')
+        offer = self.service.commit(choice)['conflict']
+        target.write_text(module('R0603', width=1.4))
+        changed = target.read_bytes()
+        retry = self.service.commit({**choice, 'collision':'overwrite', 'collision_token':offer['token']})['conflict']
+        self.assertTrue(retry['changed'])
+        self.assertNotEqual(retry['token'], offer['token'])
+        self.assertEqual(target.read_bytes(), changed)
+        result = self.service.commit({**choice, 'collision':'overwrite', 'collision_token':retry['token']})
+        self.assertEqual(result['footprint'], 'DSMU:R0603')
+        self.assertTrue(result['overwritten'])
+
+    def test_overwrite_rolls_back_destination_if_symbol_registration_fails(self):
+        preview = self.prepare()
+        choice = self.choice(preview)
+        token = self.service.commit(choice)['conflict']['token']
+        files = {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        original_open = Path.open
+        def fail_table(path, *args, **kwargs):
+            if path == self.root / 'sym-lib-table' and args and args[0] == 'xb':
+                raise OSError('locked table')
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', fail_table), self.assertRaisesRegex(OSError, 'locked'):
+            self.service.commit({**choice, 'collision':'overwrite', 'collision_token':token})
+        self.assertEqual(files, {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        self.assertNotIn('result', self.service.previews[preview['preview_id']])
 
     def test_rename_requires_loaded_original_and_acknowledgment(self):
         (self.pretty / 'Other.kicad_mod').write_text(module('Other'))
@@ -314,7 +375,7 @@ class FootprintChoicesTest(unittest.TestCase):
             self.assertEqual(result['alignment'], alignment)
             self.assertEqual(result, self.service.comparison(preview['preview_id'], 'DSMU:0603'))
             self.assertFalse((self.pretty / '0603_C123.kicad_mod').exists())
-            selected = self.service.commit(self.choice(preview))
+            selected = self.service.commit(self.choice(preview, name='Aligned0603'))
         self.assertIn('(size 0.9 0.86)', (self.pretty / selected['footprint'].split(':')[1]).with_suffix('.kicad_mod').read_text())
         native.align_module.assert_called_once()
         native.render_comparison.assert_called_once()

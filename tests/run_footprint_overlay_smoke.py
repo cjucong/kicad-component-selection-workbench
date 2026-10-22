@@ -48,6 +48,55 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='conflict') {
+   const open=async(changed=false)=>page.evaluate(changed=>{
+    window.result=undefined;
+    window.resolveFootprintConflict({footprint:'Local:QSOP-16',name:'QSOP-16',token:'bound-token',changed},
+      {preview_id:'p1',source:'rename',name:'QSOP-16',collision:'overwrite',collision_token:'old-token'})
+      .then(value=>window.result=value);
+   },changed);
+   for(const width of [1440,390]) {
+    await page.setViewportSize({width,height:800});
+    await open();
+    assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+    assert.equal(await page.locator('[data-fp-overwrite-warning]').isVisible(),false);
+    await page.locator('[data-fp-new-name]').fill('QSOP-16');
+    assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+    await page.locator('[data-fp-new-name]').fill('../bad');
+    assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+    await page.locator('[data-fp-new-name]').fill('QSOP-16_Original');
+    assert.equal(await page.locator('.fp-apply').isEnabled(),true);
+    const bounds=await page.locator('.fp-dialog').boundingBox();
+    assert.ok(bounds.x>=0&&bounds.x+bounds.width<=width+1);
+    assert.equal(await page.locator('.fp-body').evaluate(e=>e.scrollWidth<=e.clientWidth+1),true);
+    await page.screenshot({path:process.env.FP_SHOTS+`/footprint-conflict-${width}.png`});
+    await page.locator('.fp-apply').click();
+    await page.waitForFunction(()=>window.result!==undefined);
+    const saved=await page.evaluate(()=>window.result);
+    assert.equal(saved.name,'QSOP-16_Original');
+    assert.equal(saved.collision,undefined);assert.equal(saved.collision_token,undefined);
+    await open(true);
+    assert.match(await page.locator('[data-fp-conflict-note]').innerText(),/已变化/);
+    await page.locator('[name="fp-conflict-mode"][value="overwrite"]').check();
+    assert.equal(await page.locator('[data-fp-new-name]').isVisible(),false);
+    assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+    await page.locator('[data-fp-overwrite-ack]').check();
+    await page.locator('.fp-apply').click();
+    await page.waitForFunction(()=>window.result!==undefined);
+    const overwritten=await page.evaluate(()=>window.result);
+    assert.equal(overwritten.name,'QSOP-16');
+    assert.equal(overwritten.collision,'overwrite');assert.equal(overwritten.collision_token,'bound-token');
+   }
+   await open();
+   await page.keyboard.press('Escape');
+   await page.waitForFunction(()=>window.result===null);
+   await open();
+   await page.locator('[data-fp-cancel]').click();
+   await page.waitForFunction(()=>window.result===null);
+   assert.equal(await page.locator('.fp-overlay').count(),0);
+   assert.equal(await page.evaluate(()=>calls.length),0,'collision resolution does not call converter or save by itself');
+   await page.setViewportSize({width:1440,height:1000});
+  }
   if(check==='all'||check==='pcb') {
    await page.evaluate(()=>{
     preview.alignment_ids=['Local:A','Local:Other','PCB:U3'];

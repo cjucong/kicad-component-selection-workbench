@@ -25,6 +25,26 @@ from part_stock_lookup import parse_lcsc_product
 
 
 class CandidateSelectionTest(unittest.TestCase):
+    def test_footprint_conflict_does_not_save_selection_until_resolved(self):
+        from unittest.mock import Mock
+        service = Mock()
+        service.prepare_rename.return_value = {'preview_id':'collision', 'kind':'rename'}
+        self.app.footprint_choices = service
+        self.app.select_candidate({'refs':'R85,R86', 'candidate':self.item,
+                                   'footprint_mode':'rename', 'phase':'preview'})
+        service.context.return_value = service.bind.call_args.args[1]
+        before = {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        conflict = {'footprint':'DSMU:0805', 'name':'0805', 'token':'approval'}
+        service.commit.return_value = {'conflict':conflict}
+        result = self.app.select_candidate({'footprint_choice':{'preview_id':'collision'}})
+        self.assertEqual(result, {'ok':True, 'footprint_conflict':conflict})
+        self.assertEqual(before, {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        service.commit.return_value = {'footprint':'DSMU:0805', 'renamed':True}
+        result = self.app.select_candidate({'footprint_choice':{'preview_id':'collision',
+            'collision':'overwrite', 'collision_token':'approval'}})
+        self.assertEqual(result['fields']['footprint'], 'DSMU:0805')
+        self.assertEqual(load_overrides(self.app.overrides_path)['R85']['accepted_c_code'], 'C4283613')
+
     def test_preview_does_not_save_and_confirmation_uses_bound_candidate(self):
         from unittest.mock import Mock
         service = Mock()
@@ -599,6 +619,34 @@ vm.runInContext(FUNCTIONS,ctx);
   assert.equal(commits,1);
   assert.equal(calls[0],'close');
   calls.length=0;
+  for(const resolution of ['cancel','save-as','overwrite']){
+    let posts=0, prompts=0;
+    ctx.window.resolveFootprintConflict=async(conflict,choice)=>{
+      prompts++;
+      assert.equal(conflict.footprint,'DSMU:0603');
+      assert.equal(choice.preview_id,'p1');
+      if(resolution==='cancel') return null;
+      return resolution==='overwrite' ? {...choice,collision:'overwrite',collision_token:conflict.token}
+        : {...choice,name:'Chosen0603'};
+    };
+    ctx.fetch=async(url,options)=>{
+      if(url==='/api/start_selection') return {ok:true,json:async()=>({ok:true,preview:{preview_id:'p1'}})};
+      assert.equal(url,'/api/select_candidate');
+      posts++;
+      if(posts===1) return {ok:true,json:async()=>({ok:true,footprint_conflict:{footprint:'DSMU:0603',token:'t1'}})};
+      const choice=JSON.parse(options.body).footprint_choice;
+      if(resolution==='overwrite') {assert.equal(choice.collision,'overwrite');assert.equal(choice.collision_token,'t1');}
+      else assert.equal(choice.name,'Chosen0603');
+      return {ok:true,json:async()=>({ok:true})};
+    };
+    await ctx.chooseCandidate('C4283613');
+    assert.equal(prompts,1);
+    assert.equal(posts,resolution==='cancel'?1:2);
+    assert.equal(calls.includes('close'),resolution!=='cancel');
+    assert.equal(button.disabled,false);
+    assert.equal(ctx.candidateTargetRow.dataset.candidateSaving,undefined);
+    calls.length=0;
+  }
   ctx.candidateFootprintMode={value:'library'};
   ctx.window.chooseLibraryFootprint=async preview=>{assert.equal(preview.kind,'library');return null};
   ctx.window.chooseFootprint=async()=>{throw Error('conversion picker must not run')};

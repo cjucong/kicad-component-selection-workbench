@@ -2093,6 +2093,8 @@ class PartSelectionApp:
                 if actual != context["actual"]:
                     raise ValueError("原理图封装发生变化，请重新预览")
                 library = self.footprint_choices.commit(choice)
+                if 'conflict' in library:
+                    return {"ok": True, "footprint_conflict": library['conflict']}
             try:
                 return self._save_candidate(refs, code, item, fields, library, mode, revisions)
             except OSError as exc:
@@ -7269,17 +7271,26 @@ async function chooseCandidate(code) {{
     }}
     if (data.preview) {{
       candidateSearchProgress.textContent = "等待封装选择确认；取消不会修改选料记录";
-      const choice = await (["library", "rename"].includes(data.preview.kind) ? window.chooseLibraryFootprint(data.preview) : window.chooseFootprint(data.preview));
+      let choice = await (["library", "rename"].includes(data.preview.kind) ? window.chooseLibraryFootprint(data.preview) : window.chooseFootprint(data.preview));
       if (!choice) {{
         candidateSearchProgress.textContent = "已取消封装选择，原选料与工程库未修改";
         return;
       }}
-      const saved = await fetch("/api/select_candidate", {{
-        method: "POST", headers: {{"Content-Type": "application/json"}},
-        body: JSON.stringify({{footprint_choice: choice}})
-      }});
-      data = await saved.json();
-      if (!saved.ok || !data.ok) throw new Error(data.error || "保存封装选择失败");
+      while (choice) {{
+        const saved = await fetch("/api/select_candidate", {{
+          method: "POST", headers: {{"Content-Type": "application/json"}},
+          body: JSON.stringify({{footprint_choice: choice}})
+        }});
+        data = await saved.json();
+        if (!saved.ok || !data.ok) throw new Error(data.error || "保存封装选择失败");
+        if (!data.footprint_conflict) break;
+        candidateSearchProgress.textContent = "已有同名封装，等待选择覆盖或另存";
+        choice = await window.resolveFootprintConflict(data.footprint_conflict, choice);
+        if (!choice) {{
+          candidateSearchProgress.textContent = "已取消，原选料与工程库未修改";
+          return;
+        }}
+      }}
     }}
     delete tr.dataset.candidateSaving;
     if (candidateOnly) await window.notifyNativeCandidateSaved();

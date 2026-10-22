@@ -510,8 +510,8 @@ class FootprintChoices:
                 if not aligned['alignment'].get('ok'):
                     raise ValueError('封装配准失败：' + str(aligned['alignment'].get('reason') or '无法可靠匹配焊盘'))
                 source = aligned['path'].read_text(encoding='utf-8-sig')
-            if choice.get('collision', 'suffix') != 'suffix':
-                raise ValueError('不允许覆盖共享封装，请使用新名称')
+            if choice.get('collision', 'ask') not in ('ask', 'overwrite'):
+                raise ValueError('请选择覆盖或另存新名称')
             name = item_name(choice.get('name'))
             mode = choice.get('target_mode')
             libs = self.libraries()
@@ -543,18 +543,26 @@ class FootprintChoices:
                 if renaming:
                     return rename_content(actual) == rename_content(source)
                 return geometry(actual) == geometry(source)
-            if target.exists() and not equivalent(target):
-                name += '_' + state['code']
-                target = checked_path(self.root, pretty / (name + '.kicad_mod'))
-                if target.exists() and not equivalent(target):
-                    name += '_' + hashlib.sha256(source.encode('utf-8')).hexdigest()[:8]
-                    target = checked_path(self.root, pretty / (name + '.kicad_mod'))
-            if target.exists() and not equivalent(target):
-                raise ValueError('目标封装名称冲突，请更换名称')
+            target_before = target.read_bytes() if target.exists() else None
+            overwrite = target_before is not None and not equivalent(target)
+            if overwrite:
+                # Approval is bound to both the exact choice and the observed file version.
+                identity = {k: v for k, v in choice.items() if k not in ('collision', 'collision_token')}
+                offer = state.get('collision_offer')
+                approved = (choice.get('collision') == 'overwrite' and offer
+                    and choice.get('collision_token') == offer['token'] and identity == offer['choice'])
+                if choice.get('collision') == 'overwrite' and not approved:
+                    raise ValueError('覆盖确认无效，请重新确认同名封装')
+                current_hash = hashlib.sha256(target_before).hexdigest()
+                if not approved or current_hash != offer['hash']:
+                    token = uuid4().hex
+                    state['collision_offer'] = {'token': token, 'choice': deepcopy(identity), 'hash': current_hash}
+                    return {'conflict': {'footprint': nickname + ':' + name, 'name': name, 'token': token,
+                        'changed': bool(approved)}}
             footprint = nickname + ':' + name
             atom = parse_sexpr(source, 'footprint').children[1]
             source = source[:atom.start] + json.dumps(name) + source[atom.end:]
-            writes = {} if target.exists() else {target: source.encode('utf-8')}
+            writes = {target: source.encode('utf-8')} if target_before is None or overwrite else {}
             symbol_path, symbol_lib = None, None
             tables = [('fp-lib-table', nickname, pretty, 'fp_lib_table')]
             if not renaming:
@@ -582,6 +590,8 @@ class FootprintChoices:
             backup = checked_path(temp, temp / 'part_selection_library_backups' / stamp)
             backup.mkdir(parents=True)
             original = {p: p.read_bytes() if p.exists() else None for p in writes}
+            if target in original and original[target] != target_before:
+                raise ValueError('目标封装发生变化，请重新确认')
             for index, (path, data) in enumerate(original.items()):
                 if data is not None:
                     (backup / str(index)).write_bytes(data)
@@ -589,6 +599,8 @@ class FootprintChoices:
                 'symbol': symbol_lib, 'files': [str(p.relative_to(self.root)) for p in writes]}, indent=2), encoding='utf-8')
             touched = []
             self._verify(state)
+            if (target.read_bytes() if target.exists() else None) != target_before:
+                raise ValueError('目标封装发生变化，请重新确认')
             try:
                 for index, (path, data) in enumerate(writes.items()):
                     checked_path(self.root, path)
@@ -618,7 +630,7 @@ class FootprintChoices:
                 raise
             result = {'footprint': footprint,
                       'target_path': pretty.relative_to(self.root).as_posix(), 'c_code': state['code'],
-                      'reused': target not in writes, 'backup': str(backup.resolve())}
+                      'reused': target not in writes, 'overwritten': overwrite, 'backup': str(backup.resolve())}
             published = [target, self.root / 'fp-lib-table']
             if renaming:
                 result.update(renamed=True, geometry_source=entry['id'])

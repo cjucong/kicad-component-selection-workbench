@@ -70,9 +70,9 @@ def test_native_preview_and_published_geometry_match_original_pad_coordinates(na
     assert detail['existing_pad_one'] == detail['converted_pad_one'] == [3, -1]
     result = service.commit({'preview_id': preview['preview_id'], 'source': 'converted',
         'existing_id': 'Local:Original', 'target_mode': 'existing', 'target_library': 'Local',
-        'name': 'Original', 'acknowledged': True})
-    assert result['footprint'] == 'Local:Original_C123'
-    published = root/result['target_path']/'Original_C123.kicad_mod'
+        'name': 'Aligned', 'acknowledged': True})
+    assert result['footprint'] == 'Local:Aligned'
+    published = root/result['target_path']/'Aligned.kicad_mod'
     check = estimate_alignment(published.read_text(encoding='utf-8'), original.read_text(encoding='utf-8'))
     assert check['ok'] and check['max_error_mm'] < 1e-6
     assert check['rotation_deg'] == pytest.approx(0, abs=1e-6)

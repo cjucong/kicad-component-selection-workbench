@@ -37,6 +37,9 @@
 .fp-footer button:disabled { opacity:.45; cursor:not-allowed; }
 .fp-destination[hidden], .fp-fields label[hidden] { display:none; }
 .fp-library-dialog { width:680px; }
+.fp-conflict-dialog { width:510px; }
+.fp-conflict-dialog .fp-footer { flex-wrap:wrap; }
+.fp-conflict-dialog [data-fp-save-as] { display:grid; gap:6px; }
 .fp-library-search { display:grid; grid-template-columns:minmax(100px,1fr) minmax(0,2fr); gap:8px; margin-bottom:8px; }
 .fp-dialog select.fp-library-list { height:184px; padding:3px; }
 .fp-library-list option { padding:4px 7px; }

@@ -105,7 +105,7 @@ WebView 只暴露 `DesktopBridge.finish_exit` 和受限的 `plugin_update`（sta
 - 分组只按 Comment + Value + Footprint；主料冲突显式清空，不回退历史料号。备份后持久化，不丢备注、备选、订货和审计信息。
 - replace_value、replace_comment 为独立严格布尔值，缺省 false；保留字段不等于删除已存在待同步覆盖。
 - keep/library/convert 三种封装模式默认 keep。library/convert 的正式网页确认必须基于 phase=preview 及绑定的 footprint_choice，检查候选、位号、行版本、原理图/库摘要、焊盘编号和人工确认。取消、过期或并发变化不保存此次选择。
-- library 仅 render=true 才渲染，查询编号/尺寸不运行转换器。目标库选择保留在 UI；导入正式库时使用工程相对库表，并保护共享旧封装。
+- library 仅 render=true 才渲染，查询编号/尺寸不运行转换器。目标库选择保留在 UI；导入正式库时使用工程相对库表。同名不同内容返回 footprint_conflict 暂停选料保存，另存使用显式 name；覆盖需 collision=overwrite 与服务端绑定选择/文件摘要的 collision_token，先备份、失败回滚。不再自动追加 C 编码；共享库影响必须在 UI 明确确认，源文件变化仍要求重新预览。
 - 库发布与记录保存是不同阶段；后者失败需明确提示“库已保存但记录未保存”，不能静默删除已安全新增的库。
 - 同步只更新 property，不改符号几何、引脚、实例 UUID 或 PCB。明确 selected_refs 只处理所选位号，不扩大成整个相交分组，不套用历史工程位号映射。
 - 工程路径及窗口 PID/HWND 使用前重新核验。无法唯一确认或 KICAD_BUSY 时停止，不回退到第一个窗口或直接强杀 KiCad。

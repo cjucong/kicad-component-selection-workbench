@@ -1,4 +1,67 @@
 /* Real KiCad previews are loaded as images, never inserted as executable SVG markup. */
+window.resolveFootprintConflict = function resolveFootprintConflict(conflict, choice) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'fp-overlay';
+    overlay.innerHTML = `<section class="fp-dialog fp-conflict-dialog" role="dialog" aria-modal="true" aria-label="已有同名封装">
+      <header class="fp-title"><strong>已有同名封装</strong><button type="button" data-fp-close title="取消并关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
+      <div class="fp-body"><p class="fp-final" data-fp-conflict-name></p>
+        <p class="fp-note" data-fp-conflict-note></p>
+        <div class="fp-modes"><label><input type="radio" name="fp-conflict-mode" value="save-as" checked>另存新名称</label>
+          <label><input type="radio" name="fp-conflict-mode" value="overwrite">覆盖已有封装</label></div>
+        <label data-fp-save-as>新封装名称<input type="text" data-fp-new-name maxlength="120" aria-label="新封装名称"></label>
+        <label class="fp-ack" data-fp-overwrite-warning hidden><input type="checkbox" data-fp-overwrite-ack>已知晓：其他引用此库封装的器件也可能受影响</label>
+      </div><footer class="fp-footer"><span class="fp-error" role="status"></span><button type="button" data-fp-cancel>取消</button><button type="button" class="fp-apply" disabled>保存新名称</button></footer></section>`;
+    const q = selector => overlay.querySelector(selector);
+    const previousFocus = document.activeElement;
+    let closed = false;
+    q('[data-fp-conflict-name]').textContent = conflict.footprint;
+    q('[data-fp-conflict-note]').textContent = conflict.changed
+      ? '目标文件已变化，请重新确认。覆盖前会备份。'
+      : '同名封装内容不同。覆盖前会备份。';
+    const overwrite = () => q('[name=fp-conflict-mode]:checked').value === 'overwrite';
+    function refresh() {
+      const replacing = overwrite(), name = q('[data-fp-new-name]').value.trim();
+      q('[data-fp-save-as]').hidden = replacing;
+      q('[data-fp-overwrite-warning]').hidden = !replacing;
+      q('.fp-apply').textContent = replacing ? '覆盖已有封装' : '保存新名称';
+      q('.fp-apply').disabled = replacing ? !q('[data-fp-overwrite-ack]').checked
+        : !name || name.toLowerCase() === conflict.name.toLowerCase() || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name);
+    }
+    function close(value) {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', keyboard, true);
+      overlay.remove();
+      if (previousFocus?.isConnected) previousFocus.focus();
+      resolve(value);
+    }
+    function keyboard(event) {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(null); }
+      if (event.key === 'Tab') {
+        const elements = [...overlay.querySelectorAll('button,input')].filter(e => !e.disabled && e.getClientRects().length);
+        const first = elements[0], last = elements.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    }
+    overlay.addEventListener('change', refresh);
+    overlay.addEventListener('input', refresh);
+    q('[data-fp-close]').onclick = q('[data-fp-cancel]').onclick = () => close(null);
+    q('.fp-apply').onclick = () => {
+      if (q('.fp-apply').disabled) return;
+      const next = {...choice};
+      delete next.collision;
+      delete next.collision_token;
+      close(overwrite() ? {...next, collision:'overwrite', collision_token:conflict.token}
+        : {...next, name:q('[data-fp-new-name]').value.trim()});
+    };
+    document.body.append(overlay);
+    document.addEventListener('keydown', keyboard, true);
+    q('[data-fp-new-name]').focus();
+  });
+};
+
 window.chooseLibraryFootprint = function chooseLibraryFootprint(preview) {
   return new Promise(resolve => {
     const rename = preview.kind === 'rename';
