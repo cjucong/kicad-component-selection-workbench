@@ -214,6 +214,128 @@ class FootprintChoicesTest(unittest.TestCase):
             self.service.commit({'preview_id':preview['preview_id'], 'source':'existing',
                 'existing_id':'DSMU:0603', 'acknowledged':True})
 
+    def test_library_comparison_uses_native_paths_and_caches_each_pair(self):
+        other = self.pretty / 'Other.kicad_mod'
+        target = self.pretty / 'Target.kicad_mod'
+        other.write_text(module('Other', .6))
+        target.write_text(module('Target').replace('(at 0.75 0)', '(at 4 2)'))
+        preview = self.service.prepare_library(['DSMU:0603', 'DSMU:Other'])
+        key = preview['preview_id']
+        self.service.library_detail(key, 'DSMU:Target')
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        rendered = {'ok': True, 'view_box': [-2, -2, 8, 6], 'layers': ['F.Cu'],
+                    'existing_layers': {'F.Cu': 'reference'}, 'converted_layers': {'F.Cu': 'target'}}
+        with patch('part_selection_footprint_geometry.render_comparison', return_value=rendered) as render:
+            result = self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')
+            self.assertTrue(result['library_comparison'])
+            self.assertEqual(result['reference_id'], 'DSMU:0603')
+            self.assertEqual(result['target_id'], 'DSMU:Target')
+            self.assertEqual(result['view_box'], [-2, -2, 8, 6])
+            self.assertEqual(result['converted_layers'], {'F.Cu': 'target'})
+            self.assertFalse(result.get('local_only'))
+            self.assertNotIn('alignment', result)
+            self.assertEqual(result, self.service.comparison(key, 'DSMU:0603', 'DSMU:Target'))
+            result['converted_layers'].clear()
+            self.assertEqual(self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')['converted_layers'],
+                             {'F.Cu': 'target'})
+            self.service.comparison(key, 'DSMU:Other', 'DSMU:Target')
+            self.service.library_detail(key, 'DSMU:Other')
+            self.service.comparison(key, 'DSMU:0603', 'DSMU:Other')
+            self.assertEqual(render.call_count, 3)
+            self.assertEqual([call.args[:2] for call in render.call_args_list],
+                             [(self.old, target), (other, target), (self.old, other)])
+            for call in render.call_args_list:
+                self.assertTrue(call.args[2].is_dir())
+                self.assertFalse(call.args[2].is_relative_to(self.root))
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_library_comparison_requires_original_baseline_and_loaded_compatible_target(self):
+        (self.pretty / 'Target.kicad_mod').write_text(module('Target'))
+        (self.pretty / 'WrongPins.kicad_mod').write_text(module('WrongPins', pin='3'))
+        (self.pretty / 'Broken.kicad_mod').write_text('(footprint')
+        preview = self.service.prepare_library(['DSMU:0603'])
+        key = preview['preview_id']
+        self.service.library_detail(key, 'DSMU:0603')
+        self.service.library_detail(key, 'DSMU:WrongPins')
+        with patch('part_selection_footprint_geometry.render_comparison') as render:
+            for baseline, target in [('DSMU:Target', 'DSMU:0603'), ('../outside', 'DSMU:0603'),
+                                     ('DSMU:0603', '../outside'), ('DSMU:0603', 'DSMU:Missing'),
+                                     ('DSMU:0603', ''), ('DSMU:0603', 'DSMU:Target'),
+                                     ('DSMU:0603', 'DSMU:WrongPins'), ('DSMU:0603', 'DSMU:Broken')]:
+                with self.subTest(baseline=baseline, target=target), self.assertRaises(ValueError):
+                    self.service.comparison(key, baseline, target)
+            render.assert_not_called()
+
+    def test_library_comparison_rejects_unreadable_original_and_expired_preview(self):
+        preview = self.service.prepare_library(['Missing:0603', 'DSMU:0603'])
+        key = preview['preview_id']
+        detail = self.service.library_detail(key, 'DSMU:0603')
+        self.assertFalse(detail['compatible'])
+        with patch('part_selection_footprint_geometry.render_comparison') as render:
+            with self.assertRaises(ValueError):
+                self.service.comparison(key, 'Missing:0603', 'DSMU:0603')
+            with self.assertRaises(ValueError):
+                self.service.comparison(key, 'DSMU:0603', 'DSMU:0603')
+            self.service.previews[key]['time'] -= 1801
+            with self.assertRaisesRegex(ValueError, '过期'):
+                self.service.comparison(key, 'DSMU:0603', 'DSMU:0603')
+            render.assert_not_called()
+
+    def test_library_comparison_rechecks_files_before_using_cached_render(self):
+        target = self.pretty / 'Target.kicad_mod'
+        for changed in (self.old, target):
+            with self.subTest(changed=changed):
+                self.old.write_text(module('0603'))
+                target.write_text(module('Target'))
+                key = self.service.prepare_library(['DSMU:0603'])['preview_id']
+                self.service.library_detail(key, 'DSMU:Target')
+                with patch('part_selection_footprint_geometry.render_comparison', return_value={}) as render:
+                    self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')
+                    changed.write_text('(footprint')
+                    with self.assertRaisesRegex(ValueError, 'changed|变化'):
+                        self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')
+                    render.assert_called_once()
+
+    def test_library_comparison_rechecks_files_after_render(self):
+        target = self.pretty / 'Target.kicad_mod'
+        target.write_text(module('Target'))
+        key = self.service.prepare_library(['DSMU:0603'])['preview_id']
+        self.service.library_detail(key, 'DSMU:Target')
+        def changed_during_render(*args):
+            target.unlink()
+            return {'ok': True}
+        with patch('part_selection_footprint_geometry.render_comparison', side_effect=changed_during_render):
+            with self.assertRaisesRegex(ValueError, 'changed|变化'):
+                self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')
+
+    def test_library_comparison_failure_leaves_metadata_and_rename_available(self):
+        (self.pretty / 'Target.kicad_mod').write_text(module('Target'))
+        key = self.service.prepare_library(['DSMU:0603'])['preview_id']
+        self.service.library_detail(key, 'DSMU:Target')
+        with patch('part_selection_footprint_geometry.render_comparison',
+                   side_effect=[{'ok': False, 'reason': 'native render unavailable'}, {'ok': True}]) as render:
+            with self.assertRaisesRegex(ValueError, 'native render unavailable'):
+                self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')
+            self.assertTrue(self.service.library_detail(key, 'DSMU:Target')['compatible'])
+            rename = self.service.prepare_rename(['DSMU:0603'], package='Renamed')
+            self.service.library_detail(rename['preview_id'], 'DSMU:0603')
+            result = self.service.commit(self.choice(rename, source='rename', name='Renamed'))
+            self.assertEqual(result['footprint'], 'DSMU:Renamed')
+            self.assertTrue(self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')['library_comparison'])
+            self.assertEqual(render.call_count, 2)
+
+    def test_library_comparison_without_target_remains_local_only(self):
+        key = self.service.prepare_library(['DSMU:0603'])['preview_id']
+        with patch('part_selection_footprint_geometry.render_comparison',
+                   return_value={'converted_layers': {'F.Cu': 'unused'}}) as render:
+            result = self.service.comparison(key, 'DSMU:0603', None)
+            self.assertTrue(result['local_only'])
+            self.assertEqual(result['converted_layers'], {})
+            self.assertNotIn('library_comparison', result)
+            self.assertEqual(result, self.service.comparison(key, 'DSMU:0603'))
+            render.assert_called_once()
+            self.assertEqual(render.call_args.args[:2], (self.old, self.old))
+
     def test_staged_file_change_is_rejected(self):
         preview = self.prepare()
         staged = next(self.service.staging_root.rglob('R0603.kicad_mod'))
@@ -244,6 +366,7 @@ class FootprintChoicesTest(unittest.TestCase):
              patch.object(Path, 'glob', side_effect=AssertionError('rename must not scan every footprint')):
             preview = self.service.prepare_rename(['DSMU:0603'], package='R0603', code='C123')
         self.assertEqual(preview['kind'], 'rename')
+        self.assertEqual(preview['current_footprints'], ['DSMU:0603'])
         self.assertEqual(preview['suggested_name'], 'R0603')
         self.assertEqual([item['id'] for item in preview['items']], ['DSMU:0603'])
         convert.assert_not_called()

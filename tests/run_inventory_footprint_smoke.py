@@ -57,36 +57,51 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
   await row('R2').locator('[data-field="review_status"]').selectOption('Confirmed');
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R2').review_status==='Confirmed');
   await row('R2').getByRole('button',{name:'预览／管理封装'}).click();
-  await page.getByText('当前绑定的本地库封装 · mm',{exact:true}).waitFor();
-  assert.match(await page.locator('[data-fp-background]').innerText(),/无唯一 C 编码/);
-  await page.locator('[data-fp-rename]').click();
-  await page.locator('[data-fp-detail]').filter({hasText:'焊盘 2'}).waitFor();
-  await page.locator('[data-fp-name]').fill('Renamed_R2');
-  await page.locator('[data-fp-ack]').check();
-  await page.locator('.fp-apply').click();
+  await page.getByRole('dialog',{name:'封装管理',exact:true}).waitFor();
+  await page.getByText('当前库封装 / 所选库封装 · 同原点、同比例 · mm',{exact:true}).waitFor();
+  if(process.env.WORKFLOW_SCREENSHOT) await page.screenshot({path:process.env.WORKFLOW_SCREENSHOT+'.library.png'});
+  await page.getByRole('tab',{name:'替换立创封装',exact:true}).click();
+  await page.getByText('没有唯一有效 C 编码',{exact:false}).waitFor();
+  await page.getByRole('tab',{name:'库封装改名',exact:true}).click();
+  await page.getByLabel('改名后',{exact:true}).fill('Local:Renamed_R2');
+  if(process.env.WORKFLOW_SCREENSHOT) await page.screenshot({path:process.env.WORKFLOW_SCREENSHOT+'.rename.png'});
+  await page.getByRole('button',{name:'应用改名',exact:true}).click();
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R2').footprint==='Local:Renamed_R2');
   assert.equal(await row('R2').locator('[data-field="review_status"]').inputValue(),'Confirmed',
     JSON.stringify(await page.evaluate(()=>currentRows.find(r=>r.ref==='R2'))));
   assert.equal(await row('R2').locator('[data-field="value"]').inputValue(),'200k');
   assert.equal(await code('R2').inputValue(),'');
+  // Cached conversion pane must not interfere with selecting and applying a library target.
+  await row('R1').getByRole('button',{name:'预览／管理封装'}).click();
+  const library=page.locator('[data-fp-page="library"]');
+  await library.locator('[data-fp-items] option[value="Local:Renamed_R2"]').waitFor({state:'attached'});
+  await library.locator('[data-fp-items]').selectOption('Local:Renamed_R2');
+  await library.getByText('Local:Renamed_R2 · 焊盘 2 个 · 编号 1, 2',{exact:true}).waitFor();
+  await library.locator('[data-fp-ack]').check();
+  await library.locator('.fp-apply').click();
+  await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R1').footprint==='Local:Renamed_R2');
+  assert.equal(await code('R1').inputValue(),'C500');
+  assert.equal(await row('R1').locator('[data-field="value"]').inputValue(),'100k');
   // Real KiCad-rendered layers, background conversion, comparison and cancellation.
   await row('R1').getByRole('button',{name:'预览／管理封装'}).click();
-  await page.waitForFunction(()=>document.querySelector('[data-fp-background]')?.textContent.includes('已就绪'));
-  await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.dataset.ok==='true');
+  await page.getByRole('tab',{name:'替换立创封装',exact:true}).click();
+  const converted=page.locator('[data-fp-page="convert"]');
+  await converted.locator('[data-fp-alignment][data-ok="true"]').waitFor();
   assert((await page.locator('[data-fp-layer-image]').count())>=2);
-  await page.locator('[data-fp-view="side"]').check();
-  assert.equal(await page.locator('[data-fp-layout]').getAttribute('data-fp-layout'),'side');
-  await page.locator('[data-fp-view="overlay"]').check();
-  await page.locator('[data-fp-opacity]').fill('65');
+  await converted.locator('[data-fp-view="side"]').check();
+  assert.equal(await converted.locator('[data-fp-layout]').getAttribute('data-fp-layout'),'side');
+  await converted.locator('[data-fp-view="overlay"]').check();
+  await converted.locator('[data-fp-opacity]').fill('65');
   if(process.env.WORKFLOW_SCREENSHOT) await page.screenshot({path:process.env.WORKFLOW_SCREENSHOT});
-  await page.locator('[data-fp-cancel]').click();
-  assert.equal(await row('R1').locator('[data-field="footprint"]').inputValue(),'Original');
+  await converted.locator('[data-fp-cancel]').click();
+  assert.equal(await row('R1').locator('[data-field="footprint"]').inputValue(),'Renamed_R2');
   // Apply through the independent interface, never through candidate selection.
   await row('R1').getByRole('button',{name:'预览／管理封装'}).click();
-  await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.dataset.ok==='true');
-  await page.locator('[data-fp-name]').fill('Converted_R1');
-  await page.locator('[data-fp-ack]').check();
-  await page.locator('.fp-apply').click();
+  await page.getByRole('tab',{name:'替换立创封装',exact:true}).click();
+  await converted.locator('[data-fp-alignment][data-ok="true"]').waitFor();
+  await converted.locator('[data-fp-name]').fill('Converted_R1');
+  await converted.locator('[data-fp-ack]').check();
+  await converted.locator('.fp-apply').click();
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R1').footprint==='Local:Converted_R1');
   assert.equal(await code('R1').inputValue(),'C500');
   assert.equal(await row('R1').locator('[data-field="value"]').inputValue(),'100k');
@@ -94,7 +109,7 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({automatic_stock:true,shared_request:true,late_response:true,retry:true,
     same_code_confirmation:true,local_preview:true,rename_without_code:true,converted_overlay:true,
-    cancel_readonly:true,independent_footprint_save:true,page_errors:errors}));
+    library_selection:true,cancel_readonly:true,independent_footprint_save:true,page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''

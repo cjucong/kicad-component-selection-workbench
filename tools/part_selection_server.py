@@ -3490,11 +3490,15 @@ class PartSelectionApp:
 
 def json_response(handler: BaseHTTPRequestHandler, payload: object, status: int = 200) -> None:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        # A cancelled preview has no client left to receive another error response.
+        handler.close_connection = True
 
 
 def text_response(handler: BaseHTTPRequestHandler, text: str, content_type: str = "text/html; charset=utf-8") -> None:
@@ -3666,7 +3670,7 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/footprint_comparison":
                     json_response(self, {"ok": True, "detail": app.footprint_choices.comparison(
-                        payload.get("preview_id"), payload.get("id"))})
+                        payload.get("preview_id"), payload.get("id"), payload.get("target_id"))})
                     return
                 if parsed.path == "/api/adopt_schematic_fields":
                     json_response(self, app.adopt_schematic_fields(payload))

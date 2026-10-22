@@ -246,6 +246,7 @@ class FootprintChoices:
     def prepare_rename(self, existing_ids, package='', code='', *, refs=()):
         if code and not re.fullmatch(r'C[0-9]+', str(code)):
             raise ValueError('Invalid C code')
+        existing_ids = list(existing_ids)
         with IMPORT_LOCK:
             self._expire()
             libs, originals, existing = self.libraries(), list(dict.fromkeys(existing_ids)), []
@@ -287,6 +288,7 @@ class FootprintChoices:
                 suggested = existing[0].get('placement',{}).get('footprint',default).split(':', 1)[1]
             return {'ok': True, 'preview_id': key, 'kind': 'rename', 'c_code': code, 'suggested_name': suggested,
                     'default_id': default, 'libraries': list(libs), 'original_ids': originals, 'package': package,
+                    'current_footprints': list(existing_ids),
                     'default_library': library_default,
                     'items': [{'id': e['id'], 'library': e['id'].split(':', 1)[0],
                                'label':('PCB 已保存 · '+e['placement']['ref']+' · '+e['placement']['footprint'])
@@ -427,11 +429,36 @@ class FootprintChoices:
                                  'hash': digest(output) if result.get('ok') else None, 'work': folder}
         return cache[identifier], entry
 
-    def comparison(self, preview_id, identifier):
+    def comparison(self, preview_id, identifier, target_identifier=None):
         from part_selection_footprint_geometry import render_comparison
         with IMPORT_LOCK:
             self.context(preview_id)
             state = self.previews[preview_id]
+            if target_identifier is not None:
+                if state.get('kind') != 'library' or identifier not in state['original_ids']:
+                    raise ValueError('请选择原绑定库封装作为比较基准')
+                self._verify(state)
+                reference = next((e for e in state['existing'] if e['id'] == identifier), None)
+                target = next((e for e in state['existing'] if e['id'] == target_identifier), None)
+                if (reference is None or target_identifier not in state['catalog'] or target is None
+                        or not target.get('loaded') or not target.get('compatible')):
+                    raise ValueError('请先读取兼容的工程库目标封装')
+                cache = state.setdefault('library_comparisons', {})
+                pair = (identifier, target_identifier)
+                if pair not in cache:
+                    if state['work'] is None:
+                        state['work'] = Path(tempfile.mkdtemp(prefix='local-footprint-', dir=runtime_directory(self.root)))
+                    output = state['work'] / uuid4().hex
+                    output.mkdir()
+                    # Compare native library coordinates without rigid alignment or publication.
+                    rendered = render_comparison(reference['path'], target['path'], output)
+                    if rendered.get('ok') is False:
+                        raise ValueError('库封装比较预览失败：' + str(rendered.get('reason') or '渲染不可用'))
+                    self._verify(state)
+                    cache[pair] = {**rendered, 'library_comparison': True,
+                                   'reference_id': identifier, 'target_id': target_identifier}
+                self._verify(state)
+                return deepcopy(cache[pair])
             if state.get('kind') in ('library', 'rename'):
                 self.library_detail(preview_id, identifier)
                 entry = next(e for e in state['existing'] if e['id'] == identifier)

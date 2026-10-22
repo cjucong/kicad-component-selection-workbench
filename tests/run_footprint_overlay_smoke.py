@@ -36,7 +36,10 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
      if(window.hold) return new Promise(resolve=>{pending[payload.id]=()=>resolve({ok:true,json:async()=>({ok:true,detail})});});
      return {ok:true,json:async()=>({ok:true,detail})};
     }
-    if(url==='/api/library_footprint') return {ok:true,json:async()=>({ok:true,detail:{id:payload.id,compatible:false,pads:2,numbers:['1','2'],svg:svg('#159b52')}})};
+    if(url==='/api/library_footprint') {
+     if(window.failMetadata) {window.failMetadata=false;return {ok:false,json:async()=>({ok:false,error:'fixture metadata failure'})};}
+     return {ok:true,json:async()=>({ok:true,detail:{id:payload.id,compatible:!!window.libraryCompatible,pads:2,numbers:['1','2'],svg:svg('#159b52')}})};
+    }
     throw Error('Unexpected fixture API '+url);
    };
    window.preview={preview_id:'synthetic-preview',c_code:'C123',compatible:true,original_ids:['Local:A','Local:B'],
@@ -48,7 +51,105 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='pane-radios') {
+   await page.evaluate(()=>{
+    window.libraryCompatible=true;window.result=undefined;
+    window.openFootprintManager({load:async kind=>kind==='convert'?structuredClone(preview):{
+      ...structuredClone(preview),kind:'library',default_id:'Local:A',items:preview.existing.map(e=>({...e,library:'Local'}))
+    }}).then(value=>window.result=value);
+   });
+   await page.locator('[data-fp-page="convert"] [data-fp-layer-image]').first().waitFor({state:'attached'});
+   const lib=page.locator('[data-fp-page="library"]'), converted=page.locator('[data-fp-page="convert"]');
+   await lib.locator('[data-fp-ack]').check();
+   assert.equal(await lib.locator('.fp-apply').isEnabled(),true,'background pane must not clear library radios');
+   await lib.locator('[data-fp-view="side"]').check();
+   await page.getByRole('tab',{name:'替换立创封装',exact:true}).click();
+   assert.equal(await converted.locator('[data-fp-view="overlay"]').isChecked(),true);
+   await converted.locator('[data-fp-view="side"]').check();
+   await page.getByRole('button',{name:'返回上一页',exact:true}).click();
+   assert.equal(await lib.locator('[data-fp-view="side"]').isChecked(),true);
+   await lib.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result?.source==='existing');
+   await page.evaluate(()=>window.libraryCompatible=false);
+  }
+  if(check==='all'||check==='rename-retry') {
+   await page.evaluate(()=>{window.failMetadata=true;calls=[];openLibrary('rename');});
+   await page.getByText('fixture metadata failure',{exact:true}).waitFor();
+   await page.getByLabel('改名后',{exact:true}).fill('Shared:RetainDraft');
+   await page.getByRole('button',{name:'重试',exact:true}).click();
+   await page.waitForFunction(()=>!document.querySelector('.fp-apply').disabled);
+   assert.equal(await page.getByLabel('改名后',{exact:true}).inputValue(),'Shared:RetainDraft');
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result?.name==='RetainDraft');
+  }
+  if(check==='all'||check==='navigation') {
+   await page.evaluate(()=>{
+    window.loads=[];window.releaseLibrary=null;
+    const lib={...structuredClone(preview),kind:'library',default_id:'Local:A',
+      items:preview.existing.map(e=>({...e,library:'Local'}))};
+    const rename={...structuredClone(lib),kind:'rename',current_footprints:['Local:A']};
+    window.result=undefined;
+    window.openFootprintManager({load:async kind=>{
+      loads.push(kind);
+      if(kind==='library') return new Promise(resolve=>window.releaseLibrary=()=>resolve(lib));
+      if(kind==='rename') return rename;
+      throw Error('upstream conversion unavailable');
+    }}).then(value=>window.result=value);
+   });
+   assert.equal(await page.getByRole('dialog',{name:'封装管理',exact:true}).count(),1,'shell opens before data');
+   await page.getByRole('tab',{name:'库封装改名',exact:true}).click();
+   await page.getByLabel('改名后',{exact:true}).waitFor();
+   assert.equal(await page.locator('.fp-overlay').count(),1,'navigation must not create a new dialog');
+   assert.equal(await page.locator('.fp-page:not([hidden]) input[type=text]').count(),2);
+   assert.equal(await page.locator('.fp-page:not([hidden]) select').count(),0,'rename has no catalog');
+   await page.getByLabel('改名后',{exact:true}).fill('Shared:KeptGeometry');
+   await page.evaluate(()=>releaseLibrary());
+   await page.getByRole('button',{name:'返回上一页',exact:true}).click();
+   await page.locator('[data-fp-search]').fill('Local:B');
+   await page.getByRole('tab',{name:'替换立创封装',exact:true}).click();
+   await page.getByText('upstream conversion unavailable',{exact:false}).waitFor();
+   await page.getByRole('button',{name:'返回上一页',exact:true}).click();
+   assert.equal(await page.locator('[data-fp-search]').inputValue(),'Local:B','search survives navigation');
+   await page.getByRole('tab',{name:'库封装改名',exact:true}).click();
+   assert.equal(await page.getByLabel('改名后',{exact:true}).inputValue(),'Shared:KeptGeometry');
+   assert.equal(await page.evaluate(()=>loads.filter(k=>k==='rename').length),1);
+   for(const width of [1440,390]) {
+    await page.setViewportSize({width,height:850});
+    const bounds=await page.getByRole('dialog',{name:'封装管理',exact:true}).boundingBox();
+    assert.ok(bounds.x>=0&&bounds.x+bounds.width<=width+1);
+    await page.screenshot({path:process.env.FP_SHOTS+`/footprint-manager-rename-${width}.png`});
+   }
+   await page.getByRole('button',{name:'应用改名',exact:true}).click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.equal(await page.evaluate(()=>result.target_library),'Shared');
+   assert.equal(await page.evaluate(()=>result.name),'KeptGeometry');
+   assert.equal(await page.evaluate(()=>result.source),'rename');
+   assert.equal(await page.locator('.fp-overlay').count(),0);
+   await page.evaluate(()=>{
+    window.result=undefined;window.latePreview=null;
+    window.openFootprintManager({load:()=>new Promise(resolve=>window.latePreview=()=>resolve({
+      ...structuredClone(preview),kind:'library',default_id:'Local:A',items:preview.existing.map(e=>({...e,library:'Local'}))
+    }))}).then(value=>window.result=value);
+   });
+   await page.getByRole('button',{name:'关闭',exact:true}).click();
+   await page.evaluate(()=>latePreview());
+   await page.waitForFunction(()=>window.result===null);
+   assert.equal(await page.locator('.fp-overlay').count(),0,'late load must not reopen a closed manager');
+   await page.evaluate(()=>{
+    window.attempt=0;window.result=undefined;
+    window.openFootprintManager({initialMode:'rename',load:async()=>{
+      if(++attempt===1) throw Error('fixture read failed');
+      return {...structuredClone(preview),kind:'rename',default_id:'Local:A',current_footprints:['Local:A']};
+    }}).then(value=>window.result=value);
+   });
+   await page.getByRole('button',{name:'重试',exact:true}).click();
+   await page.getByLabel('改名后',{exact:true}).waitFor();
+   await page.getByRole('button',{name:'关闭',exact:true}).click();
+   assert.equal(await page.evaluate(()=>attempt),2,'failed page is retryable');
+   await page.setViewportSize({width:1440,height:1000});
+  }
   if(check==='all'||check==='conflict') {
+   await page.evaluate(()=>{calls=[];});
    const open=async(changed=false)=>page.evaluate(changed=>{
     window.result=undefined;
     window.resolveFootprintConflict({footprint:'Local:QSOP-16',name:'QSOP-16',token:'bound-token',changed},
@@ -125,6 +226,7 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    await page.evaluate(()=>{delete preview.alignment_ids;delete preview.rename_ids;delete preview.default_reference_id;preview.existing=preview.existing.filter(e=>e.source!=='pcb');});
   }
   if(check==='all'||check==='overlay') {
+   await page.evaluate(()=>{calls=[];});
    await page.evaluate(()=>openComparison());
    await page.waitForFunction(()=>document.querySelectorAll('[data-fp-layer-image]').length===4);
    await page.locator('[data-fp-ack]').check();
@@ -230,24 +332,23 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    await page.evaluate(()=>pending['Local:Slow']());
    await page.waitForTimeout(30);
    assert.equal(await page.locator('.fp-overlay').count(),0);
-   await page.evaluate(()=>hold=false);
+   await page.evaluate(()=>{hold=false;preview.existing=preview.existing.filter(e=>e.id!=='Local:Slow');
+     preview.original_ids=preview.original_ids.filter(id=>id!=='Local:Slow');});
   }
   if(check==='all'||check==='library') {
    await page.evaluate(()=>{calls=[];openLibrary('rename');});
    await page.waitForFunction(()=>calls.length===1);
    assert.deepEqual(await page.evaluate(()=>calls.map(e=>({url:e.url,render:e.payload.render}))),[{url:'/api/library_footprint',render:false}]);
-   assert.equal(await page.locator('.fp-library-image').isVisible(),false);
-   assert.equal(await page.locator('[data-fp-library] option').count(),3,'every registered library is a valid target');
-   assert.equal(await page.locator('[data-fp-library]').inputValue(),'Local');
-   await page.locator('[data-fp-library]').selectOption('LCSC_C999');
-   await page.locator('[data-fp-name]').fill('RenameOnly');
-   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('select').count(),0,'rename has only before and after fields');
+   assert.equal(await page.locator('[data-fp-before]').inputValue(),'Local:A / Local:B');
+   await page.getByLabel('改名后',{exact:true}).fill('LCSC_C999:RenameOnly');
+   await page.waitForFunction(()=>!document.querySelector('.fp-apply').disabled);
    assert.equal(await page.locator('.fp-apply').isEnabled(),true,'rename needs no conversion or image preview');
    await page.locator('.fp-apply').click();
    await page.waitForFunction(()=>window.result!==undefined);
    assert.deepEqual(await page.evaluate(()=>window.result),{preview_id:'synthetic-preview',source:'rename',existing_id:'Local:A',acknowledged:true,target_mode:'existing',target_library:'LCSC_C999',name:'RenameOnly'});
    await page.evaluate(()=>{calls=[];openLibrary('library');});
-   await page.waitForFunction(()=>calls.length===1);
+   await page.waitForFunction(()=>calls.some(e=>e.url==='/api/library_footprint'));
    await page.locator('[data-fp-ack]').check();
    assert.equal(await page.locator('.fp-apply').isEnabled(),false,'ordinary library selection still blocks incompatible footprints');
    await close();

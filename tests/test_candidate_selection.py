@@ -231,7 +231,7 @@ class CandidateSelectionTest(unittest.TestCase):
                 result = json.load(response)
             self.assertTrue(result['ok'])
             self.assertTrue(result['detail']['alignment']['ok'])
-            self.app.footprint_choices.comparison.assert_called_once_with('comparison', 'DSMU:0805')
+            self.app.footprint_choices.comparison.assert_called_once_with('comparison', 'DSMU:0805', None)
             self.assertFalse(self.app.overrides_path.exists())
             self.assertEqual((self.root / 'DOC/test.kicad_sch').read_bytes(), before)
         finally:

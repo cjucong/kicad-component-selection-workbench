@@ -62,127 +62,84 @@ window.resolveFootprintConflict = function resolveFootprintConflict(conflict, ch
   });
 };
 
-window.chooseLibraryFootprint = function chooseLibraryFootprint(preview) {
+window.chooseLibraryFootprint = function chooseLibraryFootprint(preview, options = {}) {
+  if (preview.kind !== 'rename') {
+    const existing = preview.existing || preview.items;
+    return window.chooseFootprint({...preview, existing, default_reference_id:preview.default_id}, {...options, library:true});
+  }
   return new Promise(resolve => {
-    const rename = preview.kind === 'rename';
-    const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
     const overlay = document.createElement('div');
-    overlay.className = 'fp-overlay';
-    overlay.innerHTML = `<section class="fp-dialog fp-library-dialog" role="dialog" aria-modal="true" aria-label="选择库封装">
-      <header class="fp-title"><strong>选择库封装</strong><button type="button" data-fp-close title="取消并关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
-      <div class="fp-body"><div class="fp-context">当前：${escape(preview.original_ids.map(id => preview.items.find(e => e.id === id)?.label || id).join(' / ') || '未设置')}</div>
-      <div class="fp-library-search"><select data-fp-library aria-label="封装库"><option value="">全部工程库</option>${preview.libraries.map(n => `<option>${escape(n)}</option>`).join('')}</select>
-      <input type="text" data-fp-search placeholder="搜索封装名称" aria-label="搜索封装名称"></div>
-      ${rename ? `<div class="fp-fields fp-rename-fields"><label>目标封装库<select data-fp-library aria-label="目标封装库">${preview.libraries.map(n => `<option ${n === preview.default_library ? 'selected' : ''}>${escape(n)}</option>`).join('')}</select></label><label>封装名称<input data-fp-name type="text" maxlength="120" value="${escape(preview.suggested_name)}"></label></div>` : ''}
-      <select class="fp-library-list" data-fp-items size="8" aria-label="库封装列表"></select>
-      <div class="fp-library-detail" data-fp-detail role="status"></div>
-      <button type="button" class="fp-optional-preview" data-fp-preview title="查看所选封装预览" disabled><svg aria-hidden="true"><use href="#toolbar-icon-search"></use></svg>预览</button>
-      <div class="fp-library-image" hidden><img alt="所选库封装预览"></div>
-      <p class="fp-note">${rename ? '仅按铜皮焊盘编号、局部坐标和方向判断可否共用；丝印不同将采用所选基准封装的版本。' : '焊盘编号一致不代表电气兼容，请核对尺寸和引脚功能。'}</p>
-      <label class="fp-ack"><input type="checkbox" data-fp-ack>已核对尺寸、焊盘编号和引脚功能</label></div>
-      <footer class="fp-footer"><span class="fp-error" role="status"></span><button type="button" data-fp-cancel>取消</button><button type="button" class="fp-apply" disabled>确认选择</button></footer></section>`;
-    const q = selector => overlay.querySelector(selector);
-    if (rename) {
-      q('.fp-library-search select').removeAttribute('data-fp-library');
-      q('.fp-library-search select').setAttribute('data-fp-filter-library', '');
-      q('.fp-title strong').textContent = '改名并保留原封装';
+    overlay.className = options.mount ? 'fp-page' : 'fp-overlay';
+    overlay.innerHTML = '<section class="' + (options.mount ? 'fp-embedded' : 'fp-dialog fp-rename-dialog') + '">' +
+      '<header class="fp-title"><strong>库封装改名</strong><button type="button" data-fp-close title="关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>' +
+      '<div class="fp-body fp-rename-body">' +
+        '<label class="fp-rename-field">改名前<input type="text" data-fp-before aria-label="改名前" readonly></label>' +
+        '<label class="fp-rename-field">改名后<input type="text" data-fp-name aria-label="改名后" maxlength="241" spellcheck="false"></label>' +
+        '<p class="fp-rename-hint">保留原封装几何，不改变 PCB 位置和方向。</p>' +
+      '</div><footer class="fp-footer"><span class="fp-error" role="status">正在读取原封装…</span><button type="button" data-fp-retry hidden>重试</button><button type="button" data-fp-cancel>取消</button><button type="button" class="fp-apply" disabled>应用改名</button></footer></section>';
+    const q = selector => overlay.querySelector(selector), previousFocus = document.activeElement;
+    const controller = new AbortController();
+    let closed = false, ready = false;
+    const before = (preview.current_footprints || preview.original_ids).join(' / ');
+    q('[data-fp-before]').value = before;
+    q('[data-fp-name]').value = preview.default_library + ':' + preview.suggested_name;
+    function target() {
+      const text = q('[data-fp-name]').value.trim(), colon = text.indexOf(':');
+      if (colon < 1 || colon === text.length - 1) return null;
+      const library = text.slice(0, colon), name = text.slice(colon + 1);
+      if (!preview.libraries.includes(library) || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name)) return null;
+      return {library, name};
     }
-    const previousFocus = document.activeElement;
-    let closed = false, sequence = 0, controller = null, selected = '', detail = null, imageUrl = null;
-    function enabled() {
-      const original = (preview.original_ids || []).includes(selected);
-      q('.fp-apply').disabled = !q('[data-fp-ack]').checked || (rename
-        ? !detail || !original || !q('[data-fp-name]').value.trim() || !q('[data-fp-library]').value
-        : !detail?.compatible);
-    }
-    function clearImage() {
-      q('.fp-library-image').hidden = true;
-      q('.fp-library-image img').removeAttribute('src');
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-      imageUrl = null;
-    }
-    async function load(render = false) {
-      const id = selected, token = ++sequence;
-      controller?.abort();
-      controller = new AbortController();
-      q('.fp-error').textContent = '';
-      q('[data-fp-preview]').disabled = true;
-      q('.fp-apply').disabled = true;
-      if (!render) {
-        detail = null;
-        q('[data-fp-ack]').checked = false;
-        clearImage();
-        q('[data-fp-detail]').textContent = id ? '正在读取焊盘编号…' : '没有匹配的封装';
-      }
-      if (!id) return;
-      try {
-        const response = await fetch('/api/library_footprint', {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({preview_id:preview.preview_id, id, render}), signal:controller.signal});
-        const data = await response.json();
-        if (closed || token !== sequence) return;
-        if (!response.ok || !data.ok) throw new Error(data.error || '无法读取库封装');
-        detail = data.detail;
-        q('[data-fp-detail]').textContent = `${detail.id}\n焊盘 ${detail.pads} 个 · 编号 ${(detail.numbers || []).join(', ') || '无'}\n单焊盘 ${detail.pad_size || '—'} · 包络 ${detail.pad_envelope || '—'}${rename ? '' : '\n' + (detail.compatible ? '编号与原封装一致' : '原封装不可读取或焊盘编号不一致，不能替换')}`;
-        if (render) {
-          clearImage();
-          imageUrl = URL.createObjectURL(new Blob([detail.svg], {type:'image/svg+xml'}));
-          q('.fp-library-image img').src = imageUrl;
-          q('.fp-library-image').hidden = false;
-        }
-        q('[data-fp-preview]').disabled = false;
-        enabled();
-      } catch (error) {
-        if (closed || token !== sequence || error.name === 'AbortError') return;
-        q('.fp-error').textContent = error.message || String(error);
-        if (render && detail) { q('[data-fp-preview]').disabled = false; enabled(); }
-      }
-    }
-    function filter() {
-      const library = q(rename ? '[data-fp-filter-library]' : '[data-fp-library]').value, query = q('[data-fp-search]').value.trim().toLowerCase();
-      const items = preview.items.filter(e => (!rename || (preview.original_ids || []).includes(e.id)) && (!library || e.library === library) && e.id.toLowerCase().includes(query));
-      const next = items.some(e => e.id === selected) ? selected : (items[0]?.id || '');
-      q('[data-fp-items]').innerHTML = items.map(e => `<option value="${escape(e.id)}">${escape(e.label || e.id)}</option>`).join('');
-      q('[data-fp-items]').value = next;
-      if (next !== selected || !detail) { selected = next; load(); }
+    function refresh() {
+      q('.fp-apply').disabled = !ready || !target() || q('[data-fp-name]').value.trim() === before;
     }
     function close(value) {
       if (closed) return;
       closed = true;
-      ++sequence;
-      controller?.abort();
+      controller.abort();
+      options.signal?.removeEventListener('abort', cancel);
       document.removeEventListener('keydown', keyboard, true);
-      clearImage();
       overlay.remove();
-      if (previousFocus?.isConnected) previousFocus.focus();
+      if (!options.mount && previousFocus?.isConnected) previousFocus.focus();
       resolve(value);
     }
+    const cancel = () => close(null);
     function keyboard(event) {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(null); }
-      if (event.key === 'Tab') {
-        const elements = [...overlay.querySelectorAll('button,input,select')].filter(e => !e.disabled && e.getClientRects().length);
-        const first = elements[0], last = elements.at(-1);
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); cancel(); }
+    }
+    q('[data-fp-name]').oninput = refresh;
+    q('[data-fp-close]').onclick = q('[data-fp-cancel]').onclick = cancel;
+    q('.fp-apply').onclick = () => {
+      const next = target();
+      if (q('.fp-apply').disabled || !next) return;
+      close({preview_id:preview.preview_id, source:'rename', existing_id:preview.default_id,
+        target_mode:'existing', target_library:next.library, name:next.name, acknowledged:true});
+    };
+    (options.mount || document.body).append(overlay);
+    if (!options.mount) { document.addEventListener('keydown', keyboard, true); q('[data-fp-name]').focus(); }
+    options.signal?.addEventListener('abort', cancel, {once:true});
+    if (options.signal?.aborted) { cancel(); return; }
+    async function loadOriginal() {
+      q('[data-fp-retry]').hidden = true;
+      q('.fp-error').textContent = '正在读取原封装…';
+      try {
+        const response = await fetch('/api/library_footprint', {method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({preview_id:preview.preview_id, id:preview.default_id, render:false}), signal:controller.signal});
+        const data = await response.json();
+        if (closed) return;
+        if (!response.ok || !data.ok) throw new Error(data.error || '原封装不可读取');
+        ready = true;
+        q('.fp-error').textContent = '';
+        refresh();
+      } catch (error) {
+        if (!closed && error.name !== 'AbortError') {
+          q('.fp-error').textContent = error.message;
+          q('[data-fp-retry]').hidden = false;
+        }
       }
     }
-    q('[data-fp-search]').oninput = q(rename ? '[data-fp-filter-library]' : '[data-fp-library]').onchange = filter;
-    if (rename) {
-      q('[data-fp-library]').onchange = enabled;
-      q('[data-fp-name]').oninput = enabled;
-    }
-    q('[data-fp-items]').onchange = () => { selected = q('[data-fp-items]').value; load(); };
-    q('[data-fp-preview]').onclick = () => load(true);
-    q('[data-fp-ack]').onchange = enabled;
-    q('[data-fp-close]').onclick = q('[data-fp-cancel]').onclick = () => close(null);
-    q('.fp-apply').onclick = () => {
-      if (!q('.fp-apply').disabled) close({preview_id:preview.preview_id, source:rename ? 'rename' : 'existing', existing_id:selected, acknowledged:true,
-        ...(rename ? {target_mode:'existing', target_library:q('[data-fp-library]').value, name:q('[data-fp-name]').value.trim()} : {})});
-    };
-    document.body.append(overlay);
-    document.addEventListener('keydown', keyboard, true);
-    selected = preview.default_id;
-    filter();
-    q('[data-fp-search]').focus();
+    q('[data-fp-retry]').onclick = () => void loadOriginal();
+    void loadOriginal();
   });
 };
 
@@ -193,17 +150,20 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     const references = new Set(preview.alignment_ids || [...originals]);
     const renameIds = new Set(preview.rename_ids || [...originals]);
     const overlay = document.createElement('div');
-    overlay.className = 'fp-overlay';
-    overlay.innerHTML = `<section class="fp-dialog" role="dialog" aria-modal="true" aria-label="封装对比与目标库">
+    overlay.className = options.mount ? 'fp-page' : 'fp-overlay';
+    overlay.innerHTML = `<form class="fp-radio-owner"><section class="${options.mount ? 'fp-embedded' : 'fp-dialog'} ${options.library ? 'fp-library-workspace' : ''}" ${options.mount ? '' : 'role="dialog" aria-modal="true"'} aria-label="封装对比与目标库">
       <header class="fp-title"><strong>封装对比与目标库</strong><span>${escape(preview.c_code)}</span>
       <button type="button" data-fp-close title="取消并关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
+      ${options.library ? `<div class="fp-current-binding">当前封装：${escape(preview.original_ids.join(' / ') || '未指定')}</div>` : ''}
       <div class="fp-body">${options.manage ? `<div class="fp-management"><button type="button" data-fp-pick-library>替换库封装…</button><button type="button" data-fp-rename>仅改名保留原几何…</button><span data-fp-background role="status">${preview.c_code ? '立创封装正在后台读取…' : '无唯一 C 编码，仅提供本地封装操作'}</span></div><div class="fp-context">当前绑定：${escape(preview.original_ids.join(' / ') || '未指定')}</div>` : ''}<div class="fp-baseline"><label>对齐基准<select data-fp-existing aria-label="工程现有封装">${preview.existing.map(e => `<option value="${escape(e.id)}">${escape(e.source === 'pcb' ? `PCB 已保存 · ${e.placement.ref} · ${e.placement.footprint}` : e.id)}</option>`).join('')}</select></label><span>mm</span></div>
+      ${options.library ? `<div class="fp-library-search"><select data-fp-filter-library aria-label="封装库"><option value="">全部工程库</option>${preview.libraries.map(n => `<option>${escape(n)}</option>`).join('')}</select><input type="text" data-fp-search placeholder="搜索封装名称" aria-label="搜索封装名称"></div><select class="fp-library-list" data-fp-items size="8" aria-label="库封装列表"></select>` : ''}
       <div class="fp-reference-context" data-fp-reference-context></div>
       <div class="fp-comparison">
         <div class="fp-compare-toolbar">
           <div class="fp-segments" role="group" aria-label="比较视图"><label><input type="radio" name="fp-view" data-fp-view="overlay" value="overlay" checked><span>叠加</span></label><label><input type="radio" name="fp-view" data-fp-view="side" value="side"><span>并排</span></label></div>
-          <label class="fp-opacity">立创不透明度<input type="range" data-fp-opacity min="0" max="100" value="50" aria-label="立创不透明度"><output data-fp-opacity-value>50%</output></label>
+          <label class="fp-opacity">${options.library ? '目标' : '立创'}不透明度<input type="range" data-fp-opacity min="0" max="100" value="50" aria-label="${options.library ? '目标' : '立创'}不透明度"><output data-fp-opacity-value>50%</output></label>
           <label class="fp-marker-toggle"><input type="checkbox" data-fp-markers checked>原点 / 1号焊盘</label>
+          ${options.mount ? '<button type="button" data-fp-layer-toggle aria-expanded="false">图层 ▾</button>' : ''}
         </div>
         <div class="fp-compare-content">
           <div class="fp-viewport" data-fp-layout="overlay"><div class="fp-scene" hidden>
@@ -233,18 +193,35 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
         <label class="fp-ack"><input type="checkbox" data-fp-ack>已核对焊盘差异与引脚功能，并保存关闭库编辑器</label>
       </div></div>
       <footer class="fp-footer"><span class="fp-error" role="status"></span><button type="button" data-fp-cancel>取消</button><button type="button" class="fp-apply" disabled>确认选择</button></footer>
-    </section>`;
+    </section></form>`;
     const q = selector => overlay.querySelector(selector);
+    q('.fp-radio-owner').onsubmit = event => event.preventDefault();
     const previousFocus = document.activeElement;
     const cache = new Map(), layerState = new Map(), urls = new Set();
-    let closed = false, sequence = 0, controller = null, detail = null;
+    let closed = false, sequence = 0, controller = null, detail = null, libraryDetail = null;
     let localOnly = options.manage === true;
-    const selectedEntry = () => preview.existing.find(e => e.id === q('[data-fp-existing]').value);
+    const selectedEntry = () => options.library ? preview.items.find(e => e.id === q('[data-fp-items]').value)
+      : preview.existing.find(e => e.id === q('[data-fp-existing]').value);
     const source = () => q('[name=fp-source]:checked').value;
     const mode = () => q('[name=fp-mode]:checked').value;
+    if (options.mount) {
+      q('.fp-layer-panel').hidden = true;
+      q('[data-fp-layer-toggle]').onclick = () => {
+        q('.fp-layer-panel').hidden = !q('.fp-layer-panel').hidden;
+        q('[data-fp-layer-toggle]').setAttribute('aria-expanded', String(!q('.fp-layer-panel').hidden));
+      };
+    }
     function refresh() {
       const entry = selectedEntry(), original = !!entry && originals.has(entry.id);
       const reference = !!entry && references.has(entry.id);
+      if (options.library) {
+        q('.fp-destination').hidden = true;
+        q('.fp-sources').hidden = true;
+        q('.fp-apply').disabled = !libraryDetail?.compatible || !q('[data-fp-ack]').checked;
+        q('[data-fp-reference-context]').textContent = libraryDetail
+          ? `${entry.id} · 焊盘 ${libraryDetail.pads} 个 · 编号 ${(libraryDetail.numbers || []).join(', ')}${libraryDetail.compatible ? '' : ' · 焊盘编号不匹配，不能替换'}` : '';
+        return;
+      }
       q('[name=fp-source][value=existing]').disabled = !entry || entry.source === 'pcb';
       q('[name=fp-source][value=rename]').disabled = !entry || !renameIds.has(entry.id);
       q('[name=fp-source][value=converted]').disabled = localOnly || !reference;
@@ -290,7 +267,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const controls = q('[data-fp-layer-controls]');
       for (const side of ['existing', 'converted']) {
         const fieldset = document.createElement('fieldset');
-        fieldset.innerHTML = `<legend class="${side === 'existing' ? 'fp-local-color' : 'fp-converted-color'}">${side === 'existing' ? '本地' : '转换'}</legend>`;
+        fieldset.innerHTML = `<legend class="${side === 'existing' ? 'fp-local-color' : 'fp-converted-color'}">${side === 'existing' ? '本地' : options.library ? '目标' : '转换'}</legend>`;
         const stack = q(`[data-fp-source-layers=${side}]`);
         for (const layer of value.layers || []) {
           const svg = value[side + '_layers']?.[layer.id];
@@ -327,11 +304,11 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const alignment = value.alignment || {};
       const format = (number, digits = 3) => Number.isFinite(number) ? String(Number(number.toFixed(digits))) : '—';
       q('[data-fp-alignment]').dataset.ok = String(alignment.ok === true);
-      q('[data-fp-alignment]').textContent = value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
+      q('[data-fp-alignment]').textContent = value.library_comparison ? '当前库封装 / 所选库封装 · 同原点、同比例 · mm' : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
         ? `中心已对齐 · 校正 ${format(alignment.rotation_deg)}° · 焊盘中心最大偏差 ${format(alignment.max_error_mm, 4)} mm${alignment.requires_review ? ' · 间距有差异，请核对' : ''}`
         : '无法对齐，请检查焊盘编号与原封装';
       q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);
-      if (value.local_only) q('[data-fp-alignment]').removeAttribute('data-ok');
+      if (value.local_only || value.library_comparison) q('[data-fp-alignment]').removeAttribute('data-ok');
       q('.fp-scene').hidden = false;
       q('[data-fp-canvas-status]').hidden = true;
       updateDisplay();
@@ -342,18 +319,29 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       controller?.abort();
       controller = new AbortController();
       detail = null;
+      libraryDetail = null;
       q('.fp-error').textContent = '';
       clearImages();
       q('[data-fp-alignment]').textContent = '';
       const status = q('[data-fp-canvas-status]');
       status.hidden = false;
-      status.textContent = entry && references.has(entry.id) ? '正在读取预览…' : '请选择编号匹配的对齐基准';
+      status.textContent = entry && (options.library || references.has(entry.id)) ? '正在读取预览…' : '请选择编号匹配的对齐基准';
       refresh();
-      if (!entry || !references.has(entry.id)) return;
+      if (!entry || (!options.library && !references.has(entry.id))) return;
       try {
+        if (options.library) {
+          const response = await fetch('/api/library_footprint', {method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({preview_id:preview.preview_id, id:entry.id, render:false}), signal:controller.signal});
+          const data = await response.json();
+          if (closed || token !== sequence) return;
+          if (!response.ok || !data.ok) throw new Error(data.error || '无法读取库封装');
+          libraryDetail = data.detail;
+          refresh();
+        }
         if (cache.has(entry.id)) { displayComparison(cache.get(entry.id)); return; }
         const response = await fetch('/api/footprint_comparison', {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({preview_id:preview.preview_id, id:entry.id}), signal:controller.signal});
+          body:JSON.stringify({preview_id:preview.preview_id, id:options.library ? preview.default_id : entry.id,
+            ...(options.library ? {target_id:entry.id} : {})}), signal:controller.signal});
         const data = await response.json();
         if (closed) return;
         if (!response.ok || !data.ok) throw new Error(data.error || '无法读取比较预览');
@@ -378,11 +366,13 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       controller?.abort();
       clearImages();
       cache.clear();
+      options.signal?.removeEventListener('abort', cancel);
       document.removeEventListener('keydown', keyboard, true);
       overlay.remove();
-      if (previousFocus?.isConnected) previousFocus.focus();
+      if (!options.mount && previousFocus?.isConnected) previousFocus.focus();
       resolve(value);
     }
+    const cancel = () => close(null);
     function keyboard(event) {
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(null); }
       if (event.key === 'Tab') {
@@ -393,7 +383,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       }
     }
     overlay.addEventListener('change', event => {
-      if (event.target.matches('[data-fp-existing]')) {
+      if (event.target.matches('[data-fp-existing], [data-fp-items]')) {
         q('[data-fp-ack]').checked = false;
         void loadComparison();
       } else if (event.target.matches('[data-fp-layer]')) {
@@ -409,22 +399,45 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     }
     q('.fp-apply').onclick = () => {
       if (q('.fp-apply').disabled) return;
+      if (options.library) {
+        close({preview_id:preview.preview_id, source:'existing', existing_id:selectedEntry().id, acknowledged:true});
+        return;
+      }
       close({preview_id: preview.preview_id, source: source(), existing_id: q('[data-fp-existing]').value,
         target_mode: mode(), target_library: mode() === 'existing' ? q('[data-fp-library]').value : q('[data-fp-new-library]').value.trim(),
         target_folder: q('[data-fp-folder]').value.trim(), name: q('[data-fp-name]').value.trim(),
         acknowledged: q('[data-fp-ack]').checked});
     };
-    document.body.append(overlay);
-    document.addEventListener('keydown', keyboard, true);
+    (options.mount || document.body).append(overlay);
+    if (!options.mount) document.addEventListener('keydown', keyboard, true);
+    options.signal?.addEventListener('abort', cancel, {once:true});
+    if (options.signal?.aborted) { cancel(); return; }
     const original = preview.existing.find(entry => entry.id === preview.default_reference_id)
       || preview.existing.find(entry => originals.has(entry.id));
     if (original) q('[data-fp-existing]').value = original.id;
-    const initialLocal = loadComparison();
+    if (options.library) {
+      q('.fp-baseline').hidden = true;
+      const ack = q('[data-fp-ack]').closest('label');
+      q('.fp-body').append(ack);
+      ack.classList.add('fp-library-ack');
+      ack.lastChild.textContent = '已核对尺寸、焊盘编号和引脚功能';
+      const filter = () => {
+        const library = q('[data-fp-filter-library]').value, text = q('[data-fp-search]').value.trim().toLowerCase();
+        const selected = q('[data-fp-items]').value || preview.default_id;
+        const items = preview.items.filter(e => (!library || e.library === library) && e.id.toLowerCase().includes(text));
+        q('[data-fp-items]').innerHTML = items.map(e => `<option value="${escape(e.id)}">${escape(e.label || e.id)}</option>`).join('');
+        q('[data-fp-items]').value = items.some(e => e.id === selected) ? selected : items[0]?.id || '';
+        q('[data-fp-ack]').checked = false;
+        void loadComparison();
+      };
+      q('[data-fp-search]').oninput = q('[data-fp-filter-library]').onchange = filter;
+      q('.fp-apply').textContent = '应用替换';
+      filter();
+    } else { void loadComparison(); }
     if (options.loadConverted && preview.c_code) {
       void (async () => {
         try {
           const converted = await options.loadConverted();
-          await initialLocal;
           if (closed) return;
           preview = converted;
           localOnly = false;
@@ -444,6 +457,89 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
         }
       })();
     }
+    if (!options.mount) q('[data-fp-close]').focus();
+  });
+};
+
+window.openFootprintManager = function openFootprintManager(options) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'fp-overlay';
+    overlay.innerHTML = `<section class="fp-dialog fp-workflow" role="dialog" aria-modal="true" aria-label="封装管理">
+      <header class="fp-title"><button type="button" data-fp-back title="返回上一页" aria-label="返回上一页" disabled><svg aria-hidden="true"><use href="#toolbar-icon-arrow-left"></use></svg></button><button type="button" data-fp-forward class="fp-forward" title="前进" aria-label="前进" disabled><svg aria-hidden="true"><use href="#toolbar-icon-arrow-left"></use></svg></button><strong>封装管理</strong><button type="button" data-fp-close title="关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
+      <nav class="fp-tabs" role="tablist" aria-label="封装操作"><button type="button" role="tab" data-fp-tab="library">替换库封装</button><button type="button" role="tab" data-fp-tab="convert">替换立创封装</button><button type="button" role="tab" data-fp-tab="rename">库封装改名</button></nav>
+      <div class="fp-pages"></div></section>`;
+    const q = selector => overlay.querySelector(selector), previousFocus = document.activeElement;
+    const controller = new AbortController(), pages = new Map();
+    let closed = false, history = [options.initialMode || 'library'], index = 0;
+    function close(value) {
+      if (closed) return;
+      closed = true;
+      controller.abort();
+      overlay.remove();
+      document.removeEventListener('keydown', keyboard, true);
+      if (previousFocus?.isConnected) previousFocus.focus();
+      resolve(value);
+    }
+    function load(mode, retry = false) {
+      if (pages.has(mode) && !retry) return;
+      const page = pages.get(mode) || document.createElement('div');
+      page.className = 'fp-page';
+      page.dataset.fpPage = mode;
+      page.hidden = history[index] !== mode;
+      pages.set(mode, page);
+      if (!page.isConnected) q('.fp-pages').append(page);
+      page.innerHTML = '<div class="fp-loading" role="status">正在读取封装资料…</div>';
+      void (async () => {
+        try {
+          const preview = await options.load(mode);
+          if (closed) return;
+          if (mode === 'library' && preview.c_code) load('convert');
+          page.replaceChildren();
+          const choice = await (mode === 'convert' ? window.chooseFootprint(preview, {mount:page, signal:controller.signal})
+            : window.chooseLibraryFootprint(preview, {mount:page, signal:controller.signal}));
+          if (!closed) close(choice);
+        } catch (error) {
+          if (closed) return;
+          page.replaceChildren();
+          const status = document.createElement('div');
+          status.className = 'fp-loading fp-load-error'; status.role = 'status'; status.textContent = error.message;
+          const retryButton = document.createElement('button');
+          retryButton.type = 'button'; retryButton.textContent = '重试';
+          retryButton.onclick = () => load(mode, true);
+          status.append(document.createElement('br'), retryButton);
+          page.append(status);
+        }
+      })();
+    }
+    function show(mode, push = true) {
+      if (push && mode !== history[index]) { history = history.slice(0, index + 1); history.push(mode); index++; }
+      overlay.querySelectorAll('[data-fp-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.fpTab === mode)));
+      q('.fp-workflow').classList.toggle('fp-rename-dialog', mode === 'rename');
+      q('.fp-workflow > .fp-title strong').textContent = mode === 'rename' ? '库封装改名' : '封装管理';
+      pages.forEach((page, key) => { page.hidden = key !== mode; });
+      q('[data-fp-back]').disabled = index === 0;
+      q('[data-fp-forward]').disabled = index === history.length - 1;
+      load(mode);
+    }
+    function keyboard(event) {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(null); }
+      if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); q('[data-fp-back]').click(); }
+      if (event.altKey && event.key === 'ArrowRight') { event.preventDefault(); q('[data-fp-forward]').click(); }
+      if (event.key === 'Tab') {
+        const elements = [...overlay.querySelectorAll('button,input,select')].filter(e => !e.disabled && e.getClientRects().length);
+        const first = elements[0], last = elements.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    }
+    q('[data-fp-back]').onclick = () => { if (index > 0) show(history[--index], false); };
+    q('[data-fp-forward]').onclick = () => { if (index < history.length - 1) show(history[++index], false); };
+    q('[data-fp-close]').onclick = () => close(null);
+    overlay.querySelectorAll('[data-fp-tab]').forEach(button => { button.onclick = () => show(button.dataset.fpTab); });
+    document.body.append(overlay);
+    document.addEventListener('keydown', keyboard, true);
+    show(history[0], false);
     q('[data-fp-close]').focus();
   });
 };
@@ -460,15 +556,24 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
     return data;
   };
   try {
-    await flushRowEdits();
-    const current = [...rowsEl.querySelectorAll('tr[data-refs]')].find(row => row.dataset.refs === anchor.refs);
-    if (!current || expectedBom !== loadedRowsBom) throw new Error('行分组或数据源已变化，请重新打开封装管理');
-    const initial = await request('/api/row_footprint', {refs:current.dataset.refs, bom:expectedBom, mode:'library'});
-    const parent = initial.preview.preview_id;
-    const converted = async () => {
+    let closed = false;
+    let initial = null;
+    const loadInitial = () => initial ||= (async () => {
+      await flushRowEdits();
+      if (closed) throw new Error('封装窗口已关闭');
+      const current = [...rowsEl.querySelectorAll('tr[data-refs]')].find(row => row.dataset.refs === anchor.refs);
+      if (!current || expectedBom !== loadedRowsBom) throw new Error('行分组或数据源已变化，请重新打开封装管理');
+      return request('/api/row_footprint', {refs:current.dataset.refs, bom:expectedBom, mode:'library'});
+    })().catch(error => { initial = null; throw error; });
+    const load = async mode => {
+      const first = await loadInitial(), parent = first.preview.preview_id;
+      if (closed) throw new Error('封装窗口已关闭');
+      if (mode === 'library') return first.preview;
+      if (mode === 'rename') return (await request('/api/row_footprint', {parent_preview:parent, mode:'rename'})).preview;
       let data = await request('/api/start_row_footprint', {parent_preview:parent, mode:'convert'});
       const id = data.job_id;
       while (!data.done) {
+        if (closed) throw new Error('封装窗口已关闭');
         await new Promise(resolve => setTimeout(resolve, 300));
         const response = await fetch('/api/selection_job?id=' + encodeURIComponent(id));
         data = await response.json();
@@ -476,11 +581,8 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
       }
       return data.result.preview;
     };
-    let choice = await window.chooseFootprint(initial.preview, {manage:true, loadConverted:converted});
-    if (choice?.operation) {
-      const data = await request('/api/row_footprint', {parent_preview:parent, mode:choice.operation});
-      choice = await window.chooseLibraryFootprint(data.preview);
-    }
+    let choice;
+    try { choice = await window.openFootprintManager({load}); } finally { closed = true; }
     if (!choice) return;
     saving = true;
     while (choice) {

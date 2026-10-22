@@ -91,7 +91,7 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 可通过 Playwright CDP 操作实际 WebView2 工作台，通过 KiCad IPC 触发更新和保存；原生更新确认不由该脚本替代。校验会拒绝未真正更换封装的 PCB，检查 PCB 库标识与原理图一致、器件原点/角度/正反面/UUID 路径不变、逐编号焊盘世界坐标偏差不超过 5 nm、网络及所有原有走线不变。工程管理器启动使用外部隔离配置和独立 IPC，保留用户全局设置。验证完成先正常关闭所属工作台和测试 KiCad 窗口，再在保留的进程输入 `finish` 清理；不要对生产编辑器发退出命令。只有两阶段均实际更新并通过校验，才可描述为端到端通过。
 
-`python -B tests/run_footprint_overlay_smoke.py` 使用合成比较接口，在真实 Chromium 中检查预览图层、叠加/并排切换、缓存和过期响应、关闭清理及 1440/390 像素布局，截图在工程外运行缓存。Node.js 需能解析 Playwright，可用 `NODE_PATH` 指向已安装依赖。完整 pytest 在依赖缺失时明确跳过对应浏览器检查；显式冒烟缺少依赖会失败。`test_footprint_geometry.py` 与 `test_footprint_alignment_integration.py` 自动寻找 KiCad CLI 相邻或 Windows KiCad 安装目录的 Python，存在时执行真实 pcbnew 变换和渲染，不存在时明确跳过。集成测试仅模拟联网转换输入，使用真实几何配准/库发布/Chromium SVG 像素校验；不声明真实联网转换或生产 PCB 更新已验证。
+`python -B tests/run_footprint_overlay_smoke.py` 使用合成比较接口，在真实 Chromium 中检查预览图层、叠加/并排切换、缓存和过期响应、关闭清理及 1440/390 像素布局，截图在工程外运行缓存。`navigation` 场景还覆盖资料未返回时先显示窗口、同窗前进后退、搜索和改名保持、转换失败不阻塞改名、关闭后迟到响应不复活、读取失败重试。`test_footprint_choices.py` 覆盖库对比按原坐标渲染、双源缓存及源文件变更校验。Node.js 需能解析 Playwright，可用 `NODE_PATH` 指向已安装依赖。完整 pytest 在依赖缺失时明确跳过对应浏览器检查；显式冒烟缺少依赖会失败。`test_footprint_geometry.py` 与 `test_footprint_alignment_integration.py` 自动寻找 KiCad CLI 相邻或 Windows KiCad 安装目录的 Python，存在时执行真实 pcbnew 变换和渲染，不存在时明确跳过。集成测试仅模拟联网转换输入，使用真实几何配准/库发布/Chromium SVG 像素校验；不声明真实联网转换或生产 PCB 更新已验证。
 
 `python -B tests/run_plugin_updates_smoke.py` 用真实 Chromium 驱动实际更新面板脚本，原生桥接为合成模拟：检查模式保存失败回退、已校验包不重复下载、独立下载后稍后重启、下载失败/重试、忙碌时关闭重开、源码模式不误报最新、自动下载不强制退出、未保存工程设置阻止重启、更新内容不执行 HTML。无后端、GitHub 请求或安装操作，不调用真实 KiCad；可设置工程外绝对目录 `PLUGIN_UPDATE_SCREENSHOTS` 留存桌面/390 像素宽截图。运行环境同其他 Node Playwright 脚本。
 
@@ -118,5 +118,7 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 `test_value_parameters.py` 回归阻容感参数选择、单位标签、缺失/冲突、同类替换和特殊限制保留；`test_part_selection_specs.py` 包含电阻 ppm 温漂尾缀的保守解析。`python -B tests/run_value_parameters_smoke.py` 用真实 Chromium 和自动清理的合成工程测试箭头、勾选预览、取消/应用、自动保存及重开、过期拒绝、确认状态和 C 编码保留，以及 1440/768/390 像素布局。截图在工程外缓存；不访问商城、不同步或修改生产 CAD，不代表真实 KiCad 更新验证。
 
 `test_candidate_native_window.py` 回归独立候选窗口的复用、地址/参数限制、桥接最小权限、保存忙碌拒绝退出、退出失败恢复和双窗清理。`python -B tests/run_candidate_window_smoke.py` 用 Chromium/合成商城响应验证候选独立页、父页桥接、收起后搜索筛选保持、不重复查询、保存回传、失败恢复、空白点击及拖选越界。可用工程外绝对路径 `CANDIDATE_WINDOW_SCREENSHOT` 保存截图。
+
+封装管理的 `pane-radios` 与 `rename-retry` 浏览器回归分别检查缓存页单选组隔离、原封装资料失败后的就地重试且保留改名草稿。`run_inventory_footprint_smoke.py` 在一次性工程通过真实 KiCad 渲染核验改名、现有库选用、转换封装三条独立保存路径；上游转换输入为合成夹具，不将它表述为联网或 PCB 更新验证。
 
 `run_desktop_lifecycle_smoke.py` 还验证真实 WebView2 独立窗口移到父窗外、收起恢复、主料保存后刷新父页、忙碌拒绝关闭和退出销毁。`--only-candidate` 可只运行此阶段；商城响应在子页模拟、正式保存仅写一次性工程，不打开真实商城或修改生产 CAD。这验证原生窗口程序移动，不等同于人工跨屏拖动或真实 KiCad 按钮测试。
