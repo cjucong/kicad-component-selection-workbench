@@ -74,6 +74,20 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 
 ## 真实冒烟
 
+`run_native_footprint_workflow.py` 为真实工作台和 KiCad 更新流程创建可清理的双器件工程：联网调用已安装转换器，给原封装加入非零局部原点和 90 度旋转，PCB 包含正面 37 度电阻、背面 90 度芯片及各焊盘走线。只用于 Windows、KiCad 10 和已安装插件；报告目录必须在仓库和正式工程外。它不是自动通过的 pytest，也不模拟 KiCad 的更新操作。
+
+```powershell
+python -B tests/run_native_footprint_workflow.py --report-dir C:/external/footprint-workflow
+# 保留该进程。另一个终端启动同一临时工程的工程管理器及编辑器：
+python -B tests/run_native_footprint_workflow.py --launch-session C:/external/footprint-workflow/session.json
+# 在真实工作台中选择“仅改名”，同步原理图，再用 KiCad“从原理图更新 PCB”并保存。
+python -B tests/run_native_footprint_workflow.py --verify-session C:/external/footprint-workflow/session.json --stage rename
+# 再实际选择“替换立创封装”，同步、更新并保存 PCB 后：
+python -B tests/run_native_footprint_workflow.py --verify-session C:/external/footprint-workflow/session.json --stage converted
+```
+
+可通过 Playwright CDP 操作实际 WebView2 工作台，通过 KiCad IPC 触发更新和保存；原生更新确认不由该脚本替代。校验会拒绝未真正更换封装的 PCB，检查 PCB 库标识与原理图一致、器件原点/角度/正反面/UUID 路径不变、逐编号焊盘世界坐标偏差不超过 5 nm、网络及所有原有走线不变。工程管理器启动使用外部隔离配置和独立 IPC，保留用户全局设置。验证完成先正常关闭所属工作台和测试 KiCad 窗口，再在保留的进程输入 `finish` 清理；不要对生产编辑器发退出命令。只有两阶段均实际更新并通过校验，才可描述为端到端通过。
+
 `python -B tests/run_footprint_overlay_smoke.py` 使用合成比较接口，在真实 Chromium 中检查预览图层、叠加/并排切换、缓存和过期响应、关闭清理及 1440/390 像素布局，截图在工程外运行缓存。Node.js 需能解析 Playwright，可用 `NODE_PATH` 指向已安装依赖。完整 pytest 在依赖缺失时明确跳过对应浏览器检查；显式冒烟缺少依赖会失败。`test_footprint_geometry.py` 与 `test_footprint_alignment_integration.py` 自动寻找 KiCad CLI 相邻或 Windows KiCad 安装目录的 Python，存在时执行真实 pcbnew 变换和渲染，不存在时明确跳过。集成测试仅模拟联网转换输入，使用真实几何配准/库发布/Chromium SVG 像素校验；不声明真实联网转换或生产 PCB 更新已验证。
 
 `python -B tests/run_plugin_updates_smoke.py` 用真实 Chromium 驱动实际更新面板脚本，原生桥接为合成模拟：检查模式保存失败回退、已校验包不重复下载、独立下载后稍后重启、下载失败/重试、忙碌时关闭重开、源码模式不误报最新、自动下载不强制退出、未保存工程设置阻止重启、更新内容不执行 HTML。无后端、GitHub 请求或安装操作，不调用真实 KiCad；可设置工程外绝对目录 `PLUGIN_UPDATE_SCREENSHOTS` 留存桌面/390 像素宽截图。运行环境同其他 Node Playwright 脚本。
