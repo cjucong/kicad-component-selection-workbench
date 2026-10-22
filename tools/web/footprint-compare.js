@@ -147,7 +147,6 @@ window.chooseFootprint = function chooseFootprint(preview) {
           <aside class="fp-layer-panel" aria-label="比较图层"><div data-fp-layer-controls></div></aside>
         </div>
         <div class="fp-alignment" data-fp-alignment role="status"></div>
-        <div class="fp-compare-metrics"><div><strong class="fp-local-color">本地</strong><span data-fp-old-metrics></span></div><div><strong class="fp-converted-color">转换</strong><span data-fp-new-metrics></span></div></div>
       </div>
       <div class="fp-sources" role="group" aria-label="采用的封装">
         <label><input type="radio" name="fp-source" value="existing">复用现有封装</label>
@@ -165,7 +164,7 @@ window.chooseFootprint = function chooseFootprint(preview) {
           <label data-fp-folder-label hidden>工程内目录<input type="text" data-fp-folder value="Libraries/DSMU"></label>
         </div><p class="fp-final" data-fp-final></p>
         ${preview.warning ? `<p class="fp-note">${escape(preview.warning)}</p>` : ''}
-        <label class="fp-ack"><input type="checkbox" data-fp-ack>已核对尺寸、编号与引脚功能，并保存关闭库编辑器</label>
+        <label class="fp-ack"><input type="checkbox" data-fp-ack>已核对焊盘差异与引脚功能，并保存关闭库编辑器</label>
       </div></div>
       <footer class="fp-footer"><span class="fp-error" role="status"></span><button type="button" data-fp-cancel>取消</button><button type="button" class="fp-apply" disabled>确认选择</button></footer>
     </section>`;
@@ -176,14 +175,8 @@ window.chooseFootprint = function chooseFootprint(preview) {
     const selectedEntry = () => preview.existing.find(e => e.id === q('[data-fp-existing]').value);
     const source = () => q('[name=fp-source]:checked').value;
     const mode = () => q('[name=fp-mode]:checked').value;
-    function metrics(info) {
-      info = info || {};
-      return `<span>焊盘 ${escape(info.pads ?? '—')} 个</span><span>单焊盘 ${escape(info.pad_size || '—')}</span><span>编号 ${escape((info.numbers || []).join(', ') || '—')}</span><span>焊盘包络 ${escape(info.pad_envelope || '—')}</span>`;
-    }
-    q('[data-fp-new-metrics]').innerHTML = metrics(preview.converted_info);
     function refresh() {
       const entry = selectedEntry(), original = !!entry && originals.has(entry.id);
-      q('[data-fp-old-metrics]').innerHTML = metrics(entry);
       q('[name=fp-source][value=existing]').disabled = !entry;
       q('[name=fp-source][value=rename]').disabled = !original;
       q('[name=fp-source][value=converted]').disabled = !original;
@@ -263,8 +256,9 @@ window.chooseFootprint = function chooseFootprint(preview) {
       const format = (number, digits = 3) => Number.isFinite(number) ? String(Number(number.toFixed(digits))) : '—';
       q('[data-fp-alignment]').dataset.ok = String(alignment.ok === true);
       q('[data-fp-alignment]').textContent = alignment.ok === true
-        ? `已配准 · 旋转 ${format(alignment.rotation_deg)}° · 偏移 ${(alignment.offset_mm || []).map(n => format(n)).join(', ')} mm · 最大误差 ${format(alignment.max_error_mm, 4)} mm`
-        : '配准失败：' + (alignment.reason || '未返回有效配准结果');
+        ? `中心已对齐 · 校正 ${format(alignment.rotation_deg)}° · 焊盘中心最大偏差 ${format(alignment.max_error_mm, 4)} mm${alignment.requires_review ? ' · 间距有差异，请核对' : ''}`
+        : '无法对齐，请检查焊盘编号与原封装';
+      q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);
       q('.fp-scene').hidden = false;
       q('[data-fp-canvas-status]').hidden = true;
       updateDisplay();

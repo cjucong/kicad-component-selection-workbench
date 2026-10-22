@@ -332,7 +332,7 @@ class FootprintChoices:
             folder = checked_path(state['work'], state['work'] / ('v' + str(index)))
             folder.mkdir()
             output = checked_path(state['work'], state['work'] / ('a' + str(index) + '.kicad_mod'))
-            result = align_module(state['module'], entry['path'], output)
+            result = align_module(state['module'], entry['path'], output, method='center')
             cache[identifier] = {'alignment': result, 'path': output if result.get('ok') else None,
                                  'hash': digest(output) if result.get('ok') else None, 'work': folder}
         return cache[identifier], entry
@@ -352,7 +352,8 @@ class FootprintChoices:
                     raise ValueError('封装预览失败：' + str(rendered.get('reason') or 'KiCad 原生渲染不可用'))
                 aligned['comparison'] = rendered
             self._verify(state)
-            return deepcopy({**aligned['comparison'], 'reference_id': identifier, 'alignment': aligned['alignment']})
+            return deepcopy({**aligned['comparison'], 'reference_id': identifier,
+                             'alignment': aligned['alignment']})
 
     def bind(self, preview_id, context):
         with IMPORT_LOCK:

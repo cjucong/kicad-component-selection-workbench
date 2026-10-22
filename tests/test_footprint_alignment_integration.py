@@ -27,7 +27,7 @@ def module(name, points, width):
 
 
 @pytest.fixture
-def native_preview(scratch_project, monkeypatch):
+def native_preview(scratch_project, monkeypatch, request):
     if _find_kicad_python() is None:
         pytest.skip('Bundled KiCad Python is required for native integration')
     root = Path(scratch_project)
@@ -48,7 +48,9 @@ def native_preview(scratch_project, monkeypatch):
         folder = service.staging_root/'Libraries/DSMU/LCSC'/code
         converted = folder/f'LCSC_{code}.pretty/Converted.kicad_mod'
         converted.parent.mkdir(parents=True)
-        converted.write_text(module('Converted', points, 0.8), encoding='utf-8')
+        shift = getattr(request, 'param', 0)
+        converted_points = [(n,x+(shift if n=='3' else 0),y) for n,x,y in points]
+        converted.write_text(module('Converted', converted_points, 0.8), encoding='utf-8')
         (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (version 20241209) '
             f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))', encoding='utf-8')
         return {'footprint': f'LCSC_{code}:Converted', 'symbol': f'LCSC_{code}:Part', 'c_code': code}
@@ -78,6 +80,26 @@ def test_native_preview_and_published_geometry_match_original_pad_coordinates(na
     for path, source in before.items():
         if path.name != 'fp-lib-table':
             assert path.read_bytes() == source, f'Existing design file changed: {path.name}'
+
+
+@pytest.mark.parametrize('native_preview', [.2], indirect=True)
+def test_centered_pitch_difference_can_be_reviewed_and_published_without_changing_design(native_preview):
+    root, service, preview, detail, original, before = native_preview
+    alignment = detail['alignment']
+    assert alignment['ok'] and alignment['method'] == 'center' and alignment['requires_review']
+    assert alignment['max_error_mm'] > .025
+    assert service.comparison(preview['preview_id'], 'Local:Original') == detail
+    result = service.commit({'preview_id': preview['preview_id'], 'source': 'converted',
+        'existing_id': 'Local:Original', 'target_mode': 'existing', 'target_library': 'Local',
+        'name': 'Centered', 'acknowledged': True})
+    published = root/result['target_path']/'Centered.kicad_mod'
+    check = estimate_alignment(published.read_text(encoding='utf-8'),
+                               original.read_text(encoding='utf-8'), method='center')
+    assert check['ok'] and check['offset_mm'] == pytest.approx([0,0],abs=3e-6)
+    assert check['rotation_deg'] == pytest.approx(0,abs=1e-4)
+    for path, source in before.items():
+        if path.name != 'fp-lib-table':
+            assert path.read_bytes() == source
 
 
 NATIVE_BROWSER = r'''

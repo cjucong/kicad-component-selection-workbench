@@ -99,6 +99,35 @@ def test_small_rounding_residual_is_allowed(geometry):
     assert geometry.estimate_alignment(footprint(), footprint(points))['ok']
 
 
+def test_center_alignment_accepts_pitch_and_shape_differences(geometry):
+    original = [('1', 0, 0), ('2', .635, 0), ('3', .635, -5.334), ('4', 0, -5.334)]
+    converted = [('1', -1.99, 2.69), ('2', -1.35, 2.69),
+                 ('3', -1.35, -2.75), ('4', -1.99, -2.75)]
+    source = footprint(converted).replace('smd rect', 'smd circle').replace('0.8 0.5', '0.8 0.8')
+    result = geometry.estimate_alignment(source, footprint(original), method='center')
+    assert result['ok'] and result['method'] == 'center'
+    assert result['requires_review'] and result['max_error_mm'] > .025
+    assert result['rotation_deg'] == pytest.approx(0)
+    assert result['offset_mm'] == pytest.approx([1.9875, -2.637])
+    assert result['reference_center_mm'] == pytest.approx([.3175, -2.667])
+
+
+def test_center_uses_envelope_not_pad_count_weighted_centroid(geometry):
+    source = footprint([('1', 0, 0), ('2', 1, 0), ('3', 10, 4)])
+    target = footprint([('1', 5, -2), ('2', 7, -2), ('3', 15, 2)])
+    result = geometry.estimate_alignment(source, target, method='center')
+    assert result['ok']
+    angle = math.radians(result['rotation_deg'])
+    rotated = [(math.cos(angle)*x+math.sin(angle)*y,
+                -math.sin(angle)*x+math.cos(angle)*y) for _, x, y in [('1', 0, 0), ('2', 1, 0), ('3', 10, 4)]]
+    center = [(min(p[i] for p in rotated)+max(p[i] for p in rotated))/2 for i in (0, 1)]
+    assert [center[i]+result['offset_mm'][i] for i in (0, 1)] == pytest.approx([10, 0])
+
+
+def test_center_alignment_still_refuses_ambiguous_numbering(geometry):
+    assert not geometry.estimate_alignment(footprint(), footprint([('A', 0, 0)]), method='center')['ok']
+
+
 @pytest.mark.parametrize('bad', ['not a module', '(footprint "x"', footprint([('1', 'nan', 0), ('2', 1, 0)])])
 def test_invalid_or_nonfinite_source_is_refused(geometry, bad):
     result = geometry.estimate_alignment(bad, footprint())
@@ -126,6 +155,19 @@ def test_failed_alignment_does_not_create_output(geometry, workspace):
     reference.write_text(footprint([('1',0,0)]), encoding='utf-8')
     assert not geometry.align_module(converted, reference, output)['ok']
     assert not output.exists()
+
+
+def test_center_alignment_writes_reviewable_geometry(geometry, workspace, monkeypatch):
+    converted, reference, output = [workspace / n for n in ['in.kicad_mod', 'ref.kicad_mod', 'preview.kicad_mod']]
+    converted.write_text(footprint(), encoding='utf-8')
+    reference.write_text(footprint([('1', 0, 0), ('2', 2.06, 0), ('3', 1, 2)]), encoding='utf-8')
+
+    def worker(payload):
+        Path(payload['output']).write_bytes(converted.read_bytes())
+
+    monkeypatch.setattr(geometry, '_run_worker', worker)
+    result = geometry.align_module(converted, reference, output, method='center')
+    assert result['ok'] and result['requires_review'] and output.exists()
 
 
 def test_alignment_never_overwrites_input(geometry, workspace):
@@ -181,6 +223,45 @@ def native(code, *arguments):
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)
+
+
+@pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')
+def test_native_center_alignment_keeps_placement_and_center_with_different_pad_shapes(geometry, workspace):
+    converted, reference, output = [workspace / n for n in ['new.kicad_mod','old.kicad_mod','aligned.kicad_mod']]
+    old = [('1', 0, 0), ('2', .635, 0), ('3', .635, -5.334), ('4', 0, -5.334)]
+    new = [('1', -1.99, 2.69), ('2', -1.35, 2.69), ('3', -1.35, -2.75), ('4', -1.99, -2.75)]
+    reference.write_text(footprint(old), encoding='utf-8')
+    converted.write_text(footprint(new).replace('smd rect', 'smd circle')
+                         .replace('0.8 0.5', '0.8 0.8'), encoding='utf-8')
+    before = reference.read_bytes(), converted.read_bytes()
+    result = geometry.align_module(converted, reference, output, method='center')
+    assert result['ok'] and result['requires_review'], result
+    check = native('''import pcbnew,json,sys
+def load(path):
+    return pcbnew.PCB_IO_KICAD_SEXPR().Parse(open(path,encoding='utf-8').read()).Cast()
+def xy(v): return [pcbnew.ToMM(v.x),pcbnew.ToMM(v.y)]
+checks=[]
+for angle in [0,90,37,-90]:
+    board=pcbnew.BOARD()
+    a,b=load(sys.argv[1]),load(sys.argv[2])
+    for f in (a,b):
+        board.Add(f)
+        f.SetOrientationDegrees(angle)
+        f.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(90.5),pcbnew.FromMM(96.735)))
+    def center(f):
+        points=[xy(p.GetPosition()) for p in f.Pads()]
+        return [(min(p[i] for p in points)+max(p[i] for p in points))/2 for i in (0,1)]
+    checks.append({'positions':[xy(f.GetPosition()) for f in (a,b)],
+        'angles':[f.GetOrientationDegrees() for f in (a,b)],
+        'centers':[center(f) for f in (a,b)],
+        'shapes':[int(next(iter(f.Pads())).GetShape()) for f in (a,b)]})
+print(json.dumps(checks))''', reference, output)
+    for row in check:
+        assert row['positions'][0] == row['positions'][1] == pytest.approx([90.5,96.735])
+        assert row['angles'][0] == row['angles'][1]
+        assert row['centers'][0] == pytest.approx(row['centers'][1], abs=2e-6)
+        assert row['shapes'][0] != row['shapes'][1]
+    assert (reference.read_bytes(), converted.read_bytes()) == before
 
 
 @pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')

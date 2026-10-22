@@ -64,14 +64,18 @@ def _failure(reason):
             'max_error_mm': None, 'reason': str(reason)}
 
 
-def estimate_alignment(converted_source: str, reference_source: str) -> dict:
+def estimate_alignment(converted_source: str, reference_source: str, *, method='rigid') -> dict:
     """Least-squares proper rigid transform from identical, unique pad numbers.
 
     No scaling, reflection, outline matching, or pad renumbering is allowed.
-    An accepted transform has a maximum numbered-pad residual <= 0.025 mm.
+    Rigid mode requires a maximum numbered-pad residual <= 0.025 mm.
+    Center mode aligns the bounds of numbered-pad centers after orienting
+    by matching numbers, and reports residuals for explicit human review.
     Empty-number mechanical pads are not alignment correspondences.
     """
     try:
+        if method not in ('rigid', 'center'):
+            return _failure('Unknown alignment method')
         converted = _pad_positions(_parse_module(converted_source))
         reference = _pad_positions(_parse_module(reference_source))
         if set(converted) != set(reference):
@@ -90,16 +94,30 @@ def estimate_alignment(converted_source: str, reference_source: str) -> dict:
             return _failure('Coincident correspondence points do not determine direction')
         dot = math.fsum(x*u+y*v for (x,y),(u,v) in zip(p,q))
         cross = math.fsum(y*u-x*v for (x,y),(u,v) in zip(p,q))
+        if math.hypot(dot, cross) < 1e-12:
+            return _failure('Pad correspondences do not determine a rotation')
         angle = math.atan2(cross, dot)
         c, s = math.cos(angle), math.sin(angle)
         dx, dy = rx-c*cx-s*cy, ry+s*cx-c*cy
+        rotated = [(c*x+s*y, -s*x+c*y) for x,y in points]
+        def center(values):
+            return [(min(v[i] for v in values)+max(v[i] for v in values))/2 for i in (0,1)]
+        target_center = center(targets)
+        if method == 'center':
+            converted_center = center(rotated)
+            dx,dy = (target_center[i]-converted_center[i] for i in (0,1))
         error = max(math.hypot(c*x+s*y+dx-u, -s*x+c*y+dy-v)
                     for (x,y),(u,v) in zip(points,targets))
-        accepted = error <= _TOLERANCE + 1e-12
+        matches = error <= _TOLERANCE + 1e-12
+        accepted = matches or method == 'center'
         return {'ok': accepted, 'rotation_deg': math.degrees(angle),
                 'offset_mm': [dx,dy], 'max_error_mm': error,
-                'reason': 'Numbered pads admit a rigid rotation and translation' if accepted else
-                'Mirror, different pitch, or non-rigid geometry exceeds the 0.025 mm residual limit'}
+                'method': method, 'requires_review': not matches,
+                'reference_center_mm': target_center,
+                'reason': ('Numbered-pad envelope centers aligned; inspect pitch and geometry differences'
+                           if method == 'center' else
+                           'Numbered pads admit a rigid rotation and translation' if matches else
+                           'Numbered pads do not overlap within the allowed tolerance; pitch or geometry differs')}
     except (ValueError, TypeError, OverflowError, RecursionError) as exc:
         return _failure(f'Invalid footprint geometry: {exc}')
 
@@ -162,7 +180,7 @@ def _outside_project(path):
             raise ValueError('Geometry work/output must be outside a KiCad project')
 
 
-def align_module(converted: Path, reference: Path, output: Path) -> dict:
+def align_module(converted: Path, reference: Path, output: Path, *, method='rigid') -> dict:
     """Write a staging library module using pcbnew, or copy identity bytes.
 
     Inputs are never overwritten. Nonidentity inputs are conservatively
@@ -179,7 +197,7 @@ def align_module(converted: Path, reference: Path, output: Path) -> dict:
         target = reference.read_text(encoding='utf-8-sig')
         _validate_supported(source, allow_models=True)
         _validate_supported(target, allow_models=True)
-        result = estimate_alignment(source,target)
+        result = estimate_alignment(source,target,method=method)
         if not result['ok']:
             return result
         identity = abs(result['rotation_deg']) < 1e-9 and max(map(abs,result['offset_mm'])) < 1e-9

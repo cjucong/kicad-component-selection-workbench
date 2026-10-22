@@ -102,7 +102,7 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   }
   if(check==='all'||check==='rename') {
    await page.evaluate(()=>{bad=true;preview.compatible=false;openComparison();});
-   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.textContent.includes('焊盘编号无法配准'));
+   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.textContent.includes('无法对齐'));
    await page.locator('[data-fp-ack]').check();
    assert.equal(await page.locator('.fp-apply').isEnabled(),false);
    await page.locator('[name="fp-source"][value="rename"]').check();

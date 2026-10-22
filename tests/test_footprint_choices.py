@@ -302,7 +302,8 @@ class FootprintChoicesTest(unittest.TestCase):
         from unittest.mock import Mock
         preview = self.prepare()
         alignment = {'ok': True, 'rotation_deg': 90, 'offset_mm': [1, 2], 'max_error_mm': 0}
-        def align(converted, reference, output):
+        def align(converted, reference, output, *, method):
+            self.assertEqual(method, 'center')
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(module('Aligned', width=.9))
             return alignment
@@ -321,7 +322,7 @@ class FootprintChoicesTest(unittest.TestCase):
     def test_failed_alignment_blocks_conversion_not_rename(self):
         from types import SimpleNamespace
         preview = self.prepare()
-        native = SimpleNamespace(align_module=lambda *args: {'ok': False, 'reason': 'ambiguous pad positions'})
+        native = SimpleNamespace(align_module=lambda *args, **kwargs: {'ok': False, 'reason': 'ambiguous pad positions'})
         with patch.dict(sys.modules, {'part_selection_footprint_geometry': native}):
             with self.assertRaisesRegex(ValueError, 'ambiguous'):
                 self.service.commit(self.choice(preview))
@@ -331,7 +332,7 @@ class FootprintChoicesTest(unittest.TestCase):
     def test_aligned_staging_tamper_is_rejected_before_publishing(self):
         from types import SimpleNamespace
         preview = self.prepare()
-        def align(converted, reference, output):
+        def align(converted, reference, output, *, method):
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(module('Aligned'))
             return {'ok': True, 'rotation_deg': 0, 'offset_mm': [0, 0], 'max_error_mm': 0}
