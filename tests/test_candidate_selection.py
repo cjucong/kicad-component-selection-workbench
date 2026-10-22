@@ -443,7 +443,7 @@ class CandidateSelectionTest(unittest.TestCase):
         html = render_index(self.app)
         function = re.search(r"async function chooseCandidate\(code\) \{.*?\n\}", html, re.S).group()
         functions = "\n".join(re.search(rf"function {name}\(.*?\n\}}", html, re.S).group()
-                              for name in ("stockWithSavedDescription", "stockParamText", "initialStock", "schematicDescription"))
+                              for name in ("stockWithSavedDescription", "stockParamText", "initialStock", "schematicDescription", "candidateParameterKey"))
         js = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
@@ -455,6 +455,7 @@ const ctx = {
   candidateTargetRow: {dataset:{ref:'R85',refs:'R85,R86'}},
   candidateSearchController: {abort:()=>calls.push('abort')},
   candidateSearchToken: 0,
+  candidateParameterRequests: new Map(),
   candidateSearchProgress: {textContent:''},
   candidateRows: {querySelectorAll:()=>[button]},
   stockCode: row=>row.stock_c_code,

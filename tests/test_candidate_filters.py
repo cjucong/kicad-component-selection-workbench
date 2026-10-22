@@ -217,14 +217,14 @@ assert.ok(candidateRows.innerHTML.includes('A; B: C'));
         self.run_js(r'''
 for (const item of [{category:'贴片电阻',model:'synthetic'}, {category:'Chip Resistors - Surface Mount'}]) {
   renderCandidateRows([item]);
-  assert.match(candidateRows.innerHTML, /温度系数<\/span><span[^>]*>未提供/);
-  assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>未提供/);
+  assert.match(candidateRows.innerHTML, /温度系数<\/span><span[^>]*>详情尚未读取/);
+  assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>详情尚未读取/);
   assert.ok(!candidateRows.innerHTML.includes('直流电阻(DCR)'));
 }
 targetRow = {kind:'inductor',refs:'U1'};
 renderCandidateRows([{param_detail:'感值: 10uH'}]);
-assert.match(candidateRows.innerHTML, /直流电阻\(DCR\)<\/span><span[^>]*>未提供/);
-assert.match(candidateRows.innerHTML, /电感类型<\/span><span[^>]*>未提供/);
+assert.match(candidateRows.innerHTML, /直流电阻\(DCR\)<\/span><span[^>]*>详情尚未读取/);
+assert.match(candidateRows.innerHTML, /电感类型<\/span><span[^>]*>详情尚未读取/);
 targetRow = {refs:'U1'};
 renderCandidateRows([{category:'Microcontrollers',param_detail:'频率: 48MHz'}]);
 assert.ok(!candidateRows.innerHTML.includes('未提供'));
@@ -242,7 +242,7 @@ for (const entry of entries) assert.ok(!candidateEntryFields(entry).has('param:�
 assert.ok(!buildCandidateFacets(entries,new Map(),false).has('param:工作电压'));
 assert.equal(filterCandidateEntries(entries,new Map([['param:工作电压',new Set(['未提供'])]]),false).length,0);
 renderCandidateRows([{category:'Resistors',param_detail:'Working Voltage: N/A'}]);
-assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>未提供/);
+assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>详情尚未读取/);
 ''')
 
     def test_inductor_aliases_preserve_units_and_type_without_guessing(self):
@@ -279,7 +279,7 @@ const html = renderCandidatePartnerRows([item]);
 assert.ok(!html.includes('75V'));
 assert.ok(!html.includes('100ppm'));
 assert.ok(html.includes('100V'));
-assert.match(html, /温度系数<\/span><span[^>]*>未提供/);
+assert.match(html, /温度系数<\/span><span[^>]*>渠道未返回/);
 ''')
 
     def test_category_scoped_type_alias_and_dcr_unit_labels(self):
@@ -306,7 +306,7 @@ assert.match(candidateRows.innerHTML, /电感类型<\/span><span[^>]*>Wirewound/
         ], "productKeyAttributes": "Working Voltage: 75V"})
         self.run_js("const item = " + json.dumps(item) + r''';
 renderCandidateRows([item]);
-assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>未提供/);
+assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>详情尚未读取/);
 assert.ok(candidateRows.innerHTML.includes('&lt;safe&gt;; Alpha: Beta'));
 assert.ok(!candidateRows.innerHTML.includes('75V'));
 assert.ok(!candidateEntryFields({item}).has('param:工作电压'));
@@ -337,9 +337,20 @@ assert.ok(!candidateRows.innerHTML.includes('未提供'));
         self.run_js("const item = " + json.dumps(item) + r''';
 const before = JSON.stringify(item);
 renderCandidateRows([item]);
-assert.ok(candidateRows.innerHTML.includes('未提供'));
+assert.ok(candidateRows.innerHTML.includes('详情尚未读取'));
 assert.equal(JSON.stringify(item), before);
 assert.equal(candidateEntryFields({item}).size, 0);
+''')
+
+
+    def test_detail_statuses_distinguish_unread_failure_and_authoritative_absence(self):
+        self.run_js(r'''
+for (const [status,label] of [['pending','正在补取详情'],['failed','详情读取失败'],['ready','详情页未列出']]) {
+  renderCandidateRows([{c_code:'C101',category:'贴片电阻',model:'SYNTHETIC',detail_parameter_status:status}]);
+  assert.ok(candidateRows.innerHTML.includes(label));
+  assert.ok(candidateRows.innerHTML.includes('参数来源'));
+  assert.ok(!candidateRows.innerHTML.includes('未提供'));
+}
 ''')
 
 

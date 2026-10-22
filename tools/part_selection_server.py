@@ -85,6 +85,7 @@ from part_stock_lookup import (
     search_lcsc_candidates,
     stock_cache_lock,
     stock_to_candidate_item,
+    preserve_candidate_parameters,
 )
 EDITABLE_FIELDS = ("comment", "value", "footprint")
 SCHEMATIC_SYNC_FIELDS = (
@@ -505,6 +506,10 @@ def cache_candidate_stock(cache_path: Path, candidate: object) -> None:
             "package",
             "param",
             "param_detail",
+            "parameters",
+            "product_id",
+            "detail_parameter_status",
+            "detail_url",
             "stock",
             "moq",
             "mpq",
@@ -530,7 +535,7 @@ def cache_candidate_stock(cache_path: Path, candidate: object) -> None:
     )
     with stock_cache_lock(cache_path):
         cache = load_stock_cache(cache_path)
-        cache[c_code] = cached
+        cache[c_code] = preserve_candidate_parameters(cached, cache.get(c_code))
         save_stock_cache(cache_path, cache)
 
 
@@ -1822,21 +1827,36 @@ class PartSelectionApp:
         return {"items": [stock_to_candidate_item(keyword, cached)],
                 "checked_at": cached.get("fetched_at", ""), "mode": "cached-exact-stale"}
 
+    def candidate_parameters(self, payload: dict[str, object]) -> dict[str, object]:
+        code = str(payload.get("c_code") or "").strip().upper()
+        product_id = str(payload.get("product_id") or "").strip()
+        model = str(payload.get("model") or "").strip()
+        if not re.fullmatch(r"C\d+", code) or (product_id and not re.fullmatch(r"\d+", product_id)) or len(model) > 200:
+            raise ValueError("Invalid product identity")
+        from part_selection_product_details import fetch_product_details as load_details
+        return load_details(code, product_id=product_id, model=model,
+                            force_refresh=payload.get("force_refresh") is True)
+
     def lcsc_search(self, keyword: str, include_substitutes: bool = True, *,
                     on_partial=None, cancelled=None, force_refresh=False) -> dict[str, object]:
         exact_code = exact_c_code_keyword(keyword)
         stale_cached: dict[str, object] | None = None
+        with stock_cache_lock(self.stock_cache_path):
+            cached_items = load_stock_cache(self.stock_cache_path)
         if exact_code:
-            with stock_cache_lock(self.stock_cache_path):
-                cached = load_stock_cache(self.stock_cache_path).get(exact_code)
+            cached = cached_items.get(exact_code)
             if cached and cached.get("ok"):
                 stale_cached = cached
+        def protect_parameters(data, records=None):
+            records = cached_items if records is None else records
+            return {**data, "items": [preserve_candidate_parameters(item, records.get(item.get("c_code")))
+                                       for item in data.get("items", [])]}
         options = {}
         if force_refresh:
             options = {"domestic_fetcher": partial(fetch_szlcsc_domestic_products, force_refresh=True),
                        "partner_fetcher": partial(fetch_szlcsc_partner_products, force_refresh=True, strict_errors=True)}
         if on_partial is not None:
-            options["on_partial"] = on_partial
+            options["on_partial"] = lambda data: on_partial(protect_parameters(data))
         if cancelled is not None:
             options["cancelled"] = cancelled
         result = search_lcsc_candidates(
@@ -1859,11 +1879,12 @@ class PartSelectionApp:
                 "mode": "cached-exact-stale",
                 "model_tokens": [exact_code],
             }
-        if result.get("ok") and exact_code:
-            item = next((item for item in result.get("items", []) if item.get("c_code") == exact_code), None)
-            if item:
-                with stock_cache_lock(self.stock_cache_path):
-                    cache = load_stock_cache(self.stock_cache_path)
+        if result.get("ok"):
+            with stock_cache_lock(self.stock_cache_path):
+                cache = load_stock_cache(self.stock_cache_path)
+                result = protect_parameters(result, cache)
+                item = next((item for item in result.get("items", []) if item.get("c_code") == exact_code), None)
+                if item:
                     cache[exact_code] = candidate_stock_result(item)
                     save_stock_cache(self.stock_cache_path, cache)
         return result
@@ -2051,6 +2072,8 @@ class PartSelectionApp:
                 # Compatibility for existing scripts; the workbench always requests a preview.
                 library = LibraryImporter(self.project_root, self.config.get("converter_executable")).convert(code, progress=progress)
         item = {**item, "c_code": code}
+        with stock_cache_lock(self.stock_cache_path):
+            item = preserve_candidate_parameters(item, load_stock_cache(self.stock_cache_path).get(code))
         for key in ("model", "package", "param", "param_detail"):
             if key in item:
                 item[key] = html.unescape(re.sub(r"</?span\b[^>]*>", "", str(item[key]), flags=re.I))
@@ -3525,6 +3548,9 @@ def make_handler(app: PartSelectionApp):
                 if parsed.path == "/api/override":
                     json_response(self, app.save_override(payload))
                     return
+                if parsed.path == "/api/candidate_parameters":
+                    json_response(self, app.candidate_parameters(payload))
+                    return
                 if parsed.path == "/api/undo_workbench":
                     json_response(self, app.undo_workbench_changes(payload))
                     return
@@ -4253,6 +4279,7 @@ let currentProcurementQuotes = new Map();
 let candidateSearchToken = 0;
 let candidateSearchController = null;
 let candidateRawItems = [];
+const candidateParameterRequests = new Map();
 const candidateFilters = new Map();
 let candidateFilterSection = "";
 const candidateFilterPanel = document.getElementById("candidateFilterPanel");
@@ -6730,12 +6757,19 @@ function renderCandidateEntryParam(entry, target = {{}}) {{
   const kind = candidateParameterKind(entry, target);
   const pairs = candidateParameterPairs(source, kind);
   const required = {{resistor: ["温度系数", "工作电压"], inductor: ["直流电阻(DCR)", "电感类型"]}}[kind] || [];
-  const lines = pairs.map(pair => ({{name: pair.label, value: candidateKnownParamValue(pair.value) ? pair.value : "未提供"}}));
+  const status = source.detail_parameter_status;
+  const unknown = entry.channel ? "渠道未返回" : status === "ready" ? "详情页未列出"
+    : status === "failed" ? "详情读取失败" : status === "pending" ? "正在补取详情" : "详情尚未读取";
+  const lines = pairs.map(pair => ({{name: pair.label, value: candidateKnownParamValue(pair.value) ? pair.value : unknown}}));
   for (const name of required) {{
-    if (!pairs.some(pair => pair.key === name)) lines.push({{name, value: "未提供"}});
+    if (!pairs.some(pair => pair.key === name)) lines.push({{name, value: unknown}});
   }}
   const summary = source.param && !/[:：]/.test(source.param) ? source.param : "";
-  return renderCandidateParam(summary, ...lines);
+  const origin = entry.channel ? "订货渠道" : status === "ready" ? "商品详情"
+    : source.parameter_provenance === "cached-and-search" ? "搜索列表 / 历史缓存" : "搜索列表";
+  const retry = !entry.channel && (status === "failed" || (!source.product_id && status !== "ready"))
+    ? `<button type="button" class="small action-link" data-action="retry-candidate-parameters" data-code="${{esc(source.c_code)}}" title="读取商品详情参数">${{status === "failed" ? "重试详情" : "读取详情"}}</button>` : "";
+  return renderCandidateParam(summary, ...lines) + `<div class="candidate-partner-meta">参数来源：${{origin}} ${{retry}}</div>`;
 }}
 
 function renderCandidateOrderLines(lines) {{
@@ -7048,6 +7082,7 @@ function invalidateCandidateSearch() {{
   if (candidateSearchController) candidateSearchController.abort();
   candidateSearchController = null;
   candidateRawItems = [];
+  candidateParameterRequests.clear();
   resetCandidateFilters();
   currentCandidateItems = new Map();
   currentProcurementQuotes = new Map();
@@ -7060,9 +7095,61 @@ function invalidateCandidateSearch() {{
 }}
 
 function renderCandidateResults() {{
+  for (const item of candidateRawItems) {{
+    const request = candidateParameterRequests.get(candidateParameterKey(item));
+    if (request?.result?.ok) Object.assign(item, request.result,
+      {{detail_parameter_status: "ready", parameter_provenance: "product-detail"}});
+    else if (request?.done) item.detail_parameter_status = "failed";
+  }}
   renderCandidateFilterPanel();
   const visible = filterCandidateEntries(candidateResultEntries(candidateRawItems), candidateFilters, inStockOnly.checked);
   renderCandidateRows(visible.filter(entry => !entry.channel).map(entry => entry.item), visible.filter(entry => entry.channel));
+  supplementCandidateParameters(candidateSearchToken);
+}}
+
+function candidateParameterKey(item) {{
+  return [normalizeCCode(item.c_code), String(item.model || "").trim().toUpperCase(), item.product_id || ""].join("|");
+}}
+
+function supplementCandidateParameters(token, retryCode = "") {{
+  if (token !== candidateSearchToken) return;
+  const queue = [];
+  for (const item of candidateRawItems) {{
+    const code = normalizeCCode(item.c_code), key = candidateParameterKey(item);
+    if (!code || candidateParameterRequests.has(key) || (!/^\\d+$/.test(String(item.product_id || "")) && code !== retryCode)) continue;
+    let resolve;
+    const request = {{done: false, result: null, promise: new Promise(done => {{resolve = done;}})}};
+    candidateParameterRequests.set(key, request);
+    item.detail_parameter_status = "pending";
+    queue.push({{item, key, request, resolve}});
+  }}
+  async function worker() {{
+    while (queue.length) {{
+      const job = queue.shift();
+      try {{
+        if (token !== candidateSearchToken) continue;
+        const response = await fetch("/api/candidate_parameters", {{method: "POST", headers: {{"Content-Type": "application/json"}},
+          body: JSON.stringify({{c_code: job.item.c_code, product_id: job.item.product_id || "", model: job.item.model || "",
+            force_refresh: Boolean(retryCode)}})}});
+        const result = await response.json();
+        if (token !== candidateSearchToken || candidateParameterRequests.get(job.key) !== job.request) continue;
+        if (response.ok && result.ok && normalizeCCode(result.c_code) === normalizeCCode(job.item.c_code)
+            && String(result.model || "").trim().toUpperCase() === String(job.item.model || "").trim().toUpperCase()) {{
+          job.request.result = result;
+          candidateParameterRequests.set(candidateParameterKey({{...job.item, ...result}}), job.request);
+        }}
+        job.request.done = true;
+        renderCandidateResults();
+      }} catch (error) {{
+        if (token === candidateSearchToken && candidateParameterRequests.get(job.key) === job.request) {{
+          job.request.done = true;
+          renderCandidateResults();
+        }}
+      }} finally {{ job.resolve(); }}
+    }}
+  }}
+  const workers = Math.min(4, queue.length);
+  for (let i = 0; i < workers; i++) void worker();
 }}
 
 function candidateSearchStatusText(data) {{
@@ -7126,8 +7213,16 @@ async function chooseCandidate(code) {{
   if (!candidateTargetRow || !code) return;
   const tr = candidateTargetRow;
   if (tr.dataset.candidateSaving === "1") return;
-  const candidate = currentCandidateItems.get(normalizeCCode(code));
+  let candidate = currentCandidateItems.get(normalizeCCode(code));
   if (!candidate) throw new Error("没有找到候选料数据，请重新搜索");
+  const searchVersion = candidateSearchToken;
+  const pendingParameters = candidateParameterRequests.get(candidateParameterKey(candidate));
+  if (pendingParameters && !pendingParameters.done) {{
+    await pendingParameters.promise;
+    if (tr.dataset.candidateSaving === "1") return;
+    if (searchVersion !== candidateSearchToken || candidateTargetRow !== tr) throw new Error("搜索已变化，请重新选择候选料");
+    candidate = currentCandidateItems.get(normalizeCCode(code)) || candidate;
+  }}
   const anchor = rowAnchor(tr);
   tr.dataset.candidateSaving = "1";
   candidateSearchToken += 1;
@@ -7222,11 +7317,22 @@ async function selectProcurement(quoteKey) {{
 
 async function addCandidateAsAlternate(code) {{
   if (!candidateTargetRow) return;
-  const normalized = normalizeCCode(code);
-  const item = currentCandidateItems.get(normalized);
-  if (!item) throw new Error("没有找到候选料数据");
   const tr = candidateTargetRow;
-  await updateAlternateParts(tr, "add", {{
+  if (tr.dataset.candidateSaving === "1") return;
+  const normalized = normalizeCCode(code);
+  let item = currentCandidateItems.get(normalized);
+  if (!item) throw new Error("没有找到候选料数据");
+  const searchVersion = candidateSearchToken;
+  const pendingParameters = candidateParameterRequests.get(candidateParameterKey(item));
+  if (pendingParameters && !pendingParameters.done) {{
+    await pendingParameters.promise;
+    if (tr.dataset.candidateSaving === "1") return;
+    if (searchVersion !== candidateSearchToken || candidateTargetRow !== tr) throw new Error("搜索已变化，请重新选择候选料");
+    item = currentCandidateItems.get(normalized) || item;
+  }}
+  tr.dataset.candidateSaving = "1";
+  try {{
+    await updateAlternateParts(tr, "add", {{
     c_code: normalized,
     part: {{
       c_code: normalized,
@@ -7248,7 +7354,8 @@ async function addCandidateAsAlternate(code) {{
       image_url_big: item.image_url_big || "",
       url: item.url || ""
     }}
-  }});
+    }});
+  }} finally {{ delete tr.dataset.candidateSaving; }}
   closeCandidates(true);
 }}
 
@@ -7765,6 +7872,16 @@ document.addEventListener("click", async event => {{
 candidateRows.addEventListener("click", async event => {{
   const button = event.target.closest("button[data-action]");
   if (!button) return;
+  if (button.dataset.action === "retry-candidate-parameters") {{
+    const item = candidateRawItems.find(item => normalizeCCode(item.c_code) === button.dataset.code);
+    if (item) {{
+      candidateParameterRequests.delete(candidateParameterKey(item));
+      delete item.detail_parameter_status;
+      supplementCandidateParameters(candidateSearchToken, button.dataset.code);
+      renderCandidateResults();
+    }}
+    return;
+  }}
   try {{
     if (button.dataset.action === "choose-candidate") await chooseCandidate(button.dataset.code || "");
     if (button.dataset.action === "add-candidate-alternate") await addCandidateAsAlternate(button.dataset.code || "");

@@ -641,6 +641,46 @@ def product_param_detail(product: dict[str, Any]) -> str:
     return "; ".join(product_param_items(product))
 
 
+def preserve_candidate_parameters(item: dict[str, Any], cached: dict[str, Any] | None) -> dict[str, Any]:
+    """A new search summary is not evidence that cached electrical ratings disappeared."""
+    if not cached or normalize_c_code(item.get("c_code")) != normalize_c_code(cached.get("c_code")):
+        return item
+    if not normalize_model(item.get("model")) or normalize_model(item.get("model")) != normalize_model(cached.get("model")):
+        return item
+    if item.get("detail_parameter_status") == "ready":
+        return item
+
+    def pairs(source):
+        if isinstance(source.get("parameters"), list) and source["parameters"]:
+            return [dict(pair) for pair in source["parameters"] if isinstance(pair, dict) and pair.get("name")]
+        result = []
+        for segment in re.split(r"[;；\n]\s*(?=[^:：;；\n]{1,64}[:：])", str(source.get("param_detail") or "")):
+            match = re.fullmatch(r"\s*([^:：]{1,64})[:：]\s*(.*)", segment, re.S)
+            if match:
+                result.append({"name": match[1].strip(), "value": match[2].strip()})
+        return result
+
+    merged = OrderedDict()
+    def known(value):
+        value = text_value(value).strip()
+        return bool(value) and not re.fullmatch(
+            r"[-—–]+|未提供|待核实|待确认|未知|暂无|无|n/?a|unknown|not specified|null|undefined", value, re.I)
+
+    for source in (cached, item):
+        for pair in pairs(source):
+            key = re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", str(pair["name"])).casefold().strip()
+            key = {"最大工作电压": "工作电压", "maximum working voltage": "工作电压",
+                   "working voltage": "工作电压", "temperature coefficient": "温度系数"}.get(key, key)
+            if key not in merged or known(pair.get("value")) or not known(merged[key].get("value")):
+                merged[key] = pair
+    if not merged:
+        return item
+    result = {**item, "parameters": list(merged.values())}
+    result["param_detail"] = "; ".join(f"{pair['name']}: {pair.get('value', '')}" for pair in merged.values())
+    result["parameter_provenance"] = "cached-and-search"
+    return result
+
+
 def int_value(value: Any) -> int:
     try:
         return int(float(text_value(value).replace(",", "")))
@@ -924,6 +964,7 @@ def parse_lcsc_product(c_code: str, product: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "status": "OK",
         "c_code": c_code,
+        "product_id": text_value(product.get("productId")) if re.fullmatch(r"\d+", text_value(product.get("productId"))) else "",
         "stock": text_value(product.get("stockNumber")),
         "stock_sz": text_value(product.get("stockSz")),
         "stock_js": text_value(product.get("stockJs")),
@@ -1099,6 +1140,7 @@ def build_candidate_item(keyword: str, product: dict[str, Any]) -> dict[str, Any
         "model": stock["model"],
         "brand": stock["brand"],
         "package": stock["package"],
+        "product_id": stock.get("product_id", ""),
         "param": stock["param"],
         "param_detail": stock["param_detail"],
         "parameters": stock["parameters"],
@@ -1475,6 +1517,7 @@ def lookup_stock_with_cache(
             cached["error"] = text_value(result.get("error"))
             result = cached
         elif result.get("ok") and code in cache:
+            result = preserve_candidate_parameters(result, cache[code])
             cached_price = text_value(cache[code].get("price"))
             result_price = text_value(result.get("price"))
             if cached_price.startswith("¥") and result_price == "无人民币价":

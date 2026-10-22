@@ -24,6 +24,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_auto_column_widths.py`、`test_workbench_toolbar.py` | 自动列宽按钮位置、列宽计算与持久化，以及整页生成 JavaScript 的语法校验（包括 Python 字符串转义） |
 | `test_workbench_interactions.py` | 初始化 HTTP/JSON/空来源失败及重试、未加载/切换来源时按钮保护、打包模块独立进程导入（防止测试顺序掩盖依赖问题） |
 | `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 搜索、筛选、库存、订货与请求竞态 |
+| `test_product_details.py`、`test_candidate_parameter_completion.py`、`run_candidate_parameter_completion_smoke.py` | 商品详情页完整属性、身份/来源隔离、固定域名、大小/缓存/并发边界；搜索和库存刷新保留同料号已知参数；Chromium 后台补取、迟到结果、失败重试、温度系数/工作电压筛选及保存。默认合成来源，不修改生产 CAD/记录 |
 | `test_*selection*`、`test_selected_schematic_sync.py` | 配置、主料一致性、记录及同步范围 |
 | `test_path_settings.py`、`test_part_selection_overrides.py` | 更换型号网页搜索偏好、确认时间戳持久化及路径设置 |
 | `test_field_mapping.py` | 中英文自动识别、标准字段优先、手动映射持久化、冲突拒绝、缺失属性隐藏创建、单行/所选同步与内置 Value/Footprint 镜像校验；仅使用合成工程 |
@@ -78,6 +79,8 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 `python -B tests/run_directed_row_merge_smoke.py` 在 Chromium 中分别以自动保存和 Enter 将 `4.7nF` 并入已有 `4.7nF 50V` 目标行，验证目标 C 编码、参数、备选与确认状态保留、待同步差异正确及重开持久化。仅使用 `test_directed_row_merge.py` 的一次性合成工程，不写真实工程、不执行 KiCad 同步；单元回归另覆盖 Comment/封装、反向位号、订货链接、目标不唯一和无目标场景。
 
 `python -B tests/run_candidate_search_smoke.py` 使用真实 Chromium 和一次性合成工程，模拟上游分阶段响应，验证查询中不误报无结果、部分返回、补充来源、最终空结果与失败、筛选交互，以及 1475 / 800 / 390 像素宽度的状态栏布局。可设置工程外目录 `CANDIDATE_SCREENSHOTS` 保存截图。此测试不访问真实商城、不选择主料、不改生产记录，不代表真实网络时延验证。
+
+`python -B tests/run_candidate_parameter_completion_smoke.py` 使用真实 Chromium 与合成列表/详情响应，验证首屏不等待详情、不误报厂商缺参、旧查询迟到参数不串料、完整参数筛选、失败重试、选用后保存及 CAD 保持不变。截图存到工程外运行缓存，Node 需能解析 playwright（可设置 NODE_PATH）。真实商城读取需另行只读验证，不能把此离线测试当作联网验证。
 
 生命周期冒烟还注入退出脚本缺失、列表未加载的场景，验证空白窗口可正常关闭；失败时输出页面地址、加载状态、行数及桥接可用性。测试子进程固定 UTF-8，避免 Windows 输出解码错误掩盖实际故障。
 

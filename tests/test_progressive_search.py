@@ -307,6 +307,7 @@ class ProgressiveFrontendTest(unittest.TestCase):
         harness = r'''
 const assert = require('node:assert/strict');
 let candidateSearchToken=0, candidateSearchController=null, candidateRawItems=[];
+const candidateParameterRequests=new Map(), normalizeCCode=value=>value||'';
 let currentCandidateItems, currentProcurementQuotes;
 const candidateSearchClient='test', candidateKeyword={value:'OLD'}, inStockOnly={checked:false};
 const candidateModal={classList:{contains:()=>true}}, candidateRows={innerHTML:''};
