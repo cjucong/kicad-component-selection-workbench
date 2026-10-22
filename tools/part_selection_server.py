@@ -1500,6 +1500,8 @@ class PartSelectionApp:
         self.footprint_choices = FootprintChoices(self.project_root, self.config.get("converter_executable"))
         self.selection_save_lock = threading.RLock()
         self.inventory_previews = OrderedDict()
+        from part_selection_pcb import PcbUpdates
+        self.pcb_updates = PcbUpdates(self)
 
     def save_path_settings(self, payload):
         with self.settings_gate.editing(), self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
@@ -2033,6 +2035,9 @@ class PartSelectionApp:
         return {"ok": True, "refs": refs, "override": overrides.get(refs[0], {})}
 
     def run_selection_job(self, payload, progress=None):
+        if payload.get('operation') == 'pcb-update':
+            with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
+                return self.pcb_updates.apply(str(payload.get('preview_id') or ''), payload.get('acknowledged'))
         if payload.get("operation") == "row-footprint":
             return self.row_footprint(payload, progress=progress)
         return self.select_candidate(payload, progress=progress)
@@ -3521,9 +3526,12 @@ def make_handler(app: PartSelectionApp):
             if parsed.path == "/":
                 text_response(self, render_index(app))
                 return
-            if parsed.path == "/api/selection_job":
+            if parsed.path in ("/api/selection_job", "/api/pcb_update_job"):
                 query = parse_qs(parsed.query)
-                json_response(self, app.selection_jobs.status(query.get("id", [""])[0]))
+                job_id = query.get('id', [''])[0]
+                if parsed.path == '/api/pcb_update_job' and not job_id:
+                    job_id = app.pcb_updates.job_id(query.get('preview_id', [''])[0])
+                json_response(self, app.selection_jobs.status(job_id))
                 return
             if parsed.path == "/api/rows":
                 query = parse_qs(parsed.query)
@@ -3652,6 +3660,18 @@ def make_handler(app: PartSelectionApp):
                 if parsed.path == "/api/start_selection":
                     json_response(self, app.selection_jobs.start(payload))
                     return
+                if parsed.path == '/api/pcb_update_preview':
+                    refs = split_refs(payload.get('refs', ''))
+                    json_response(self, app.pcb_updates.preview(refs, str(payload.get('bom') or '')))
+                    return
+                if parsed.path == '/api/pcb_update_comparison':
+                    json_response(self, {'ok': True, 'detail': app.pcb_updates.comparison(
+                        str(payload.get('preview_id') or ''), str(payload.get('ref') or ''))})
+                    return
+                if parsed.path == '/api/start_pcb_update':
+                    json_response(self, app.pcb_updates.start(str(payload.get('preview_id') or ''),
+                        payload.get('acknowledged'), app.selection_jobs))
+                    return
                 if parsed.path == "/api/row_footprint":
                     json_response(self, app.row_footprint(payload))
                     return
@@ -3748,6 +3768,8 @@ def render_index(app: PartSelectionApp) -> str:
     plugin_updates_js = (Path(__file__).resolve().parent / "web" / "plugin-updates.js").read_text(encoding="utf-8")
     candidate_desktop_js = (Path(__file__).resolve().parent / "web" / "candidate-desktop.js").read_text(encoding="utf-8")
     inventory_js = (Path(__file__).resolve().parent / "web" / "local-inventory.js").read_text(encoding="utf-8")
+    pcb_js = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.js').read_text(encoding='utf-8')
+    pcb_css = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.css').read_text(encoding='utf-8')
     inventory_css = (Path(__file__).resolve().parent / "web" / "local-inventory.css").read_text(encoding="utf-8")
     spec_warnings_js = (Path(__file__).resolve().parent / "web" / "spec-warnings.js").read_text(encoding="utf-8")
     spec_warnings_css = (Path(__file__).resolve().parent / "web" / "spec-warnings.css").read_text(encoding="utf-8")
@@ -4101,6 +4123,7 @@ tr.hidden-row {{ display: none; }}
 <style>{row_filters_css}</style>
 <style>{path_settings_css}</style>
 <style>{inventory_css}</style>
+<style>{pcb_css}</style>
 <style>{spec_warnings_css}</style>
 <style>{value_parameters_css}</style>
 </head>
@@ -4128,6 +4151,7 @@ tr.hidden-row {{ display: none; }}
       <button type="button" data-command="queryAllStock">刷新全部库存</button>
       <button type="button" data-command="syncSelectedSchematic">同步所选行</button>
       <button type="button" data-command="syncAllSchematic">同步全部原理图</button>
+      <button type="button" data-command="updateSelectedPcb">更新 PCB（所选器件）…</button>
     </div>
   </div>
   <div class="app-menu">
@@ -4159,10 +4183,11 @@ tr.hidden-row {{ display: none; }}
   <label class="inventory-set-count">套数 <input type="number" id="localInventorySetCount" min="1" max="1000000" step="1" value="3" aria-label="装配套数"></label>
   </div>
 </section>
-<section class="toolbar-section action-section" aria-label="写入原理图">
-  <span class="section-title">写入原理图</span><div class="section-actions">
+<section class="toolbar-section action-section" aria-label="同步设计">
+  <span class="section-title">同步设计</span><div class="section-actions">
   <button type="button" id="syncSelectedSchematic" class="tool-button action-sync selected-sync" disabled aria-label="同步所选行（0）" data-tooltip="工作台 → 原理图：仅同步当前可见且已勾选的行，执行前确认。">{toolbar_content('list-checks', '同步所选', True)}</button>
   <button type="button" id="syncAllSchematic" class="tool-button action-sync" disabled aria-label="同步全部原理图" data-tooltip="工作台 → 原理图：处理整个 BOM，不受筛选或勾选限制，执行前确认。">{toolbar_content('layers', '同步全部')}</button>
+  <button type="button" id="updateSelectedPcb" class="tool-button" aria-label="更新 PCB（所选器件）" data-tooltip="仅原位替换勾选器件的 PCB 封装，执行前预检；不自动保存 PCB。">{toolbar_content('layers', 'PCB')}</button>
   </div>
 </section>
 <section class="toolbar-section export-section" aria-label="表格导出">
@@ -8534,6 +8559,7 @@ if (!candidateOnly) initializeWorkbenchRows();
 <script>{spec_warnings_js}</script>
 <script>{value_parameters_js}</script>
 <script>{footprint_js}</script>
+<script>{pcb_js}</script>
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>
 <script>{plugin_updates_js}</script>

@@ -161,7 +161,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       <div class="fp-comparison">
         <div class="fp-compare-toolbar">
           <div class="fp-segments" role="group" aria-label="比较视图"><label><input type="radio" name="fp-view" data-fp-view="overlay" value="overlay" checked><span>叠加</span></label><label><input type="radio" name="fp-view" data-fp-view="side" value="side"><span>并排</span></label></div>
-          <label class="fp-opacity">${options.library ? '目标' : '立创'}不透明度<input type="range" data-fp-opacity min="0" max="100" value="50" aria-label="${options.library ? '目标' : '立创'}不透明度"><output data-fp-opacity-value>50%</output></label>
+          <label class="fp-opacity">${options.library || options.readonly ? '目标' : '立创'}不透明度<input type="range" data-fp-opacity min="0" max="100" value="50" aria-label="${options.library || options.readonly ? '目标' : '立创'}不透明度"><output data-fp-opacity-value>50%</output></label>
           <label class="fp-marker-toggle"><input type="checkbox" data-fp-markers checked>原点 / 1号焊盘</label>
           ${options.mount ? '<button type="button" data-fp-layer-toggle aria-expanded="false">图层 ▾</button>' : ''}
         </div>
@@ -214,6 +214,12 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     function refresh() {
       const entry = selectedEntry(), original = !!entry && originals.has(entry.id);
       const reference = !!entry && references.has(entry.id);
+      if (options.readonly) {
+        for (const selector of ['.fp-baseline', '.fp-sources', '.fp-destination', '.fp-apply']) q(selector).hidden = true;
+        q('.fp-title strong').textContent = 'PCB 原位封装对比';
+        q('[data-fp-cancel]').textContent = '返回预检';
+        return;
+      }
       if (options.library) {
         q('.fp-destination').hidden = true;
         q('.fp-sources').hidden = true;
@@ -267,7 +273,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const controls = q('[data-fp-layer-controls]');
       for (const side of ['existing', 'converted']) {
         const fieldset = document.createElement('fieldset');
-        fieldset.innerHTML = `<legend class="${side === 'existing' ? 'fp-local-color' : 'fp-converted-color'}">${side === 'existing' ? '本地' : options.library ? '目标' : '转换'}</legend>`;
+        fieldset.innerHTML = `<legend class="${side === 'existing' ? 'fp-local-color' : 'fp-converted-color'}">${side === 'existing' ? options.readonly ? '当前 PCB' : '本地' : options.library || options.readonly ? '目标库' : '转换'}</legend>`;
         const stack = q(`[data-fp-source-layers=${side}]`);
         for (const layer of value.layers || []) {
           const svg = value[side + '_layers']?.[layer.id];
@@ -304,7 +310,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const alignment = value.alignment || {};
       const format = (number, digits = 3) => Number.isFinite(number) ? String(Number(number.toFixed(digits))) : '—';
       q('[data-fp-alignment]').dataset.ok = String(alignment.ok === true);
-      q('[data-fp-alignment]').textContent = value.library_comparison ? '当前库封装 / 所选库封装 · 同原点、同比例 · mm' : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
+      q('[data-fp-alignment]').textContent = value.pcb_comparison ? '当前 PCB / 目标库封装 · 按编号原位对齐 · mm' : value.library_comparison ? '当前库封装 / 所选库封装 · 同原点、同比例 · mm' : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
         ? `中心已对齐 · 校正 ${format(alignment.rotation_deg)}° · 焊盘中心最大偏差 ${format(alignment.max_error_mm, 4)} mm${alignment.requires_review ? ' · 间距有差异，请核对' : ''}`
         : '无法对齐，请检查焊盘编号与原封装';
       q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);
@@ -329,6 +335,12 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       refresh();
       if (!entry || (!options.library && !references.has(entry.id))) return;
       try {
+        if (options.loadComparison) {
+          const data = await options.loadComparison();
+          if (closed || token !== sequence) return;
+          displayComparison(data);
+          return;
+        }
         if (options.library) {
           const response = await fetch('/api/library_footprint', {method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({preview_id:preview.preview_id, id:entry.id, render:false}), signal:controller.signal});
@@ -398,6 +410,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       q('[data-fp-rename]').onclick = () => close({operation:'rename'});
     }
     q('.fp-apply').onclick = () => {
+      if (options.readonly) return;
       if (q('.fp-apply').disabled) return;
       if (options.library) {
         close({preview_id:preview.preview_id, source:'existing', existing_id:selectedEntry().id, acknowledged:true});

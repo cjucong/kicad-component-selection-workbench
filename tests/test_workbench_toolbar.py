@@ -45,7 +45,7 @@ class WorkbenchToolbarTest(unittest.TestCase):
         expected = {
             "原理图数据": ["bomSelect", "refreshSchematicRows"],
             "库存查询": ["queryMissingStock", "queryAllStock", "importLocalInventory", "localInventorySetCount"],
-            "写入原理图": ["syncSelectedSchematic", "syncAllSchematic"],
+            "同步设计": ["syncSelectedSchematic", "syncAllSchematic", "updateSelectedPcb"],
             "表格导出": ["exportPumpMenu", "pumpExportMode", "exportPumpTable", "exportChanges"],
             "列表视图": ["toggleColumns", "columnPanel", "autoSizeColumns", "columnList", "defaultViewMenu", "saveDefaultView", "loadDefaultView"],
         }

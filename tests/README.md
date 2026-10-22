@@ -122,3 +122,9 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 封装管理的 `pane-radios` 与 `rename-retry` 浏览器回归分别检查缓存页单选组隔离、原封装资料失败后的就地重试且保留改名草稿。`run_inventory_footprint_smoke.py` 在一次性工程通过真实 KiCad 渲染核验改名、现有库选用、转换封装三条独立保存路径；上游转换输入为合成夹具，不将它表述为联网或 PCB 更新验证。
 
 `run_desktop_lifecycle_smoke.py` 还验证真实 WebView2 独立窗口移到父窗外、收起恢复、主料保存后刷新父页、忙碌拒绝关闭和退出销毁。`--only-candidate` 可只运行此阶段；商城响应在子页模拟、正式保存仅写一次性工程，不打开真实商城或修改生产 CAD。这验证原生窗口程序移动，不等同于人工跨屏拖动或真实 KiCad 按钮测试。
+
+## 标准库原位更新 PCB
+
+`test_pcb_in_place_geometry.py`、`test_pcb_session.py`、`test_pcb_transaction.py`、`test_pcb_update.py` 与 `test_pcb_updates_ui.py` 覆盖严格编号配准、工程身份、批次边界、备份失败、暂存/回读失败、未知结果不重放、源变化及确认状态隔离。`run_pcb_updates_smoke.py` 为可复用离线 Chromium 交互检查；设置 `PCB_SCREENSHOT` 为工程外绝对文件名前缀可保留截图。
+
+`run_native_pcb_in_place_probe.py --report-dir <工程外绝对目录>` 是明确选择运行的真实 KiCad 验证，使用已安装桌面 Python 环境的 `kipy`、KiCad 捆绑 Python 和 Node Playwright（需配置 `NODE_PATH`）。创建并自动清理合成工程，不接受生产工程路径；验证正面任意角度、背面、偏移原点、真实标准库几何替换、网络与走线不变、此前未保存修改、一个撤销步骤，以及显式保存重开。包含真实工作台选库、原理图同步服务与新 PCB 按钮流程；同步服务验证不发起编辑器通知，避免打开多余原理图窗口。报告和截图在指定工程外目录，不能把离线浏览器模拟或接口存在误称为真实流程通过。

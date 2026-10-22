@@ -1,0 +1,28 @@
+.pcb-dialog { width:min(1060px,calc(100vw - 32px)); max-height:calc(100vh - 40px); padding:0; border:1px solid #b7c5cd; border-radius:5px; color:#24333b; background:#fff; }
+.pcb-dialog::backdrop { background:#17252f66; }
+.pcb-dialog header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; background:#f4f7f8; border-bottom:1px solid #d4dde1; }
+.pcb-dialog h2 { margin:0; font-size:16px; }
+.pcb-dialog header button { width:30px; height:30px; padding:5px; border:0; background:transparent; }
+.pcb-dialog header svg { width:20px; height:20px; }
+.pcb-update-body { padding:16px; }
+.pcb-update-status { margin:0 0 14px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.pcb-update-status[data-error="true"] { color:#a82525; }
+.pcb-update-table-wrap { max-height:48vh; overflow:auto; border-block:1px solid #d9e0e4; }
+.pcb-update-table { width:100%; border-collapse:collapse; font-size:12px; }
+.pcb-update-table th { text-align:left; background:#f2f6f5; position:sticky; top:0; z-index:1; }
+.pcb-update-table th,.pcb-update-table td { padding:8px 10px; border-bottom:1px solid #e1e6e8; vertical-align:top; }
+.pcb-update-table td { overflow-wrap:anywhere; }
+.pcb-update-table small { display:block; margin-top:3px; color:#66757e; }
+.pcb-update-note { font-size:12px; color:#805d17; margin:12px 0; }
+.pcb-dialog footer { padding:12px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; border-top:1px solid #d4dde1; background:#f5f8f7; flex-wrap:wrap; }
+.pcb-dialog footer label { font-size:12px; display:flex; align-items:center; gap:6px; }
+.pcb-dialog footer input { width:auto; }
+.pcb-dialog footer div { display:flex; gap:8px; margin-left:auto; }
+.pcb-dialog button { font-size:13px; }
+.pcb-dialog [data-pcb-apply] { background:#21836e; color:white; border-color:#21836e; }
+.pcb-dialog [hidden] { display:none !important; }
+.pcb-comparison-page { padding:10px; }
+.pcb-comparison-page .fp-viewport { min-height:260px; height:42vh; }
+.pcb-comparison-page .fp-title { display:none; }
+.pcb-update-table [data-pcb-compare] { margin-top:5px; font-size:11px; padding:3px 6px; }
+@media(max-width:600px) { .pcb-dialog { width:calc(100vw - 16px); max-height:calc(100vh - 16px); } .pcb-update-body { padding:10px; } .pcb-update-table { min-width:660px; } }

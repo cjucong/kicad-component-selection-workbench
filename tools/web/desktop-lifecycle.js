@@ -11,6 +11,7 @@
     const wasInert = document.body.inert;
     try {
       if (bulkSyncRunning) throw new Error('正在同步原理图，请完成后再关闭或重启工作台');
+      if (window.pcbUpdateBusy) throw new Error('请先完成或关闭 PCB 更新窗口，再关闭或重启工作台');
       if (window.rowFootprintBusy) throw new Error('请先完成或取消封装管理，再关闭或重启工作台');
       if (window.localInventoryBusy) throw new Error('正在导入本地库存，请完成后再关闭或重启工作台');
       if (window.pluginUpdateBusy) throw new Error('正在检查或下载插件更新，请完成后再关闭');

@@ -31,6 +31,8 @@ CORE_FILES = (
     "web/value-parameters.js", "web/value-parameters.css",
     "part_selection_inventory.py", "web/local-inventory.js", "web/local-inventory.css",
     "part_selection_candidate_window.py", "web/candidate-desktop.js",
+    "part_selection_pcb.py", "part_selection_pcb_geometry.py", "part_selection_pcb_session.py",
+    "part_selection_pcb_library.py", "web/pcb-updates.js", "web/pcb-updates.css",
     "part_selection_server.py", "part_selection_helper.py", "part_selection_overrides.py", "part_selection_fields.py",
     "part_selection_library.py", "part_selection_footprints.py", "part_selection_footprint_geometry.py", "footprint_geometry_worker.py", "part_selection_runtime.py", "part_selection_paths.py", "part_selection_settings.py", "part_selection_lifecycle.py",
     "part_stock_lookup.py", "part_selection_search.py", "part_selection_product_details.py", "kicad_sexpr.py", "kicad_schematic_search.ps1",

@@ -40,7 +40,8 @@ def validate_netlist(text, parts):
 
 
 def verify_snapshot(root, baseline, current, stage):
-    assert stage in ('rename', 'converted'), 'Unknown verification stage'
+    prefixes = {'rename': 'Renamed_', 'converted': 'Converted_', 'library': 'Library_'}
+    assert stage in prefixes, 'Unknown verification stage'
     schematic = parse_sexpr((root / 'FlowQA.kicad_sch').read_text(encoding='utf-8'), 'kicad_sch')
     expected = {}
     for symbol in schematic.children_named('symbol'):
@@ -50,11 +51,11 @@ def verify_snapshot(root, baseline, current, stage):
     assert set(current['parts']) == set(baseline['parts']), 'Footprints added/deleted'
     for ref, old in baseline['parts'].items():
         new = current['parts'][ref]
-        target = 'Local:' + ('Renamed_' if stage == 'rename' else 'Converted_') + ref
+        target = 'Local:' + prefixes[stage] + ref
         assert new['id'] == target, (ref, 'Wrong workflow stage', new['id'], target)
         assert new['id'] == expected[ref], (ref, 'PCB does not match schematic', new['id'], expected[ref])
         assert new['id'] != old['id'], (ref, 'Footprint was never replaced')
-        for key in ('position_nm', 'angle', 'back', 'path'):
+        for key in (('back', 'path') if stage == 'library' else ('position_nm', 'angle', 'back', 'path')):
             assert new[key] == old[key], (ref, key, old[key], new[key])
         assert set(new['pads']) == set(old['pads']), (ref, 'pad numbers')
         for number, pad in old['pads'].items():
@@ -161,6 +162,8 @@ def worker(payload):
 def make_project(root, converter):
     from part_selection_library import LibraryImporter
     parts = []
+    targets = root / 'Local.pretty'
+    targets.mkdir(exist_ok=True)
     for ref, code, value, back, angle, x, y in [
         ('R1', 'C25804', '10k', False, 37, 80, 80),
         ('U1', 'C461888', 'SI8641BA-C-IUR', True, 90, 100, 80),
@@ -168,10 +171,13 @@ def make_project(root, converter):
         item = LibraryImporter(root, converter).convert(code, progress=lambda s, m: print(ref, s, flush=True))
         folder = root / 'Libraries/DSMU/LCSC' / code
         nickname, name = item['footprint'].split(':', 1)
+        module = folder / (nickname + '.pretty') / (name + '.kicad_mod')
+        # Keep library inputs raw; only the board originals receive the rigid transform.
+        shutil.copy2(module, targets / ('Target_' + ref + '.kicad_mod'))
         parts.append({'ref': ref, 'code': code, 'value': value, 'comment': 'resistor' if ref[0] == 'R' else value,
                       'back': back, 'angle': angle, 'x': x, 'y': y, 'uuid': uid(),
                       'symbol': str(folder / (nickname + '.kicad_sym')),
-                      'module': str(folder / (nickname + '.pretty') / (name + '.kicad_mod'))})
+                      'module': str(module)})
     sheet = uid()
     libs, instances, labels = [], [], []
     for index, item in enumerate(parts):
@@ -227,7 +233,7 @@ def main():
     parser.add_argument('--report-dir', type=Path)
     parser.add_argument('--launch-session', type=Path)
     parser.add_argument('--verify-session', type=Path)
-    parser.add_argument('--stage', choices=('rename', 'converted'))
+    parser.add_argument('--stage', choices=('rename', 'converted', 'library'))
     args = parser.parse_args()
     if args.worker:
         worker(json.load(sys.stdin))

@@ -258,6 +258,9 @@ def merge_override_record(current: dict[str, Any], update: dict[str, Any], now: 
         for key in ("comment", "value", "footprint", "description", "description_c_code"):
             if key in update["field_overrides"]:
                 field_overrides[key] = str(update["field_overrides"].get(key) or "").strip()
+        if capture_undo and 'footprint' in update['field_overrides'] and field_overrides.get('footprint') != existing_fields.get('footprint'):
+            current['pcb_update_required'] = {'target': field_overrides['footprint'], 'since': now,
+                                              'status': 'requires_live_check'}
         current["field_overrides"] = field_overrides
         current["field_updated_at"] = now
     if "alternate_parts" in update:
