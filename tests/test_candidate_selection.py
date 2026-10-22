@@ -33,6 +33,7 @@ class CandidateSelectionTest(unittest.TestCase):
         payload = {"refs": "R85,R86", "candidate": self.item, "footprint_mode": "convert", "phase": "preview"}
         before = (self.root / "DOC/test.kicad_sch").read_bytes()
         result = self.app.select_candidate(payload)
+        self.assertEqual(service.prepare.call_args.kwargs['refs'], ['R85','R86'])
         self.assertEqual(result['preview']['preview_id'], 'preview')
         self.assertFalse(self.app.overrides_path.exists())
         self.assertFalse(self.app.stock_cache_path.exists())
@@ -186,6 +187,7 @@ class CandidateSelectionTest(unittest.TestCase):
             result = self.app.select_candidate({'refs': 'R85', 'candidate': self.item,
                 'footprint_mode': 'rename', 'phase': 'preview'})
             self.assertEqual(result['preview']['kind'], 'rename')
+            self.assertEqual(service.prepare_rename.call_args.kwargs['refs'], ['R85'])
             service.context.return_value = service.bind.call_args.args[1]
             result = self.app.select_candidate({'footprint_choice': {'preview_id': 'rename-pick'}})
         self.assertEqual(result['fields']['footprint'], 'DSMU:R0805')

@@ -7,7 +7,7 @@ window.chooseLibraryFootprint = function chooseLibraryFootprint(preview) {
     overlay.className = 'fp-overlay';
     overlay.innerHTML = `<section class="fp-dialog fp-library-dialog" role="dialog" aria-modal="true" aria-label="选择库封装">
       <header class="fp-title"><strong>选择库封装</strong><button type="button" data-fp-close title="取消并关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
-      <div class="fp-body"><div class="fp-context">当前：${escape(preview.original_ids.join(' / ') || '未设置')}</div>
+      <div class="fp-body"><div class="fp-context">当前：${escape(preview.original_ids.map(id => preview.items.find(e => e.id === id)?.label || id).join(' / ') || '未设置')}</div>
       <div class="fp-library-search"><select data-fp-library aria-label="封装库"><option value="">全部工程库</option>${preview.libraries.map(n => `<option>${escape(n)}</option>`).join('')}</select>
       <input type="text" data-fp-search placeholder="搜索封装名称" aria-label="搜索封装名称"></div>
       ${rename ? `<div class="fp-fields fp-rename-fields"><label>目标封装库<select data-fp-library aria-label="目标封装库">${preview.libraries.map(n => `<option ${n === preview.default_library ? 'selected' : ''}>${escape(n)}</option>`).join('')}</select></label><label>封装名称<input data-fp-name type="text" maxlength="120" value="${escape(preview.suggested_name)}"></label></div>` : ''}
@@ -78,7 +78,7 @@ window.chooseLibraryFootprint = function chooseLibraryFootprint(preview) {
       const library = q(rename ? '[data-fp-filter-library]' : '[data-fp-library]').value, query = q('[data-fp-search]').value.trim().toLowerCase();
       const items = preview.items.filter(e => (!rename || (preview.original_ids || []).includes(e.id)) && (!library || e.library === library) && e.id.toLowerCase().includes(query));
       const next = items.some(e => e.id === selected) ? selected : (items[0]?.id || '');
-      q('[data-fp-items]').innerHTML = items.map(e => `<option value="${escape(e.id)}">${escape(e.id)}</option>`).join('');
+      q('[data-fp-items]').innerHTML = items.map(e => `<option value="${escape(e.id)}">${escape(e.label || e.id)}</option>`).join('');
       q('[data-fp-items]').value = next;
       if (next !== selected || !detail) { selected = next; load(); }
     }
@@ -127,12 +127,15 @@ window.chooseFootprint = function chooseFootprint(preview) {
   return new Promise(resolve => {
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
     const originals = new Set(preview.original_ids || preview.current?.original_ids || []);
+    const references = new Set(preview.alignment_ids || [...originals]);
+    const renameIds = new Set(preview.rename_ids || [...originals]);
     const overlay = document.createElement('div');
     overlay.className = 'fp-overlay';
     overlay.innerHTML = `<section class="fp-dialog" role="dialog" aria-modal="true" aria-label="封装对比与目标库">
       <header class="fp-title"><strong>封装对比与目标库</strong><span>${escape(preview.c_code)}</span>
       <button type="button" data-fp-close title="取消并关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
-      <div class="fp-body"><div class="fp-baseline"><label>本地封装<select data-fp-existing aria-label="工程现有封装">${preview.existing.map(e => `<option value="${escape(e.id)}">${escape(e.id)}</option>`).join('')}</select></label><span>mm</span></div>
+      <div class="fp-body"><div class="fp-baseline"><label>对齐基准<select data-fp-existing aria-label="工程现有封装">${preview.existing.map(e => `<option value="${escape(e.id)}">${escape(e.source === 'pcb' ? `PCB 已保存 · ${e.placement.ref} · ${e.placement.footprint}` : e.id)}</option>`).join('')}</select></label><span>mm</span></div>
+      <div class="fp-reference-context" data-fp-reference-context></div>
       <div class="fp-comparison">
         <div class="fp-compare-toolbar">
           <div class="fp-segments" role="group" aria-label="比较视图"><label><input type="radio" name="fp-view" data-fp-view="overlay" value="overlay" checked><span>叠加</span></label><label><input type="radio" name="fp-view" data-fp-view="side" value="side"><span>并排</span></label></div>
@@ -177,9 +180,13 @@ window.chooseFootprint = function chooseFootprint(preview) {
     const mode = () => q('[name=fp-mode]:checked').value;
     function refresh() {
       const entry = selectedEntry(), original = !!entry && originals.has(entry.id);
-      q('[name=fp-source][value=existing]').disabled = !entry;
-      q('[name=fp-source][value=rename]').disabled = !original;
-      q('[name=fp-source][value=converted]').disabled = !original;
+      const reference = !!entry && references.has(entry.id);
+      q('[name=fp-source][value=existing]').disabled = !entry || entry.source === 'pcb';
+      q('[name=fp-source][value=rename]').disabled = !entry || !renameIds.has(entry.id);
+      q('[name=fp-source][value=converted]').disabled = !reference;
+      q('[data-fp-reference-context]').textContent = entry?.source === 'pcb'
+        ? `PCB 放置：${entry.placement.position_mm.join(', ')} mm · ${entry.placement.rotation_deg}° · ${entry.placement.back ? '背面' : '正面'}`
+        : reference && !original ? '手动库基准：用于恢复旧封装位置，请确认来源正确' : '';
       q('.fp-destination').hidden = source() === 'existing';
       q('[data-fp-library-label]').hidden = mode() !== 'existing';
       q('[data-fp-new-label]').hidden = mode() !== 'new';
@@ -188,8 +195,9 @@ window.chooseFootprint = function chooseFootprint(preview) {
       const lib = mode() === 'existing' ? q('[data-fp-library]').value : mode() === 'new' ? q('[data-fp-new-library]').value.trim() : 'LCSC_' + preview.c_code + '_Selected';
       q('[data-fp-final]').textContent = '目标：' + lib + ':' + name;
       const acknowledged = q('[data-fp-ack]').checked && !!name && !!lib;
-      q('.fp-apply').disabled = source() === 'existing' ? !entry
-        : !original || !acknowledged || (source() === 'converted' && (!preview.compatible || detail?.alignment?.ok !== true));
+      q('.fp-apply').disabled = source() === 'existing' ? !entry || entry.source === 'pcb'
+        : !acknowledged || (source() === 'rename' ? !entry || !renameIds.has(entry.id)
+          : !reference || !preview.compatible || detail?.alignment?.ok !== true);
     }
     function clearImages() {
       overlay.querySelectorAll('[data-fp-source-layers], [data-fp-marker-source]').forEach(e => e.replaceChildren());
@@ -274,9 +282,9 @@ window.chooseFootprint = function chooseFootprint(preview) {
       q('[data-fp-alignment]').textContent = '';
       const status = q('[data-fp-canvas-status]');
       status.hidden = false;
-      status.textContent = entry && originals.has(entry.id) ? '正在读取预览…' : '未选中原绑定封装，不能配准或改名';
+      status.textContent = entry && references.has(entry.id) ? '正在读取预览…' : '请选择编号匹配的对齐基准';
       refresh();
-      if (!entry || !originals.has(entry.id)) return;
+      if (!entry || !references.has(entry.id)) return;
       try {
         if (cache.has(entry.id)) { displayComparison(cache.get(entry.id)); return; }
         const response = await fetch('/api/footprint_comparison', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -339,7 +347,8 @@ window.chooseFootprint = function chooseFootprint(preview) {
     };
     document.body.append(overlay);
     document.addEventListener('keydown', keyboard, true);
-    const original = preview.existing.find(entry => originals.has(entry.id));
+    const original = preview.existing.find(entry => entry.id === preview.default_reference_id)
+      || preview.existing.find(entry => originals.has(entry.id));
     if (original) q('[data-fp-existing]').value = original.id;
     void loadComparison();
     q('[data-fp-close]').focus();

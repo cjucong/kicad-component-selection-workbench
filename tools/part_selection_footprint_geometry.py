@@ -214,6 +214,13 @@ def align_module(converted: Path, reference: Path, output: Path, *, method='rigi
         return {**result, 'ok': False, 'reason': str(exc)}
 
 
+def board_references(board: Path, refs, work: Path) -> list:
+    """Read saved PCB instances into isolated front-side library coordinates."""
+    _outside_project(Path(work))
+    return _run_worker({'operation':'board_references','board':str(Path(board).resolve()),
+                        'refs':list(refs),'work':str(Path(work).resolve())})['records']
+
+
 def render_comparison(reference: Path, converted_aligned: Path, work: Path) -> dict:
     """Return native per-layer SVG strings in one transparent millimeter frame.
 

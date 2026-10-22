@@ -102,6 +102,126 @@ def test_centered_pitch_difference_can_be_reviewed_and_published_without_changin
             assert path.read_bytes() == source
 
 
+@pytest.mark.parametrize('back,angle', [(False,0),(False,37),(True,90)])
+def test_pcb_instance_is_reference_even_after_schematic_library_has_changed(native_preview, back, angle):
+    root, service, _, _, original, _ = native_preview
+    board = root/'fixture.kicad_pcb'
+    script = '''import pcbnew,sys
+b=pcbnew.BOARD()
+f=pcbnew.PCB_IO_KICAD_SEXPR().Parse(open(sys.argv[1],encoding='utf-8').read()).Cast()
+b.Add(f)
+f.SetReference('U3')
+f.SetFPID(pcbnew.LIB_ID('Local','Original'))
+if sys.argv[3]=='True': f.Flip(pcbnew.VECTOR2I(0,0),False)
+f.SetOrientationDegrees(float(sys.argv[4]))
+f.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(90.5),pcbnew.FromMM(96.735)))
+pcbnew.SaveBoard(sys.argv[2],b)
+'''
+    subprocess.run([str(_find_kicad_python()), '-B', '-c', script, str(original), str(board), str(back), str(angle)],
+                   check=True, capture_output=True, timeout=30,
+                   creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    unchanged = board.read_bytes()
+    # The schematic already names the unaligned converted library. It must
+    # never replace the PCB's embedded original geometry as the reference.
+    (original.parent/'Changed.kicad_mod').write_text(
+        module('Changed', [('1',-2,-1),('2',2,-1),('3',1,2)],.8),encoding='utf-8')
+    with patch('part_selection_footprints.LibraryImporter.convert') as convert:
+        def staged(code, progress=None):
+            folder=service.staging_root/'Libraries/DSMU/LCSC'/code
+            pretty=folder/f'LCSC_{code}.pretty'
+            pretty.mkdir(parents=True)
+            (pretty/'Converted.kicad_mod').write_bytes((original.parent/'Changed.kicad_mod').read_bytes())
+            (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (version 20241209) '
+                f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))')
+            return {'footprint':f'LCSC_{code}:Converted','symbol':f'LCSC_{code}:Part','c_code':code}
+        convert.side_effect=staged
+        preview=service.prepare('C234',['Local:Changed'],refs=['U3'])
+    reference=preview['default_reference_id']
+    assert reference=='PCB:U3'
+    assert 'Local:Original' in preview['alignment_ids']
+    detail=service.comparison(preview['preview_id'],reference)
+    assert detail['alignment']['rotation_deg']==pytest.approx(90,abs=1e-4)
+    assert detail['alignment']['offset_mm']==pytest.approx([4,-3],abs=3e-6)
+    choice={'preview_id':preview['preview_id'],'source':'converted',
+        'existing_id':reference,'target_mode':'existing','target_library':'Local',
+        'name':'FromBoard','acknowledged':True}
+    board.write_bytes(unchanged+b'\n')
+    with pytest.raises(ValueError,match='changed|变化'):
+        service.commit(choice)
+    assert not (original.parent/'FromBoard.kicad_mod').exists()
+    board.write_bytes(unchanged)
+    result=service.commit(choice)
+    published=root/result['target_path']/'FromBoard.kicad_mod'
+    check=estimate_alignment(published.read_text(),original.read_text())
+    assert check['ok'] and check['max_error_mm']<3e-6
+    assert board.read_bytes()==unchanged
+    assert result['alignment_reference']['source']=='pcb'
+    assert result['alignment_reference']['refs']==['U3']
+    with patch('part_selection_footprints.LibraryImporter.convert') as convert:
+        renamed = service.prepare_rename(['Local:Changed'], 'Renamed', code='C234', refs=['U3'])
+    convert.assert_not_called()
+    assert renamed['default_id'] == 'PCB:U3'
+    service.library_detail(renamed['preview_id'], renamed['default_id'])
+    result = service.commit({'preview_id':renamed['preview_id'], 'source':'rename',
+        'existing_id':renamed['default_id'], 'target_mode':'existing', 'target_library':'Local',
+        'name':'Renamed', 'acknowledged':True})
+    published = root/result['target_path']/'Renamed.kicad_mod'
+    check = estimate_alignment(published.read_text(), original.read_text())
+    assert check['ok'] and check['max_error_mm'] < 3e-6
+    assert check['offset_mm'] == pytest.approx([0,0], abs=3e-6)
+    assert check['rotation_deg'] == pytest.approx(0, abs=1e-4)
+    assert board.read_bytes() == unchanged
+    with pytest.raises(ValueError, match='部分位号|拆行'):
+        service.prepare_rename(['Local:Changed'], 'Partial', code='C234', refs=['U3','U4'])
+    # A renamed or deleted schematic library entry is not required when the
+    # saved board still provides the actual geometry to preserve.
+    recovered = service.prepare_rename(['Missing:Absent'], 'Recovered', code='C234', refs=['U3'])
+    assert recovered['default_id'] == 'PCB:U3'
+    script = '''import pcbnew,sys
+b=pcbnew.LoadBoard(sys.argv[1])
+old=next(f for f in b.GetFootprints() if f.GetReference()=='U3')
+new=pcbnew.PCB_IO_KICAD_SEXPR().Parse(open(sys.argv[2],encoding='utf-8').read()).Cast()
+b.Add(new)
+if old.IsFlipped(): new.Flip(pcbnew.VECTOR2I(0,0),False)
+new.SetOrientationDegrees(old.GetOrientationDegrees())
+new.SetPosition(old.GetPosition())
+points={p.GetNumber():p.GetPosition() for p in old.Pads()}
+for p in new.Pads():
+    delta=p.GetPosition()-points[p.GetNumber()]
+    assert abs(delta.x)<=3 and abs(delta.y)<=3, (p.GetNumber(),delta)
+assert new.IsFlipped()==old.IsFlipped()
+assert new.GetOrientationDegrees()==old.GetOrientationDegrees()
+'''
+    # Place the published library at the same instance transform using KiCad
+    # itself, checking world coordinates rather than only preview alignment.
+    for name in ('FromBoard','Renamed'):
+        completed = subprocess.run([str(_find_kicad_python()),'-B','-c',script,str(board),str(original.parent/(name+'.kicad_mod'))],
+                                   capture_output=True,timeout=30,
+                                   creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        assert completed.returncode == 0, completed.stderr.decode(errors='replace')
+    assert board.read_bytes() == unchanged
+
+
+def test_explicit_original_library_can_restore_a_previously_shifted_pcb(native_preview):
+    root,service,preview,_,original,_=native_preview
+    # An original library can be selected explicitly even if it is no longer
+    # the schematic's current identifier; don't guess from name similarity.
+    (original.parent/'Previous.kicad_mod').write_bytes(original.read_bytes())
+    with patch('part_selection_footprints.LibraryImporter.convert') as convert:
+        def staged(code,progress=None):
+            folder=service.staging_root/'Libraries/DSMU/LCSC'/code
+            pretty=folder/f'LCSC_{code}.pretty'; pretty.mkdir(parents=True)
+            (pretty/'Converted.kicad_mod').write_text(module('Converted',[('1',-2,-1),('2',2,-1),('3',1,2)],.8))
+            (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (version 20241209) '
+                f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))')
+            return {'footprint':f'LCSC_{code}:Converted','symbol':f'LCSC_{code}:Part','c_code':code}
+        convert.side_effect=staged
+        preview=service.prepare('C345',['Local:Original'])
+    assert 'Local:Previous' in preview['alignment_ids']
+    result=service.comparison(preview['preview_id'],'Local:Previous')
+    assert result['alignment']['offset_mm']==pytest.approx([4,-3])
+
+
 NATIVE_BROWSER = r'''
 const {chromium} = require('playwright'), assert = require('node:assert/strict'), fs = require('node:fs');
 (async()=>{

@@ -48,6 +48,33 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='pcb') {
+   await page.evaluate(()=>{
+    preview.alignment_ids=['Local:A','Local:Other','PCB:U3'];
+    preview.rename_ids=['PCB:U3'];
+    preview.default_reference_id='PCB:U3';
+    preview.existing.push({id:'PCB:U3',source:'pcb',compatible:true,
+      placement:{ref:'U3',footprint:'Local:Old',position_mm:[90.5,96.735],rotation_deg:37,back:true}});
+    openComparison();
+   });
+   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.textContent.includes('中心已对齐'));
+   assert.equal(await page.locator('[data-fp-existing]').inputValue(),'PCB:U3');
+   assert.equal(await page.locator('[name="fp-source"][value="existing"]').isEnabled(),false,'PCB snapshots are not registered libraries');
+   assert.equal(await page.locator('[value="rename"]').isEnabled(),true,'rename preserves actual PCB geometry');
+   assert.match(await page.locator('[data-fp-reference-context]').innerText(),/37°.*背面/);
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),true);
+   await page.locator('[data-fp-existing]').selectOption('Local:Other');
+   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.textContent.includes('中心已对齐'));
+   assert.equal(await page.locator('[data-fp-ack]').isChecked(),false,'changing recovery reference requires new acknowledgement');
+   assert.match(await page.locator('[data-fp-reference-context]').innerText(),/手动库基准/);
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),true,'explicit recovery reference may align converted geometry');
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.equal(await page.evaluate(()=>window.result.existing_id),'Local:Other');
+   await page.evaluate(()=>{delete preview.alignment_ids;delete preview.rename_ids;delete preview.default_reference_id;preview.existing=preview.existing.filter(e=>e.source!=='pcb');});
+  }
   if(check==='all'||check==='overlay') {
    await page.evaluate(()=>openComparison());
    await page.waitForFunction(()=>document.querySelectorAll('[data-fp-layer-image]').length===4);

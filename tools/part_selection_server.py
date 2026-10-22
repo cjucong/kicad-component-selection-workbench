@@ -2062,9 +2062,9 @@ class PartSelectionApp:
                 if mode == "library":
                     preview = self.footprint_choices.prepare_library(ids, str(item.get("package") or ""))
                 elif mode == "rename":
-                    preview = self.footprint_choices.prepare_rename(ids, str(item.get("package") or ""), code=code)
+                    preview = self.footprint_choices.prepare_rename(ids, str(item.get("package") or ""), code=code, refs=refs)
                 else:
-                    preview = self.footprint_choices.prepare(code, ids, str(item.get("package") or ""), progress)
+                    preview = self.footprint_choices.prepare(code, ids, str(item.get("package") or ""), progress, refs=refs)
                 self.footprint_choices.bind(preview["preview_id"], {
                     "payload": payload, "revisions": revisions, "actual": actual})
                 return {"ok": True, "preview": preview}

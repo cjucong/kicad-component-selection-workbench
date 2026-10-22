@@ -80,6 +80,44 @@ def _xy(pcbnew, vector):
     return [pcbnew.ToMM(vector.x),pcbnew.ToMM(vector.y)]
 
 
+def _board_references(pcbnew, payload):
+    work = Path(payload['work'])
+    _outside_project(work)
+    board = pcbnew.LoadBoard(payload['board'])
+    requested = set(payload['refs'])
+    found = {}
+    for footprint in board.GetFootprints():
+        reference = footprint.GetReference()
+        if reference not in requested:
+            continue
+        if reference in found:
+            raise ValueError('Duplicate PCB reference: ' + reference)
+        found[reference] = footprint
+    directory = work/'BoardReference.pretty'
+    directory.mkdir(parents=True,exist_ok=True)
+    records = []
+    for index, (reference, footprint) in enumerate(sorted(found.items())):
+        position = _xy(pcbnew,footprint.GetPosition())
+        angle = footprint.GetOrientationDegrees()
+        back = footprint.IsFlipped()
+        identifier = (footprint.GetFPID().GetLibNickname().c_str() + ':'
+                      + footprint.GetFPID().GetLibItemName().c_str())
+        # Undo the instance transform in memory; never save the source board.
+        if back:
+            footprint.Flip(footprint.GetPosition(),False)
+        footprint.SetOrientationDegrees(0)
+        footprint.SetPosition(pcbnew.VECTOR2I(0,0))
+        for pad in footprint.Pads():
+            pad.SetNetCode(0)
+        name = 'BoardRef_' + str(index)
+        footprint.SetFPID(pcbnew.LIB_ID('',name))
+        pcbnew.PCB_IO_KICAD_SEXPR().FootprintSave(str(directory),footprint)
+        records.append({'ref':reference,'path':str(directory/(name+'.kicad_mod')),
+                        'footprint':identifier,'position_mm':position,
+                        'rotation_deg':angle,'back':back})
+    return {'ok':True,'records':records}
+
+
 def _pad_one(pcbnew, footprint):
     pads = [pad for pad in footprint.Pads() if pad.GetNumber() == '1']
     return _xy(pcbnew,pads[0].GetPosition()) if len(pads) == 1 else None
@@ -214,6 +252,8 @@ def main():
             result = _align(pcbnew,payload)
         elif operation == 'render':
             result = _render(pcbnew,payload)
+        elif operation == 'board_references':
+            result = _board_references(pcbnew,payload)
         else:
             raise ValueError('Unknown geometry worker operation')
     except Exception as exc:

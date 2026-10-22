@@ -30,7 +30,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_field_mapping.py` | 中英文自动识别、标准字段优先、手动映射持久化、冲突拒绝、缺失属性隐藏创建、单行/所选同步与内置 Value/Footprint 镜像校验；仅使用合成工程 |
 | `test_chinese_data_paths.py` | 中文与空格路径下的保存/加载、中文导出、隔离工程同步、旧标准配置迁移、外部备份、冲突及失败回滚；不操作生产工程 |
 | `test_footprint_choices.py`、`test_part_selection_library.py` | 封装选择、仅改名保留完整字段/几何、同名冲突、库事务与回滚 |
-| `test_footprint_geometry.py`、`test_footprint_alignment_integration.py` | 编号焊盘刚性配准、中心对齐及间距差异提示、圆形/方形差异保留、歧义拒绝、真实 pcbnew 旋转平移复杂几何、图层渲染、库发布及 Chromium SVG 像素检查；合成 PCB 中验证不同旋转角下放置坐标/角度及中心不变，不写生产 CAD |
+| `test_footprint_geometry.py`、`test_footprint_alignment_integration.py` | 编号焊盘刚性配准、中心对齐及间距差异提示、圆/方焊盘差异保留、PCB 实例基准/正反面/旋转还原、原理图已换而 PCB 未换、转换与仅改名的实际焊盘坐标不变、显式旧库恢复、真实 pcbnew 几何变换、图层渲染、库发布及 Chromium SVG 像素检查；使用合成 PCB，不写生产 CAD |
 | `test_footprint_overlay_ui.py`、`run_footprint_overlay_smoke.py` | Chromium 同比例叠加/并排、独立图层与不透明度、原点/1号焊盘、迟到响应、仅改名快捷路径、桌面和窄屏边界 |
 | `test_kicad_*`、`test_start_part_selection_tool.py` | 桌面/安装入口、工程归属和忙碌保护 |
 | `test_desktop_lifecycle.py` | 退出授权、并发保护、真实宿主进程退出监视及前端保存失败/重试 |
