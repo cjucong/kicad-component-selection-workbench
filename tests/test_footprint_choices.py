@@ -438,6 +438,15 @@ class FootprintChoicesTest(unittest.TestCase):
             self.service.commit(self.choice(preview, source='rename', name='Renamed'))
         self.assertFalse((self.pretty / 'Renamed.kicad_mod').exists())
 
+    def test_rename_error_names_silk_only_conflict(self):
+        self.old.write_text(module('0603')[:-1] + '(fp_text user "+" (at 0 1) (layer "F.SilkS")))')
+        (self.pretty / 'Other.kicad_mod').write_text(
+            module('Other')[:-1] + '(fp_text user "+" (at 1 0) (layer "F.SilkS")))')
+        preview = self.service.prepare_rename(['DSMU:0603', 'DSMU:Other'], 'Renamed', code='C123')
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        with self.assertRaisesRegex(ValueError, '焊盘编号和局部中心一致，但丝印/用户图形'):
+            self.service.commit(self.choice(preview, source='rename', name='Renamed'))
+
 
 if __name__ == '__main__':
     unittest.main()

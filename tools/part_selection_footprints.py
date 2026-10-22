@@ -501,11 +501,22 @@ class FootprintChoices:
                     raise ValueError('仅改名必须先读取当前绑定的原封装')
                 originals = [e for e in state['existing'] if e['id'] in rename_ids]
                 content = geometry if entry.get('source')=='pcb' else rename_content
-                if len(originals) != len(set(rename_ids)) or any(
-                        content(e['path'].read_text(encoding='utf-8-sig')) != content(entry['path'].read_text(encoding='utf-8-sig'))
-                        for e in originals):
-                    raise ValueError('该行原封装几何不一致，请先拆行再仅改名')
-                source = entry['path'].read_text(encoding='utf-8-sig')
+                if len(originals) != len(set(rename_ids)):
+                    missing = sorted(set(rename_ids) - {e['id'] for e in originals})
+                    raise ValueError('该行缺少原封装：' + '、'.join(missing) + '；请先拆行再仅改名')
+                baseline_text = entry['path'].read_text(encoding='utf-8-sig')
+                differences = []
+                for original in originals:
+                    original_text = original['path'].read_text(encoding='utf-8-sig')
+                    if content(original_text) == content(baseline_text):
+                        continue
+                    pad_difference = reference_layout_difference(original_text, baseline_text)
+                    differences.append(original['id'] + '：' + (pad_difference or
+                        '焊盘编号和局部中心一致，但丝印/用户图形或其他封装内容不同'))
+                if differences:
+                    raise ValueError('该行原封装不能共用一个仅改名库条目；' + '；'.join(differences) +
+                                     '。请先拆行，或确认统一采用其中一个原封装几何后再仅改名')
+                source = baseline_text
                 if state['work'] is None:
                     state['work'] = Path(tempfile.mkdtemp(prefix='footprint-rename-', dir=runtime_directory(self.root)))
             elif not state['compatible']:
