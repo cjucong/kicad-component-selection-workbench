@@ -3652,6 +3652,8 @@ def render_index(app: PartSelectionApp) -> str:
     inventory_css = (Path(__file__).resolve().parent / "web" / "local-inventory.css").read_text(encoding="utf-8")
     spec_warnings_js = (Path(__file__).resolve().parent / "web" / "spec-warnings.js").read_text(encoding="utf-8")
     spec_warnings_css = (Path(__file__).resolve().parent / "web" / "spec-warnings.css").read_text(encoding="utf-8")
+    value_parameters_js = (Path(__file__).resolve().parent / "web" / "value-parameters.js").read_text(encoding="utf-8")
+    value_parameters_css = (Path(__file__).resolve().parent / "web" / "value-parameters.css").read_text(encoding="utf-8")
 
     def toolbar_content(icon: str, label: str, count: bool = False) -> str:
         return (f'<svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-{icon}"></use></svg>'
@@ -3997,6 +3999,7 @@ tr.hidden-row {{ display: none; }}
 <style>{path_settings_css}</style>
 <style>{inventory_css}</style>
 <style>{spec_warnings_css}</style>
+<style>{value_parameters_css}</style>
 </head>
 <body>
 {icon_sprite}
@@ -6292,7 +6295,7 @@ function renderRows(rows) {{
       <td data-col="page_refs" class="page-refs">${{pageRefButtons}}</td>
       <td data-col="quantity">${{esc(row.quantity || "")}}</td>
       <td data-col="comment"><textarea class="edit field-edit" data-field="comment" title="原始 Comment: ${{esc(row.original_comment_values || row.comment || "")}}">${{esc(row.comment)}}</textarea>${{fieldDiff(row, "comment")}}</td>
-      <td data-col="value"><textarea class="edit field-edit mono" data-field="value" title="原始 Value: ${{esc(row.original_value_values || row.value || "")}}">${{esc(row.value)}}</textarea>${{fieldDiff(row, "value")}}</td>
+      <td data-col="value"><div class="value-edit-control"><textarea class="edit field-edit mono" data-field="value" title="原始 Value: ${{esc(row.original_value_values || row.value || "")}}">${{esc(row.value)}}</textarea><button type="button" class="value-parameters-button" data-action="value-parameters" title="从物料参数补充 Value" aria-label="从物料参数补充 Value"><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-arrow-left"></use></svg></button></div>${{fieldDiff(row, "value")}}</td>
       <td data-col="footprint">${{footprintEditor(row)}}${{fieldDiff(row, "footprint")}}</td>
       <td data-col="stock">
         <div class="supply-primary">
@@ -6969,7 +6972,7 @@ function candidateParameterPairs(source, kind = candidateParameterKind({{item: s
     const label = String(name).replace(/\\s+/g, " ").trim();
     const alias = label.replace(/\\s*[(（][^()（）]*[)）]\\s*$/, "").trim().toLowerCase();
     const key = aliases[alias] || label;
-    const unit = label.match(/[(（]\\s*(ppm\\/(?:°C|℃|K)|[mMkK]?V|[munµμkKM]?(?:Ω|Ω|[Oo][Hh][Mm][Ss]?))\\s*[)）]$/);
+    const unit = label.match(/[(（]\\s*(ppm(?:\\/(?:°C|℃|K))?|[pmunµμkKM]?(?:F|H|A|V|W|Ω|Ω|[Oo][Hh][Mm][Ss]?)|%)\\s*[)）]$/);
     let paramValue = String(value ?? "").trim();
     if (aliases[alias] && unit && /^[±+-]?\\d+(?:\\.\\d+)?$/.test(paramValue)) paramValue += unit[1];
     const id = JSON.stringify([key, paramValue]);
@@ -7785,6 +7788,7 @@ rowsEl.addEventListener("click", async event => {{
       await saveRow(tr, "AcceptManual", manual);
     }}
     if (action === "open-candidates") await openCandidates(tr);
+    if (action === "value-parameters") await window.openValueParameters(tr.dataset.refs);
     if (action === "start-multi-split") startMultiSplit(currentRows.find(row => (row.group_id || row.ref) === tr.dataset.groupId) || rowDataForElement(tr), button.dataset.splitSource || "refs");
     if (action === "split-selected-refs") splitSelectedRefs(button.dataset.groupId || tr.dataset.groupId || "");
     if (action === "cancel-multi-split") cancelMultiSplit();
@@ -8372,6 +8376,7 @@ if (!candidateOnly) initializeWorkbenchRows();
 <script>{candidate_desktop_js}</script>
 <script>{inventory_js}</script>
 <script>{spec_warnings_js}</script>
+<script>{value_parameters_js}</script>
 <script>{footprint_js}</script>
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>

@@ -114,6 +114,8 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 单元测试、打包和模拟 loader 检查不能证明实际 KiCad 按钮、窗口交互、网络转换或跨机器兼容已通过；本说明不声明这些真实冒烟已执行。
 
+`test_value_parameters.py` 回归阻容感参数选择、单位标签、缺失/冲突、同类替换和特殊限制保留；`test_part_selection_specs.py` 包含电阻 ppm 温漂尾缀的保守解析。`python -B tests/run_value_parameters_smoke.py` 用真实 Chromium 和自动清理的合成工程测试箭头、勾选预览、取消/应用、自动保存及重开、过期拒绝、确认状态和 C 编码保留，以及 1440/768/390 像素布局。截图在工程外缓存；不访问商城、不同步或修改生产 CAD，不代表真实 KiCad 更新验证。
+
 `test_candidate_native_window.py` 回归独立候选窗口的复用、地址/参数限制、桥接最小权限、保存忙碌拒绝退出、退出失败恢复和双窗清理。`python -B tests/run_candidate_window_smoke.py` 用 Chromium/合成商城响应验证候选独立页、父页桥接、收起后搜索筛选保持、不重复查询、保存回传、失败恢复、空白点击及拖选越界。可用工程外绝对路径 `CANDIDATE_WINDOW_SCREENSHOT` 保存截图。
 
 `run_desktop_lifecycle_smoke.py` 还验证真实 WebView2 独立窗口移到父窗外、收起恢复、主料保存后刷新父页、忙碌拒绝关闭和退出销毁。`--only-candidate` 可只运行此阶段；商城响应在子页模拟、正式保存仅写一次性工程，不打开真实商城或修改生产 CAD。这验证原生窗口程序移动，不等同于人工跨屏拖动或真实 KiCad 按钮测试。

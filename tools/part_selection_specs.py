@@ -97,7 +97,11 @@ def _qualifiers_only(tail, kind):
     size = "(?:" + "|".join(sorted(_SIZES)) + ")"
     current = (rf"|(?i:(?:Rated Current|Saturation Current)\s*[:=]\s*"
                rf"(?:{_NUMBER}\s*[mun]?A|not specified))") if kind == "L" else ""
-    token = re.compile(rf"(?:{tolerance}|{rating}|{dielectric}|{size}{current})(?![\w.])")
+    tcr = (rf"|(?i:(?:TCR\s*[:=]\s*)?(?:\+/-|\u00b1|[+-])?\s*{_NUMBER}\s*ppm"
+           rf"(?:\s*/\s*(?:\u2103|\u00b0C|K))?)(?![\w./])") if kind == "R" else ""
+    inductor = (rf"|(?i:DCR\s*[:=]\s*{_NUMBER}\s*[munkKM]?{_UNITS['R']})"
+                r"|(?i:Type\s*[:=]\s*[a-z\u4e00-\u9fff][a-z\u4e00-\u9fff -]*)") if kind == "L" else ""
+    token = re.compile(rf"(?:{tolerance}|{rating}|{dielectric}|{size}{current}{tcr}{inductor})(?![\w.])")
     while tail:
         tail = tail.lstrip(" \t\r\n/,;()")
         if not tail:

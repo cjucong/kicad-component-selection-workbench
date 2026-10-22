@@ -99,6 +99,23 @@ def test_no_dielectric_required_for_electrolytic(validate):
     assert validate(row(value='22uF, 35V'), stock('Capacitance: 22uF'))['status'] == 'matched'
 
 
+@pytest.mark.parametrize('value', ['5.1k, 5ppm', '5.1kΩ, ±5ppm/℃',
+    '5.1k, +/-5 ppm/°C, ±0.1%, 100V, 100mW', '5.1k, TCR: ±5ppm/K'])
+def test_resistor_tcr_is_a_qualifier_not_another_resistance(validate, value):
+    assert validate(row('R1262', value), stock('Resistance: 5.1kΩ'))['status'] == 'matched'
+    assert validate(row('R1262', value), stock('Resistance: 10kΩ'))['status'] == 'mismatch'
+
+
+@pytest.mark.parametrize('value', ['5.1k, 5ppm 10k', '5.1k, 5ppm/model',
+    '5.1k, 5ppm/invalid', '5.1k, 5ppms', '5.1k, TCR: not specified'])
+def test_tcr_does_not_hide_ambiguous_or_unrecognized_tails(validate, value):
+    assert validate(row('R1', value), stock('Resistance: 5.1kΩ'))['status'] == 'unknown'
+
+
+def test_resistor_tcr_is_not_a_capacitor_qualifier(validate):
+    assert validate(row(value='100nF, 5ppm'), stock())['status'] == 'unknown'
+
+
 @pytest.mark.parametrize("value", [
     "4.7uH, Rated Current: 800mA, Saturation Current: 1A",
     "4.7uH, Rated Current: 800mA, Saturation Current: not specified",
@@ -112,6 +129,19 @@ def test_inductor_current_numbers_cannot_hide_wrong_inductance(validate):
     result = validate(row("L1", value), stock("Inductance: 100nH"))
     assert result["status"] == "mismatch"
     assert result["issues"][0]["expected"] == value
+
+
+@pytest.mark.parametrize('value', ['10uH, DCR: 50mΩ, Type: 屏蔽电感',
+    '10uH, DCR: 0.05ohm, Type: Wirewound', '10uH, Type: 一体成型电感'])
+def test_inductor_copied_dcr_and_type_preserve_nominal_check(validate, value):
+    assert validate(row('L1', value), stock('Inductance: 10uH'))['status'] == 'matched'
+    assert validate(row('L1', value), stock('Inductance: 100uH'))['status'] == 'mismatch'
+
+
+@pytest.mark.parametrize('value', ['10uH, DCR: 50uH', '10uH, Type: 2x10uH',
+    '10uH, Type: Shielded 20uH', '10uH, Type: Shielded/20uH'])
+def test_inductor_labels_cannot_hide_another_inductance(validate, value):
+    assert validate(row('L1', value), stock('Inductance: 10uH'))['status'] == 'unknown'
 
 
 @pytest.mark.parametrize("ref,value,detail", [

@@ -1,0 +1,24 @@
+.value-edit-control { display: flex; align-items: flex-start; gap: 3px; min-width: 0; }
+.value-edit-control > textarea { flex: 1 1 0; min-width: 0; width: 0; }
+.value-parameters-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px; width: 24px; height: 26px; padding: 3px; border: 1px solid #bdc8ce; border-radius: 3px; background: #f4f7f8; color: #25694e; }
+.value-parameters-button:hover { background: #e4efe9; border-color: #648f7d; }
+.value-parameters-button .toolbar-icon { width: 16px; height: 16px; }
+#valueParametersDialog { width: 480px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); box-sizing: border-box; padding: 0; border: 1px solid #9ba8b0; border-radius: 4px; background: #fff; color: #263238; box-shadow: 0 8px 32px #0003; overflow: auto; }
+#valueParametersDialog::backdrop { background: #17212744; }
+#valueParametersDialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; background: #f1f4f5; border-bottom: 1px solid #d4dcdf; }
+#valueParametersDialog h2 { margin: 0; font-size: 15px; }
+#valueParametersDialog [data-value-close] { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 3px; background: transparent; border: 0; }
+#valueParametersDialog .value-parameter-body { padding: 0 14px 12px; }
+#valueParametersDialog [data-value-source] { margin: 10px 0; color: #58666e; overflow-wrap: anywhere; }
+#valueParametersDialog .value-parameter-option { display: grid; grid-template-columns: 18px minmax(90px, 1fr) minmax(0, 1.5fr); align-items: start; gap: 8px; padding: 8px 0; border-bottom: 1px solid #edf0f2; font-size: 13px; }
+#valueParametersDialog .value-parameter-option span { overflow-wrap: anywhere; }
+#valueParametersDialog .value-parameter-option input { width: 14px; height: 14px; margin: 2px 0; }
+#valueParametersDialog .unavailable { color: #697780; }
+#valueParametersDialog .value-preview-label { display: block; margin-top: 12px; font-size: 12px; color: #5a6870; }
+#valueParametersDialog output { display: block; margin-top: 4px; padding: 7px 8px; border: 1px solid #d8e0e4; color: #263238; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#valueParametersDialog [data-value-preview] { border-color: #a8c5b4; background: #f1f7f3; }
+#valueParametersDialog [data-value-error] { color: #a02222; overflow-wrap: anywhere; }
+#valueParametersDialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid #d4dcdf; }
+#valueParametersDialog footer button { min-width: 64px; }
+#valueParametersDialog [data-value-apply] { background: #e5f0e9; border: 1px solid #779b86; }
+#valueParametersDialog[data-saving] [data-value-close], #valueParametersDialog[data-saving] [data-value-cancel] { pointer-events: none; opacity: .5; }
