@@ -506,16 +506,19 @@ class FootprintChoices:
                     raise ValueError('该行缺少原封装：' + '、'.join(missing) + '；请先拆行再仅改名')
                 baseline_text = entry['path'].read_text(encoding='utf-8-sig')
                 differences = []
+                visual_differences = []
                 for original in originals:
                     original_text = original['path'].read_text(encoding='utf-8-sig')
                     if content(original_text) == content(baseline_text):
                         continue
                     pad_difference = reference_layout_difference(original_text, baseline_text)
-                    differences.append(original['id'] + '：' + (pad_difference or
-                        '焊盘编号和局部中心一致，但丝印/用户图形或其他封装内容不同'))
+                    if pad_difference:
+                        differences.append(original['id'] + '：' + pad_difference)
+                    else:
+                        visual_differences.append(original['id'])
                 if differences:
                     raise ValueError('该行原封装不能共用一个仅改名库条目；' + '；'.join(differences) +
-                                     '。请先拆行，或确认统一采用其中一个原封装几何后再仅改名')
+                                     '。请先拆行，铜皮焊盘布局一致后才能仅改名')
                 source = baseline_text
                 if state['work'] is None:
                     state['work'] = Path(tempfile.mkdtemp(prefix='footprint-rename-', dir=runtime_directory(self.root)))
@@ -649,7 +652,8 @@ class FootprintChoices:
                       'reused': target not in writes, 'overwritten': overwrite, 'backup': str(backup.resolve())}
             published = [target, self.root / 'fp-lib-table']
             if renaming:
-                result.update(renamed=True, geometry_source=entry['id'])
+                result.update(renamed=True, geometry_source=entry['id'],
+                              copper_matched=True, visual_differences=visual_differences)
             else:
                 result['symbol'] = symbol_lib + ':' + state['converted']['symbol'].split(':', 1)[1]
                 result['alignment'] = aligned['alignment']

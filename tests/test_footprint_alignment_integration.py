@@ -257,13 +257,14 @@ for old in list(b.GetFootprints()):
         assert abs(delta.x)<=3 and abs(delta.y)<=3, (old.GetReference(),p.GetNumber(),delta)
 ''', board, published)
     assert board.read_bytes() == unchanged
-    # Rename must still preserve every instance's full geometry, including text.
+    # Rename uses copper/pad layout as the shared-library compatibility rule.
     renamed=service.prepare_rename(['Local:Original'],'Renamed',code='C456',refs=['C1','C2','C3'])
     service.library_detail(renamed['preview_id'],renamed['default_id'])
-    with pytest.raises(ValueError, match='几何不一致|拆行'):
-        service.commit({'preview_id':renamed['preview_id'],'source':'rename',
+    renamed_result=service.commit({'preview_id':renamed['preview_id'],'source':'rename',
             'existing_id':renamed['default_id'],'target_mode':'existing','target_library':'Local',
             'name':'Renamed','acknowledged':True})
+    assert renamed_result['copper_matched']
+    assert set(renamed_result['visual_differences']) == {'PCB:C2','PCB:C3'}
 
 
 def test_explicit_original_library_can_restore_a_previously_shifted_pcb(native_preview):

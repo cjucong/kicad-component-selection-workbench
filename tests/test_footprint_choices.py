@@ -429,23 +429,23 @@ class FootprintChoicesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'changed|变化'):
             self.service.commit(self.choice(preview))
 
-    def test_rename_cannot_merge_originals_with_different_field_placements(self):
+    def test_rename_uses_copper_layout_when_field_placements_differ(self):
         self.old.write_text(module('0603')[:-1] + '(property "Value" "Local" (at 0 2) (layer "F.Fab")))')
         (self.pretty / 'Other.kicad_mod').write_text(module('Other')[:-1] + '(property "Value" "Other" (at 0 -2 90) (layer "F.Fab")))')
         preview = self.service.prepare_rename(['DSMU:0603', 'DSMU:Other'], 'Renamed', code='C123')
         self.service.library_detail(preview['preview_id'], 'DSMU:0603')
-        with self.assertRaisesRegex(ValueError, '不一致|拆行'):
-            self.service.commit(self.choice(preview, source='rename', name='Renamed'))
-        self.assertFalse((self.pretty / 'Renamed.kicad_mod').exists())
+        result = self.service.commit(self.choice(preview, source='rename', name='Renamed'))
+        self.assertEqual(result['footprint'], 'DSMU:Renamed')
+        self.assertEqual(result['visual_differences'], ['DSMU:Other'])
 
-    def test_rename_error_names_silk_only_conflict(self):
+    def test_rename_allows_silk_only_conflict_and_reports_it(self):
         self.old.write_text(module('0603')[:-1] + '(fp_text user "+" (at 0 1) (layer "F.SilkS")))')
         (self.pretty / 'Other.kicad_mod').write_text(
             module('Other')[:-1] + '(fp_text user "+" (at 1 0) (layer "F.SilkS")))')
         preview = self.service.prepare_rename(['DSMU:0603', 'DSMU:Other'], 'Renamed', code='C123')
         self.service.library_detail(preview['preview_id'], 'DSMU:0603')
-        with self.assertRaisesRegex(ValueError, '焊盘编号和局部中心一致，但丝印/用户图形'):
-            self.service.commit(self.choice(preview, source='rename', name='Renamed'))
+        result = self.service.commit(self.choice(preview, source='rename', name='Renamed'))
+        self.assertEqual(result['visual_differences'], ['DSMU:Other'])
 
 
 if __name__ == '__main__':

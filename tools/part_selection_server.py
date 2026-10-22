@@ -7299,7 +7299,8 @@ async function chooseCandidate(code) {{
     if (!candidateOnly) await loadRows(anchor);
     const fieldSummary = "Value：" + (replaceValue ? "按选型更新" : "保留原值") + "；Comment：" + (replaceComment ? "按器件类型更新" : "保留原值");
     const librarySummary = data.library && data.library.symbol ? "已保存转换符号与封装库" : "已采用现有库封装";
-    setState(footprintMode !== "keep" ? librarySummary + "；" + fieldSummary + "。请同步原理图；已放置符号与 PCB 未自动更换" : "已保存主料及物料参数；" + fieldSummary + "；保留现有 KiCad 封装。请同步原理图", "saved");
+    const visualSummary = data.library && data.library.visual_differences?.length ? "；丝印/用户图形按基准封装统一" : "";
+    setState(footprintMode !== "keep" ? librarySummary + visualSummary + "；" + fieldSummary + "。请同步原理图；已放置符号与 PCB 未自动更换" : "已保存主料及物料参数；" + fieldSummary + "；保留现有 KiCad 封装。请同步原理图", "saved");
   }} catch (err) {{
     candidateSearchProgress.textContent = "保存主料失败：" + (err.message || String(err));
     throw err;

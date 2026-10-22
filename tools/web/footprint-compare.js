@@ -78,7 +78,7 @@ window.chooseLibraryFootprint = function chooseLibraryFootprint(preview) {
       <div class="fp-library-detail" data-fp-detail role="status"></div>
       <button type="button" class="fp-optional-preview" data-fp-preview title="查看所选封装预览" disabled><svg aria-hidden="true"><use href="#toolbar-icon-search"></use></svg>预览</button>
       <div class="fp-library-image" hidden><img alt="所选库封装预览"></div>
-      <p class="fp-note">焊盘编号一致不代表电气兼容，请核对尺寸和引脚功能。</p>
+      <p class="fp-note">${rename ? '仅按铜皮焊盘编号、局部坐标和方向判断可否共用；丝印不同将采用所选基准封装的版本。' : '焊盘编号一致不代表电气兼容，请核对尺寸和引脚功能。'}</p>
       <label class="fp-ack"><input type="checkbox" data-fp-ack>已核对尺寸、焊盘编号和引脚功能</label></div>
       <footer class="fp-footer"><span class="fp-error" role="status"></span><button type="button" data-fp-cancel>取消</button><button type="button" class="fp-apply" disabled>确认选择</button></footer></section>`;
     const q = selector => overlay.querySelector(selector);
