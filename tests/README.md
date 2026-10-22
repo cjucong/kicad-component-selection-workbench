@@ -29,7 +29,9 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_path_settings.py`、`test_part_selection_overrides.py` | 更换型号网页搜索偏好、确认时间戳持久化及路径设置 |
 | `test_field_mapping.py` | 中英文自动识别、标准字段优先、手动映射持久化、冲突拒绝、缺失属性隐藏创建、单行/所选同步与内置 Value/Footprint 镜像校验；仅使用合成工程 |
 | `test_chinese_data_paths.py` | 中文与空格路径下的保存/加载、中文导出、隔离工程同步、旧标准配置迁移、外部备份、冲突及失败回滚；不操作生产工程 |
-| `test_footprint_choices.py`、`test_part_selection_library.py` | 封装对比、库事务与回滚 |
+| `test_footprint_choices.py`、`test_part_selection_library.py` | 封装选择、仅改名保留完整字段/几何、同名冲突、库事务与回滚 |
+| `test_footprint_geometry.py`、`test_footprint_alignment_integration.py` | 编号焊盘刚性配准、歧义/镜像/变形拒绝、真实 pcbnew 旋转平移复杂几何、图层渲染、保存后坐标一致及 Chromium 实际 SVG 焊盘中心像素检查；不写生产 CAD |
+| `test_footprint_overlay_ui.py`、`run_footprint_overlay_smoke.py` | Chromium 同比例叠加/并排、独立图层与不透明度、原点/1号焊盘、迟到响应、仅改名快捷路径、桌面和窄屏边界 |
 | `test_kicad_*`、`test_start_part_selection_tool.py` | 桌面/安装入口、工程归属和忙碌保护 |
 | `test_desktop_lifecycle.py` | 退出授权、并发保护、真实宿主进程退出监视及前端保存失败/重试 |
 | `test_plugin_updates.py` | 正式发布清单、匿名额度规避与检查缓存、403/429 等待持久化/过期/损坏缓存、已校验包保留、版本/哈希/ZIP 安全、转换器保留、安装回滚及多宿主保护 |
@@ -71,6 +73,8 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 临时 ZIP、解压文件、截图、报告、下载、字节码和测试缓存不得写入源码或正式工程，不得提交。稳定夹具应最小化并说明用途，禁止为测试复制真实工程或其 `.git`。
 
 ## 真实冒烟
+
+`python -B tests/run_footprint_overlay_smoke.py` 使用合成比较接口，在真实 Chromium 中检查预览图层、叠加/并排切换、缓存和过期响应、关闭清理及 1440/390 像素布局，截图在工程外运行缓存。Node.js 需能解析 Playwright，可用 `NODE_PATH` 指向已安装依赖。完整 pytest 在依赖缺失时明确跳过对应浏览器检查；显式冒烟缺少依赖会失败。`test_footprint_geometry.py` 与 `test_footprint_alignment_integration.py` 自动寻找 KiCad CLI 相邻或 Windows KiCad 安装目录的 Python，存在时执行真实 pcbnew 变换和渲染，不存在时明确跳过。集成测试仅模拟联网转换输入，使用真实几何配准/库发布/Chromium SVG 像素校验；不声明真实联网转换或生产 PCB 更新已验证。
 
 `python -B tests/run_plugin_updates_smoke.py` 用真实 Chromium 驱动实际更新面板脚本，原生桥接为合成模拟：检查模式保存失败回退、已校验包不重复下载、独立下载后稍后重启、下载失败/重试、忙碌时关闭重开、源码模式不误报最新、自动下载不强制退出、未保存工程设置阻止重启、更新内容不执行 HTML。无后端、GitHub 请求或安装操作，不调用真实 KiCad；可设置工程外绝对目录 `PLUGIN_UPDATE_SCREENSHOTS` 留存桌面/390 像素宽截图。运行环境同其他 Node Playwright 脚本。
 

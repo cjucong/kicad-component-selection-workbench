@@ -143,7 +143,7 @@ class CandidateSelectionTest(unittest.TestCase):
 
         parser = SelectParser()
         parser.feed(html)
-        for key, values in [('candidateFootprintMode', ['keep', 'library', 'convert']),
+        for key, values in [('candidateFootprintMode', ['keep', 'library', 'rename', 'convert']),
                             ('candidateReplaceValue', ['false', 'true']),
                             ('candidateReplaceComment', ['false', 'true'])]:
             with self.subTest(key=key):
@@ -175,6 +175,47 @@ class CandidateSelectionTest(unittest.TestCase):
             self.app.select_candidate({'refs':'R85', 'candidate':self.item, 'footprint_mode':'library',
                 'footprint':'DSMU:0805'})
         self.assertFalse(self.app.overrides_path.exists())
+
+    def test_rename_mode_uses_original_library_without_conversion_and_saves_binding(self):
+        from unittest.mock import Mock
+        service = Mock()
+        service.prepare_rename.return_value = {'kind': 'rename', 'preview_id': 'rename-pick', 'items': []}
+        service.commit.return_value = {'footprint': 'DSMU:R0805', 'renamed': True}
+        self.app.footprint_choices = service
+        with patch('part_selection_library.LibraryImporter.convert') as convert:
+            result = self.app.select_candidate({'refs': 'R85', 'candidate': self.item,
+                'footprint_mode': 'rename', 'phase': 'preview'})
+            self.assertEqual(result['preview']['kind'], 'rename')
+            service.context.return_value = service.bind.call_args.args[1]
+            result = self.app.select_candidate({'footprint_choice': {'preview_id': 'rename-pick'}})
+        self.assertEqual(result['fields']['footprint'], 'DSMU:R0805')
+        self.assertEqual(load_overrides(self.app.overrides_path)['R85']['field_overrides']['footprint'], 'DSMU:R0805')
+        self.assertNotIn('value', result['fields'])
+        convert.assert_not_called()
+
+    def test_comparison_http_returns_detail_without_selection_or_cad_writes(self):
+        from unittest.mock import Mock
+        self.app.footprint_choices = Mock()
+        self.app.footprint_choices.comparison.return_value = {'alignment': {'ok': True}, 'layers': []}
+        server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(self.app))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        before = (self.root / 'DOC/test.kicad_sch').read_bytes()
+        try:
+            req = Request(f'http://127.0.0.1:{server.server_port}/api/footprint_comparison',
+                          data=json.dumps({'preview_id': 'comparison', 'id': 'DSMU:0805'}).encode(),
+                          headers={'Content-Type': 'application/json'})
+            with urlopen(req, timeout=5) as response:
+                result = json.load(response)
+            self.assertTrue(result['ok'])
+            self.assertTrue(result['detail']['alignment']['ok'])
+            self.app.footprint_choices.comparison.assert_called_once_with('comparison', 'DSMU:0805')
+            self.assertFalse(self.app.overrides_path.exists())
+            self.assertEqual((self.root / 'DOC/test.kicad_sch').read_bytes(), before)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def setUp(self):
         self.tmp = temporary_project()
@@ -367,16 +408,23 @@ class CandidateSelectionTest(unittest.TestCase):
         self.assertEqual(stored["R86"]["field_overrides"]["footprint"], "OLD_FP")
 
     def test_conversion_failure_does_not_save_candidate_or_stock(self):
-        with patch("part_selection_library.LibraryImporter.convert", side_effect=RuntimeError("conversion failed")):
+        with patch.object(self.app.footprint_choices, 'prepare', side_effect=RuntimeError("conversion failed")):
             with self.assertRaisesRegex(RuntimeError, "conversion failed"):
-                self.app.select_candidate({"refs": "R85", "candidate": self.item, "footprint_mode": "convert"})
+                self.app.select_candidate({"refs": "R85", "candidate": self.item, "footprint_mode": "convert", "phase": "preview"})
         self.assertFalse(self.app.overrides_path.exists())
         self.assertFalse(self.app.stock_cache_path.exists())
 
     def test_converted_footprint_comes_from_verified_import_not_candidate(self):
+        from unittest.mock import Mock
         library = {"footprint": "LCSC_C4283613:Part", "symbol": "LCSC_C4283613:Part"}
-        with patch("part_selection_library.LibraryImporter.convert", return_value=library):
-            result = self.app.select_candidate({"refs": "R85", "candidate": {**self.item, "footprint": "Fake:Injected"}, "footprint_mode": "convert"})
+        service = Mock()
+        service.prepare.return_value = {'preview_id': 'verified'}
+        service.commit.return_value = library
+        self.app.footprint_choices = service
+        self.app.select_candidate({"refs": "R85", "candidate": {**self.item, "footprint": "Fake:Injected"},
+                                   "footprint_mode": "convert", "phase": "preview"})
+        service.context.return_value = service.bind.call_args.args[1]
+        result = self.app.select_candidate({'footprint_choice': {'preview_id': 'verified'}})
         self.assertEqual(result["library"], library)
         self.assertEqual(load_overrides(self.app.overrides_path)["R85"]["field_overrides"]["footprint"], library["footprint"])
         self.assertNotIn("comment", result["fields"])
@@ -396,13 +444,26 @@ class CandidateSelectionTest(unittest.TestCase):
         self.assertFalse(self.app.overrides_path.exists())
 
     def test_old_conversion_cannot_replace_newer_selection(self):
-        def convert(code, progress=None):
+        from unittest.mock import Mock
+        service = Mock()
+        def prepare(*args, **kwargs):
             self.app.select_candidate({"refs": "R85", "candidate": {**self.item, "c_code": "C456"}})
-            return {"footprint": "LCSC_C4283613:Part"}
-        with patch("part_selection_library.LibraryImporter.convert", side_effect=convert):
-            with self.assertRaisesRegex(ValueError, "旧转换结果"):
-                self.app.select_candidate({"refs": "R85", "candidate": self.item, "footprint_mode": "convert"})
+            return {'preview_id': 'stale'}
+        service.prepare.side_effect = prepare
+        self.app.footprint_choices = service
+        self.app.select_candidate({"refs": "R85", "candidate": self.item, "footprint_mode": "convert", "phase": "preview"})
+        service.context.return_value = service.bind.call_args.args[1]
+        with self.assertRaisesRegex(ValueError, "修改|旧转换结果"):
+            self.app.select_candidate({'footprint_choice': {'preview_id': 'stale'}})
+        service.commit.assert_not_called()
         self.assertEqual(load_overrides(self.app.overrides_path)["R85"]["accepted_c_code"], "C456")
+
+    def test_legacy_conversion_cannot_bypass_alignment_and_confirmation(self):
+        with patch('part_selection_library.LibraryImporter.convert', return_value={'footprint': 'Unsafe:Unaligned'}) as convert:
+            with self.assertRaisesRegex(ValueError, '预览|确认|选择'):
+                self.app.select_candidate({'refs': 'R85', 'candidate': self.item, 'footprint_mode': 'convert'})
+        convert.assert_not_called()
+        self.assertFalse(self.app.overrides_path.exists())
 
     def test_complete_parameters_are_not_limited_to_twelve_attributes(self):
         params = [{"paramName": f"attribute{i}", "paramValue": str(i)} for i in range(20)]
@@ -635,15 +696,20 @@ vm.runInContext(FUNCTIONS,ctx);
             server.server_close()
 
     def test_conversion_job_api_saves_only_verified_footprint(self):
+        from unittest.mock import Mock
+        service = Mock()
+        service.prepare.return_value = {'ok': True, 'preview_id': 'verified-job', 'compatible': True}
+        self.app.footprint_choices = service
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.app))
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         base = f"http://127.0.0.1:{server.server_port}"
         library = {"footprint": "LCSC_C4283613:R0805", "symbol": "LCSC_C4283613:Resistor"}
+        service.commit.return_value = library
         try:
-            with patch("part_selection_library.LibraryImporter.convert", return_value=library):
+            with patch("part_selection_library.LibraryImporter.convert") as legacy_convert:
                 req = Request(base + "/api/start_selection",
-                    data=json.dumps({"refs": "R85,R86", "candidate": self.item, "footprint_mode": "convert", "replace_comment": True}).encode(),
+                    data=json.dumps({"refs": "R85,R86", "candidate": self.item, "footprint_mode": "convert", "replace_comment": True, "phase": "preview"}).encode(),
                     headers={"Content-Type": "application/json"})
                 with urlopen(req) as response:
                     state = json.load(response)
@@ -654,6 +720,16 @@ vm.runInContext(FUNCTIONS,ctx);
                         state = json.load(response)
                 self.assertTrue(state["done"])
                 self.assertTrue(state["ok"])
+                self.assertEqual(state['result']['preview']['preview_id'], 'verified-job')
+                self.assertFalse(self.app.overrides_path.exists())
+                service.context.return_value = service.bind.call_args.args[1]
+                req = Request(base + '/api/select_candidate',
+                    data=json.dumps({'footprint_choice': {'preview_id': 'verified-job',
+                        'source': 'converted', 'existing_id': 'DSMU:0805', 'acknowledged': True}}).encode(),
+                    headers={'Content-Type': 'application/json'})
+                with urlopen(req) as response:
+                    self.assertTrue(json.load(response)['ok'])
+                legacy_convert.assert_not_called()
                 for ref in ("R85", "R86"):
                     fields = load_overrides(self.app.overrides_path)[ref]["field_overrides"]
                     self.assertEqual(fields["footprint"], library["footprint"])

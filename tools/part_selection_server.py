@@ -33,7 +33,7 @@ from functools import partial
 
 from part_selection_search import CandidateSearchJobs
 from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings, open_settings_directory, preview_field_mapping
-from part_selection_library import LibraryImporter, SelectionJobs
+from part_selection_library import SelectionJobs
 from part_selection_footprints import FootprintChoices
 from part_selection_inventory import (calculate_inventory_status, load_inventory,
                                       merge_inventory_records, parse_inventory_workbook, save_inventory,
@@ -2046,8 +2046,8 @@ class PartSelectionApp:
         if not re.fullmatch(r"C\d+", code) or not str(item.get("model") or "").strip():
             raise ValueError("candidate must have a valid C code and full model")
         mode = payload.get("footprint_mode", "keep")
-        if mode not in ("keep", "library", "convert"):
-            raise ValueError("footprint_mode must be keep, library or convert")
+        if mode not in ("keep", "library", "rename", "convert"):
+            raise ValueError("footprint_mode must be keep, library, rename or convert")
         replacements = {field: payload.get("replace_" + field, False) for field in ("value", "comment")}
         for field, enabled in replacements.items():
             if not isinstance(enabled, bool):
@@ -2055,22 +2055,21 @@ class PartSelectionApp:
         library = None
         initial = load_overrides(self.overrides_path)
         revisions = context["revisions"] if context else {ref: initial.get(ref, {}) for ref in refs}
-        if mode in ("library", "convert") and choice is None:
+        if mode in ("library", "rename", "convert") and choice is None:
             if payload.get("phase") == "preview":
                 actual = self.read_schematic_fields(self.config["schematic_dir"], refs, ("footprint",))
                 ids = list(dict.fromkeys(actual.get(ref, {}).get("footprint", "") for ref in refs))
                 if mode == "library":
                     preview = self.footprint_choices.prepare_library(ids, str(item.get("package") or ""))
+                elif mode == "rename":
+                    preview = self.footprint_choices.prepare_rename(ids, str(item.get("package") or ""), code=code)
                 else:
                     preview = self.footprint_choices.prepare(code, ids, str(item.get("package") or ""), progress)
                 self.footprint_choices.bind(preview["preview_id"], {
                     "payload": payload, "revisions": revisions, "actual": actual})
                 return {"ok": True, "preview": preview}
             else:
-                if mode == "library":
-                    raise ValueError("请选择并确认工程库封装后再保存")
-                # Compatibility for existing scripts; the workbench always requests a preview.
-                library = LibraryImporter(self.project_root, self.config.get("converter_executable")).convert(code, progress=progress)
+                raise ValueError("请先预览并确认封装后再保存，不能绕过配准与确认")
         item = {**item, "c_code": code}
         with stock_cache_lock(self.stock_cache_path):
             item = preserve_candidate_parameters(item, load_stock_cache(self.stock_cache_path).get(code))
@@ -3568,6 +3567,10 @@ def make_handler(app: PartSelectionApp):
                         str(payload.get("preview_id", "")), str(payload.get("id", "")),
                         render=payload.get("render") is True)})
                     return
+                if parsed.path == "/api/footprint_comparison":
+                    json_response(self, {"ok": True, "detail": app.footprint_choices.comparison(
+                        payload.get("preview_id"), payload.get("id"))})
+                    return
                 if parsed.path == "/api/adopt_schematic_fields":
                     json_response(self, app.adopt_schematic_fields(payload))
                     return
@@ -4151,7 +4154,7 @@ tr.hidden-row {{ display: none; }}
     <div class="modal-query">
       <input id="candidateKeyword" spellcheck="false" placeholder="搜索型号、参数、C 编码，按回车搜索" aria-label="搜索器件">
       <div id="candidateReplacementOptions" class="candidate-options" role="group" aria-label="选用主料更新选项" title="物料参数默认更新，保存选料后仍需同步原理图">
-        <label title="选择工程库封装，或通过 EasyKiConverter 转换立创封装">封装 <select id="candidateFootprintMode" aria-label="封装更新方式"><option value="keep" selected>不替换</option><option value="library">替换库封装</option><option value="convert">替换立创封装</option></select></label>
+        <label title="选择库封装、仅改名保留几何，或转换立创封装">封装 <select id="candidateFootprintMode" aria-label="封装更新方式"><option value="keep" selected>不替换</option><option value="library">替换库封装</option><option value="rename">仅改名保留几何</option><option value="convert">替换立创封装</option></select></label>
         <label title="芯片使用完整型号；阻容感使用对应数值">Value <select id="candidateReplaceValue" aria-label="Value 更新方式"><option value="false" selected>不替换</option><option value="true">替换</option></select></label>
         <label title="芯片使用完整型号；阻容感使用 resistor / capacitor / inductor，型号保留在物料参数中">Comment <select id="candidateReplaceComment" aria-label="Comment 更新方式"><option value="false" selected>不替换</option><option value="true">替换</option></select></label>
       </div>
@@ -7266,7 +7269,7 @@ async function chooseCandidate(code) {{
     }}
     if (data.preview) {{
       candidateSearchProgress.textContent = "等待封装选择确认；取消不会修改选料记录";
-      const choice = await (data.preview.kind === "library" ? window.chooseLibraryFootprint(data.preview) : window.chooseFootprint(data.preview));
+      const choice = await (["library", "rename"].includes(data.preview.kind) ? window.chooseLibraryFootprint(data.preview) : window.chooseFootprint(data.preview));
       if (!choice) {{
         candidateSearchProgress.textContent = "已取消封装选择，原选料与工程库未修改";
         return;

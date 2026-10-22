@@ -31,7 +31,7 @@ CORE_FILES = (
     "part_selection_inventory.py", "web/local-inventory.js", "web/local-inventory.css",
     "part_selection_candidate_window.py", "web/candidate-desktop.js",
     "part_selection_server.py", "part_selection_helper.py", "part_selection_overrides.py", "part_selection_fields.py",
-    "part_selection_library.py", "part_selection_footprints.py", "part_selection_runtime.py", "part_selection_paths.py", "part_selection_settings.py", "part_selection_lifecycle.py",
+    "part_selection_library.py", "part_selection_footprints.py", "part_selection_footprint_geometry.py", "footprint_geometry_worker.py", "part_selection_runtime.py", "part_selection_paths.py", "part_selection_settings.py", "part_selection_lifecycle.py",
     "part_stock_lookup.py", "part_selection_search.py", "part_selection_product_details.py", "kicad_sexpr.py", "kicad_schematic_search.ps1",
     "kicad_ipc_action.py", "kicad_schematic_search_launcher.vbs",
     "install_kicad_schematic_search_protocol.ps1",

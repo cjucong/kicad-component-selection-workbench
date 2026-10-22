@@ -1,0 +1,203 @@
+"""Offline Chromium checks for the footprint comparison UI; no CAD or network access."""
+import json
+import os
+from pathlib import Path
+import subprocess
+
+from _scratch import temporary_project
+from part_selection_runtime import runtime_directory
+
+ROOT = Path(__file__).resolve().parents[1]
+
+BROWSER = r'''
+const {chromium} = require('playwright'), assert = require('node:assert/strict');
+(async () => {
+ const browser = await chromium.launch({headless:true});
+ try {
+  const page = await browser.newPage({viewport:{width:1440,height:1000}}), errors=[];
+  page.on('pageerror', e=>errors.push(e.message));
+  page.setDefaultTimeout(4000);
+  await page.route('**/*', route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html><body><button id="launch">Open</button></body></html>'}));
+  await page.goto('http://footprint.test/');
+  await page.addStyleTag({path:process.env.FP_CSS});
+  await page.addScriptTag({path:process.env.FP_JS});
+  await page.evaluate(() => {
+   window.calls=[]; window.pending={}; window.aborted=0; window.hold=false; window.bad=false;
+   const svg = color=>`<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="500" viewBox="-5 -2.5 10 5"><rect x="-2" y="-1" width="1" height="2" fill="${color}"/><script>window.untrustedRan=true</script></svg>`;
+   window.sample = id=>({alignment:{ok:!window.bad,rotation_deg:id==='Local:B'?180:90,offset_mm:[1,2],max_error_mm:0.002,reason:window.bad?'焊盘编号无法配准':''},
+    view_box:[-5,-2.5,10,5],layers:[{id:'F.Cu',label:'铜层',default_visible:true},{id:'F.SilkS',label:'丝印',default_visible:false}],
+    existing_layers:{'F.Cu':svg('#159b52'),'F.SilkS':svg('#159b52')},converted_layers:{'F.Cu':svg('#d52798'),'F.SilkS':svg('#d52798')},
+    origin_mm:[0,0],existing_pad_one:[-1.5,0],converted_pad_one:[-1.5,0],ref:id});
+   window.fetch = async (url, options) => {
+    const payload=JSON.parse(options.body); calls.push({url,payload});
+    options.signal?.addEventListener('abort',()=>window.aborted++);
+    if(url==='/api/footprint_comparison') {
+     const detail=window.sample(payload.id);
+     if(window.hold) return new Promise(resolve=>{pending[payload.id]=()=>resolve({ok:true,json:async()=>({ok:true,detail})});});
+     return {ok:true,json:async()=>({ok:true,detail})};
+    }
+    if(url==='/api/library_footprint') return {ok:true,json:async()=>({ok:true,detail:{id:payload.id,compatible:false,pads:2,numbers:['1','2'],svg:svg('#159b52')}})};
+    throw Error('Unexpected fixture API '+url);
+   };
+   window.preview={preview_id:'synthetic-preview',c_code:'C123',compatible:true,original_ids:['Local:A','Local:B'],
+    suggested_name:'Selected_0603',default_library:'Local',libraries:['Local','Shared','LCSC_C999'],
+    converted_info:{pads:2,numbers:['1','2'],pad_size:'1 x 2',pad_envelope:'4 x 2',geometry_hash:'new'},
+    comparison_available:true,converted_svg:'',existing:['A','B','Other'].map(name=>({id:'Local:'+name,pads:2,numbers:['1','2'],svg:'',geometry_hash:'old'}))};
+   window.openComparison = ()=>{window.result=undefined;window.chooseFootprint(structuredClone(preview)).then(value=>window.result=value);};
+   window.openLibrary = kind=>{window.result=undefined;window.chooseLibraryFootprint({...structuredClone(preview),kind,default_id:'Local:A',items:preview.existing.slice(0,2).map(e=>({...e,library:'Local'}))}).then(value=>window.result=value);};
+  });
+  const check=process.env.FP_CASE || 'all';
+  const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='overlay') {
+   await page.evaluate(()=>openComparison());
+   await page.waitForFunction(()=>document.querySelectorAll('[data-fp-layer-image]').length===4);
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),true);
+   assert.equal(await page.getByRole('slider',{name:'立创不透明度'}).count(),1);
+   assert.equal(await page.evaluate(()=>calls.filter(e=>e.url==='/api/footprint_comparison').length),1);
+   assert.equal(await page.evaluate(()=>window.untrustedRan),undefined,'SVG must never execute');
+   assert.equal(await page.locator('.fp-comparison svg').count(),0,'upstream SVG may only be an img');
+   const dimensions=await page.locator('[data-fp-layer-image]').evaluateAll(images=>images.filter(e=>e.getClientRects().length).map(e=>({src:e.src,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height})));
+   assert.ok(dimensions.every(d=>d.src.startsWith('blob:')));
+   assert.ok(dimensions.every(d=>Math.abs(d.w/d.h-2)<0.01));
+   assert.equal(dimensions.length,2,'only default-visible layers are shown');
+   assert.equal(dimensions[0].w,dimensions[1].w);
+   await page.locator('[data-fp-view="side"]').check();
+   const side=await page.locator('[data-fp-stage]').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width));
+   assert.equal(side[0],side[1]);
+   await page.locator('[data-fp-opacity]').fill('27');
+   assert.equal(await page.locator('[data-fp-source-layers="converted"]').evaluate(e=>getComputedStyle(e).opacity),'0.27');
+   await page.locator('[data-fp-layer="existing"][value="F.Cu"]').uncheck();
+   assert.equal(await page.locator('[data-fp-layer-image][data-source="existing"][data-layer="F.Cu"]').isVisible(),false);
+   await page.locator('[data-fp-markers]').uncheck();
+   assert.equal(await page.locator('[data-fp-origin]').first().isVisible(),false);
+   assert.equal(await page.evaluate(()=>calls.filter(e=>e.url==='/api/footprint_comparison').length),1,'display controls must not render again');
+   await page.locator('[data-fp-layer="existing"][value="F.Cu"]').check();
+   await page.locator('[data-fp-markers]').check();
+   await page.locator('[data-fp-view="overlay"]').check();
+   await page.locator('[data-fp-opacity]').fill('50');
+   await page.waitForFunction(()=>[...document.querySelectorAll('[data-fp-layer-image]')].every(e=>e.complete&&e.naturalWidth>0));
+   const pixel=await page.locator('[data-fp-layer-image]').first().evaluate(image=>{const c=document.createElement('canvas');c.width=1000;c.height=500;c.getContext('2d').drawImage(image,0,0,1000,500);return [...c.getContext('2d').getImageData(350,250,1,1).data];});
+   assert.equal(pixel[3],255,'native SVG image must contain real geometry');
+   for(const width of [1440,390]) {
+    await page.setViewportSize({width,height:1000});
+    const bounds=await page.locator('.fp-dialog').boundingBox();
+    assert.ok(bounds.x>=0&&bounds.x+bounds.width<=width+1);
+    assert.equal(await page.locator('.fp-body').evaluate(e=>e.scrollWidth<=e.clientWidth+1),true,'no horizontal overflow');
+    assert.equal(await page.locator('[data-fp-stage]').first().evaluate(e=>Math.abs(e.clientWidth/e.clientHeight-2)<0.03),true);
+    await page.screenshot({path:process.env.FP_SHOTS+`/footprint-overlay-${width}.png`});
+    await page.locator('[data-fp-view="side"]').check();
+    const panes=await page.locator('[data-fp-stage]').evaluateAll(es=>es.map(e=>({w:e.clientWidth,h:e.clientHeight})));
+    assert.equal(panes[0].w,panes[1].w);
+    assert.ok(panes.every(p=>Math.abs(p.w/p.h-2)<0.03));
+    assert.equal(await page.locator('.fp-body').evaluate(e=>e.scrollWidth<=e.clientWidth+1),true);
+    await page.screenshot({path:process.env.FP_SHOTS+`/footprint-side-${width}.png`});
+    await page.locator('[data-fp-view="overlay"]').check();
+   }
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.equal(await page.evaluate(()=>window.result.source),'converted');
+   assert.equal(await page.evaluate(()=>window.result.existing_id),'Local:A');
+   await page.setViewportSize({width:1440,height:1000});
+  }
+  if(check==='all'||check==='rename') {
+   await page.evaluate(()=>{bad=true;preview.compatible=false;openComparison();});
+   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.textContent.includes('焊盘编号无法配准'));
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+   await page.locator('[name="fp-source"][value="rename"]').check();
+   assert.equal(await page.locator('.fp-destination').isVisible(),true);
+   await page.locator('[data-fp-library]').selectOption('Shared');
+   await page.locator('[data-fp-name]').fill('KeptGeometry');
+   assert.equal(await page.locator('.fp-apply').isEnabled(),true,'rename is independent of converted compatibility');
+   await page.locator('[data-fp-existing]').selectOption('Local:Other');
+   assert.equal(await page.locator('[data-fp-ack]').isChecked(),false);
+   assert.equal(await page.locator('[value="rename"]').isEnabled(),false,'only original bindings can be renamed');
+   await page.locator('[data-fp-existing]').selectOption('Local:A');
+   await page.locator('[name="fp-source"][value="rename"]').check();
+   await page.locator('[data-fp-ack]').check();
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   const result=await page.evaluate(()=>window.result);
+   assert.equal(result.source,'rename');assert.equal(result.existing_id,'Local:A');
+   assert.equal(result.target_library,'Shared');assert.equal(result.name,'KeptGeometry');assert.equal(result.acknowledged,true);
+   await page.evaluate(()=>openComparison());
+   await page.locator('[name="fp-source"][value="existing"]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),true,'existing keeps old safety rules');
+   await close();
+  }
+  if(check==='all'||check==='stale') {
+   await page.evaluate(()=>{calls=[];pending={};hold=true;bad=false;preview.compatible=true;
+    preview.existing.push({...preview.existing[0],id:'Local:Slow'});preview.original_ids.push('Local:Slow');openComparison();});
+   await page.waitForFunction(()=>pending['Local:A']);
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false,'alignment must finish before conversion');
+   await page.locator('[data-fp-existing]').selectOption('Local:B');
+   await page.waitForFunction(()=>pending['Local:B']);
+   assert.equal(await page.locator('[data-fp-ack]').isChecked(),false);
+   await page.evaluate(()=>pending['Local:B']());
+   await page.waitForFunction(()=>document.querySelectorAll('[data-fp-layer-image]').length===4);
+   await page.evaluate(()=>pending['Local:A']());
+   await page.waitForTimeout(50);
+   assert.equal(await page.locator('[data-fp-existing]').inputValue(),'Local:B');
+   assert.match(await page.locator('[data-fp-alignment]').innerText(),/180°/,'late A must not replace B alignment');
+   assert.equal(await page.evaluate(()=>aborted>0),true);
+   await page.locator('[data-fp-existing]').selectOption('Local:A');
+   await page.waitForTimeout(50);
+   assert.equal(await page.evaluate(()=>calls.length),2,'completed late responses may be cached but never replace current selection');
+   assert.match(await page.locator('[data-fp-alignment]').innerText(),/90°/);
+   await page.locator('[data-fp-existing]').selectOption('Local:Other');
+   assert.equal(await page.evaluate(()=>calls.length),2,'unbound similar footprints must not be alignment references');
+   await page.locator('[data-fp-existing]').selectOption('Local:Slow');
+   await page.waitForFunction(()=>pending['Local:Slow']);
+   await close();
+   await page.evaluate(()=>pending['Local:Slow']());
+   await page.waitForTimeout(30);
+   assert.equal(await page.locator('.fp-overlay').count(),0);
+   await page.evaluate(()=>hold=false);
+  }
+  if(check==='all'||check==='library') {
+   await page.evaluate(()=>{calls=[];openLibrary('rename');});
+   await page.waitForFunction(()=>calls.length===1);
+   assert.deepEqual(await page.evaluate(()=>calls.map(e=>({url:e.url,render:e.payload.render}))),[{url:'/api/library_footprint',render:false}]);
+   assert.equal(await page.locator('.fp-library-image').isVisible(),false);
+   assert.equal(await page.locator('[data-fp-library] option').count(),3,'every registered library is a valid target');
+   assert.equal(await page.locator('[data-fp-library]').inputValue(),'Local');
+   await page.locator('[data-fp-library]').selectOption('LCSC_C999');
+   await page.locator('[data-fp-name]').fill('RenameOnly');
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),true,'rename needs no conversion or image preview');
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.deepEqual(await page.evaluate(()=>window.result),{preview_id:'synthetic-preview',source:'rename',existing_id:'Local:A',acknowledged:true,target_mode:'existing',target_library:'LCSC_C999',name:'RenameOnly'});
+   await page.evaluate(()=>{calls=[];openLibrary('library');});
+   await page.waitForFunction(()=>calls.length===1);
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false,'ordinary library selection still blocks incompatible footprints');
+   await close();
+  }
+  assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({scenario:check,passed:true,page_errors:errors}));
+ } finally {await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+
+
+def run_checks(scenario="all"):
+    with temporary_project(prefix="footprint-overlay-") as directory:
+        shots = runtime_directory(ROOT) / "footprint-overlay-smoke"
+        shots.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, "FP_CASE": scenario, "FP_JS": str(ROOT / "tools/web/footprint-compare.js"),
+               "FP_CSS": str(ROOT / "tools/web/footprint-compare.css"), "FP_SHOTS": str(shots)}
+        options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+        result = subprocess.run(["node", "-e", BROWSER], cwd=directory, env=env, capture_output=True,
+                                text=True, encoding="utf-8", timeout=90, **options)
+        if result.returncode:
+            raise AssertionError(result.stderr + result.stdout)
+        return json.loads(result.stdout.strip()), shots
+
+
+if __name__ == "__main__":
+    result, shots = run_checks()
+    print(json.dumps(result))
+    print(f"Screenshots: {shots}")

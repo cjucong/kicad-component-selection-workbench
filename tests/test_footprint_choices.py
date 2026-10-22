@@ -235,6 +235,123 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertFalse((self.pretty / '0603_C123.kicad_mod').exists())
         self.assertEqual(list(self.root.glob('Libraries/DSMU/LCSC/symbols/*.kicad_sym')), [])
 
+    def test_rename_preview_is_local_only_and_restricted_to_original_geometry(self):
+        (self.pretty / 'Other.kicad_mod').write_text(module('Other'))
+        with patch('part_selection_footprints.LibraryImporter.convert') as convert, \
+             patch('part_selection_footprints.render_previews') as render, \
+             patch.object(Path, 'glob', side_effect=AssertionError('rename must not scan every footprint')):
+            preview = self.service.prepare_rename(['DSMU:0603'], package='R0603', code='C123')
+        self.assertEqual(preview['kind'], 'rename')
+        self.assertEqual(preview['suggested_name'], 'R0603')
+        self.assertEqual([item['id'] for item in preview['items']], ['DSMU:0603'])
+        convert.assert_not_called()
+        render.assert_not_called()
+
+    def test_rename_copies_original_without_geometric_or_library_side_effects(self):
+        from part_selection_footprints import geometry
+        original = module('0603', .7112)[:-1] + ('\n  ; keep original annotations\n'
+            '(property "Reference" "REF**" (at 1 2 90) (layer "F.SilkS")) '
+            '(fp_text user "Keep me" (at -1 3) (layer "B.SilkS")) '
+            '(model "${KIPRJMOD}/3D/model.step" (offset (xyz 1 2 3)) (rotate (xyz 0 0 90))))')
+        self.old.write_text(original, encoding='utf-8')
+        before, table = self.old.read_bytes(), (self.root / 'fp-lib-table').read_bytes()
+        preview = self.service.prepare_rename(['DSMU:0603'], 'R0603', code='C123')
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        result = self.service.commit(self.choice(preview, source='rename', name='R0603'))
+        self.assertEqual(result['footprint'], 'DSMU:R0603')
+        self.assertEqual(self.old.read_bytes(), before)
+        self.assertEqual((self.root / 'fp-lib-table').read_bytes(), table)
+        self.assertEqual(geometry((self.pretty / 'R0603.kicad_mod').read_text()), geometry(before.decode()))
+        self.assertEqual((self.pretty / 'R0603.kicad_mod').read_text(), original.replace('(footprint "0603"', '(footprint "R0603"', 1))
+        self.assertFalse((self.root / 'sym-lib-table').exists())
+        self.assertNotIn('symbol', result)
+        self.assertEqual(self.service.commit(self.choice(preview, source='rename', name='R0603')), result)
+
+    def test_rename_conflict_suffixes_instead_of_overwriting_shared_footprints(self):
+        target = self.pretty / 'R0603.kicad_mod'
+        target.write_text(module('R0603', width=1.2))
+        before = target.read_bytes()
+        preview = self.service.prepare_rename(['DSMU:0603'], 'R0603', code='C123')
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        result = self.service.commit(self.choice(preview, source='rename', name='R0603'))
+        self.assertEqual(result['footprint'], 'DSMU:R0603_C123')
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_rename_requires_loaded_original_and_acknowledgment(self):
+        (self.pretty / 'Other.kicad_mod').write_text(module('Other'))
+        preview = self.service.prepare_rename(['DSMU:0603'], 'R0603', code='C123')
+        with self.assertRaises(ValueError):
+            self.service.commit(self.choice(preview, source='rename', name='R0603'))
+        with self.assertRaises(ValueError):
+            self.service.library_detail(preview['preview_id'], 'DSMU:Other')
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        with self.assertRaises(ValueError):
+            self.service.commit(self.choice(preview, source='rename', name='R0603', acknowledged=False))
+
+    def test_conversion_dialog_can_rename_original_even_if_converted_pins_differ(self):
+        from part_selection_footprints import geometry
+        self.pin = 'EP'
+        preview = self.prepare()
+        result = self.service.commit(self.choice(preview, source='rename', name='R0603'))
+        self.assertEqual(result['footprint'], 'DSMU:R0603')
+        self.assertEqual(geometry((self.pretty / 'R0603.kicad_mod').read_text()), geometry(self.old.read_text()))
+        self.assertFalse((self.root / 'sym-lib-table').exists())
+
+    def test_comparison_is_lazy_cached_and_import_uses_aligned_geometry(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        preview = self.prepare()
+        alignment = {'ok': True, 'rotation_deg': 90, 'offset_mm': [1, 2], 'max_error_mm': 0}
+        def align(converted, reference, output):
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(module('Aligned', width=.9))
+            return alignment
+        native = SimpleNamespace(align_module=Mock(side_effect=align), render_comparison=Mock(return_value={
+            'view_box': [-2, -2, 4, 4], 'layers': [], 'existing_layers': {}, 'converted_layers': {}}))
+        with patch.dict(sys.modules, {'part_selection_footprint_geometry': native}):
+            result = self.service.comparison(preview['preview_id'], 'DSMU:0603')
+            self.assertEqual(result['alignment'], alignment)
+            self.assertEqual(result, self.service.comparison(preview['preview_id'], 'DSMU:0603'))
+            self.assertFalse((self.pretty / '0603_C123.kicad_mod').exists())
+            selected = self.service.commit(self.choice(preview))
+        self.assertIn('(size 0.9 0.86)', (self.pretty / selected['footprint'].split(':')[1]).with_suffix('.kicad_mod').read_text())
+        native.align_module.assert_called_once()
+        native.render_comparison.assert_called_once()
+
+    def test_failed_alignment_blocks_conversion_not_rename(self):
+        from types import SimpleNamespace
+        preview = self.prepare()
+        native = SimpleNamespace(align_module=lambda *args: {'ok': False, 'reason': 'ambiguous pad positions'})
+        with patch.dict(sys.modules, {'part_selection_footprint_geometry': native}):
+            with self.assertRaisesRegex(ValueError, 'ambiguous'):
+                self.service.commit(self.choice(preview))
+            result = self.service.commit(self.choice(preview, source='rename', name='LocalCopy'))
+        self.assertEqual(result['footprint'], 'DSMU:LocalCopy')
+
+    def test_aligned_staging_tamper_is_rejected_before_publishing(self):
+        from types import SimpleNamespace
+        preview = self.prepare()
+        def align(converted, reference, output):
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(module('Aligned'))
+            return {'ok': True, 'rotation_deg': 0, 'offset_mm': [0, 0], 'max_error_mm': 0}
+        native = SimpleNamespace(align_module=align, render_comparison=lambda *args: {})
+        with patch.dict(sys.modules, {'part_selection_footprint_geometry': native}):
+            self.service.comparison(preview['preview_id'], 'DSMU:0603')
+        staged = self.service.previews[preview['preview_id']]['aligned']['DSMU:0603']['path']
+        staged.write_text(module(width=5))
+        with self.assertRaisesRegex(ValueError, 'changed|变化'):
+            self.service.commit(self.choice(preview))
+
+    def test_rename_cannot_merge_originals_with_different_field_placements(self):
+        self.old.write_text(module('0603')[:-1] + '(property "Value" "Local" (at 0 2) (layer "F.Fab")))')
+        (self.pretty / 'Other.kicad_mod').write_text(module('Other')[:-1] + '(property "Value" "Other" (at 0 -2 90) (layer "F.Fab")))')
+        preview = self.service.prepare_rename(['DSMU:0603', 'DSMU:Other'], 'Renamed', code='C123')
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        with self.assertRaisesRegex(ValueError, '不一致|拆行'):
+            self.service.commit(self.choice(preview, source='rename', name='Renamed'))
+        self.assertFalse((self.pretty / 'Renamed.kicad_mod').exists())
+
 
 if __name__ == '__main__':
     unittest.main()
