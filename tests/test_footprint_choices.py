@@ -390,6 +390,30 @@ class FootprintChoicesTest(unittest.TestCase):
             result = self.service.commit(self.choice(preview, source='rename', name='LocalCopy'))
         self.assertEqual(result['footprint'], 'DSMU:LocalCopy')
 
+    def test_conversion_group_allows_moved_polarity_text_not_moved_pad_centers(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        other = self.pretty / 'Other.kicad_mod'
+        original = module('0603', .7112)[:-1] + '(fp_text user "+" (at 1 2 0) (layer "F.SilkS")))'
+        self.old.write_text(original)
+        other.write_text(original.replace('"0603"','"Other"',1).replace('(at 1 2 0)','(at -2 1 270)'))
+        preview = self.service.prepare('C123',['DSMU:0603','DSMU:Other'],package='0603')
+        def align(converted, reference, output, *, method):
+            output.write_text(module('Aligned'))
+            return {'ok':True, 'rotation_deg':0, 'offset_mm':[0,0], 'max_error_mm':0}
+        native = SimpleNamespace(align_module=Mock(side_effect=align))
+        with patch.dict(sys.modules, {'part_selection_footprint_geometry':native}):
+            result = self.service.commit(self.choice(preview, name='Aligned'))
+        self.assertEqual(result['footprint'],'DSMU:Aligned')
+        self.assertEqual(other.read_text(),original.replace('"0603"','"Other"',1).replace('(at 1 2 0)','(at -2 1 270)'))
+
+    def test_conversion_group_reports_exact_incompatible_pad_and_reference(self):
+        other = self.pretty / 'Other.kicad_mod'
+        other.write_text(module('Other').replace('(at 0.75 0)','(at 0.85 0)'))
+        preview = self.service.prepare('C123',['DSMU:0603','DSMU:Other'],package='0603')
+        with self.assertRaisesRegex(ValueError, r'DSMU:Other.*焊盘 2.*0.85'):
+            self.service.commit(self.choice(preview,name='Aligned'))
+
     def test_aligned_staging_tamper_is_rejected_before_publishing(self):
         from types import SimpleNamespace
         preview = self.prepare()

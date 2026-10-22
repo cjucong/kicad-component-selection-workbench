@@ -1,7 +1,16 @@
 /* Checks always use the saved schematic, independent of editable row values. */
 function specificationSummary(check) {
-  const labels = {value: '值', footprint: '封装'};
-  return (check?.issues || []).map(issue => `${(issue.refs || []).join('、')} ${labels[issue.field] || issue.field}：原理图 ${issue.expected}；商品 ${issue.actual}`).join('\n');
+  const labels = {value: '标称值', footprint: '封装', dielectric: '温度系数 / 介质'};
+  const lines = (check?.issues || []).map(issue => `${(issue.refs || []).join('、')} ${labels[issue.field] || issue.field}：原理图 ${issue.expected}；商品 ${issue.actual}`);
+  for (const detail of check?.unknown_details || []) {
+    lines.push(`${(detail.refs || []).join('、')} ${detail.message}`.trim());
+  }
+  const explained = new Set((check?.unknown_details || []).map(detail => detail.field));
+  for (const field of check?.unknown_fields || []) {
+    if (!explained.has(field)) lines.push(`${labels[field] || field}信息缺失或未识别，暂不能完成此项核对`);
+  }
+  if (check?.error) lines.push(check.error);
+  return lines.join('\n');
 }
 
 if (typeof module !== 'undefined') module.exports = {specificationSummary};
@@ -29,15 +38,12 @@ if (typeof document !== 'undefined') (() => {
       const mismatch = check.status === 'mismatch';
       const unknown = !mismatch && check.status === 'unknown';
       if (!mismatch && !unknown) { marker.replaceChildren(); continue; }
-      const labels = {value: '标称值', footprint: '封装'};
-      const missing = (check.unknown_fields || []).map(field => labels[field] || field).join('、');
-      const detail = mismatch ? specificationSummary(check) : check.error ||
-        (missing ? `${missing}信息缺失或未识别，暂不能完成此项核对` : '尚未取得可核对的商品或原理图信息');
+      const detail = specificationSummary(check) || '尚未取得可核对的商品或原理图信息';
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'spec-warning-icon' + (unknown ? ' spec-unknown' : '');
       button.textContent = mismatch ? '\u26a0' : '?';
-      button.title = (mismatch ? '值 / 封装不符\n' : '规格待核对\n') + detail;
+      button.title = (mismatch ? '选料规格不符\n' : '规格待核对\n') + detail;
       button.setAttribute('aria-label', mismatch ? '查看选料规格警告' : '查看待核对规格');
       button.addEventListener('click', () => {
         dialog.querySelector('[data-spec-details]').textContent = code + '\n' + button.title;

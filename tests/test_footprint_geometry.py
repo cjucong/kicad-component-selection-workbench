@@ -56,6 +56,19 @@ def test_identity_estimate(geometry):
     assert result['max_error_mm'] == pytest.approx(0)
 
 
+@pytest.mark.parametrize('transform', [lambda x,y: (x+1,y), lambda x,y: (-y,x), lambda x,y: (-x,y)])
+def test_shared_reference_does_not_fit_away_local_transform(geometry, transform):
+    other = [(n,*transform(x,y)) for n,x,y in POINTS]
+    assert '局部中心不同' in geometry.reference_layout_difference(footprint(other), footprint())
+
+
+def test_shared_reference_ignores_text_shape_and_size_not_numbering(geometry):
+    changed = footprint(extra='(fp_text user "+" (at 5 8 90) (layer "F.SilkS"))')
+    changed = changed.replace('smd rect', 'smd circle').replace('0.8 0.5', '1 1')
+    assert geometry.reference_layout_difference(changed, footprint()) == ''
+    assert '编号不同' in geometry.reference_layout_difference(footprint([('9',1,2)]), footprint())
+
+
 @pytest.mark.parametrize('angle', [90, -90, 180, 37.5])
 def test_numbered_points_determine_kicad_rotation_and_translation(geometry, angle):
     radians = math.radians(angle)

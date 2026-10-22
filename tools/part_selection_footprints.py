@@ -17,6 +17,7 @@ import time
 from uuid import uuid4
 
 from kicad_sexpr import parse_sexpr
+from part_selection_footprint_geometry import reference_layout_difference
 from part_selection_library import IMPORT_LOCK, LibraryImporter, checked_path, digest, table_text
 from part_selection_runtime import runtime_directory
 
@@ -389,10 +390,14 @@ class FootprintChoices:
             raise ValueError('请选择预览中的兼容封装作为配准基准')
         baseline_ids = state.get('baseline_ids',state['original_ids'])
         originals = [e for e in state['existing'] if e['id'] in baseline_ids]
-        if len(originals) != len(set(baseline_ids)) or originals and any(
-                geometry(e['path'].read_text(encoding='utf-8-sig')) != geometry(originals[0]['path'].read_text(encoding='utf-8-sig'))
-                for e in originals):
-            raise ValueError('该行原封装几何不一致，请先拆行后分别配准')
+        if not originals or len(originals) != len(set(baseline_ids)):
+            missing = sorted(set(baseline_ids) - {e['id'] for e in originals})
+            raise ValueError('该行缺少原封装：' + '、'.join(missing) + '；请先拆行后分别配准')
+        baseline = originals[0]['path'].read_text(encoding='utf-8-sig')
+        for original in originals[1:]:
+            difference = reference_layout_difference(original['path'].read_text(encoding='utf-8-sig'), baseline)
+            if difference:
+                raise ValueError(original['id'] + ' 与 ' + originals[0]['id'] + '：' + difference + '；请先拆行后分别配准')
         cache = state.setdefault('aligned', {})
         if identifier not in cache:
             index = len(cache)

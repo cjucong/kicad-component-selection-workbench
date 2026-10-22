@@ -204,6 +204,68 @@ assert new.GetOrientationDegrees()==old.GetOrientationDegrees()
     assert board.read_bytes() == unchanged
 
 
+def test_grouped_rotated_pcb_instances_with_moved_polarity_text_can_share_conversion(native_preview):
+    root, service, _, _, original, _ = native_preview
+    board = root/'fixture.kicad_pcb'
+    script = '''import pcbnew,sys
+b=pcbnew.BOARD()
+source=open(sys.argv[1],encoding='utf-8').read()
+for i,angle in enumerate((0,180,-90)):
+    text=source[:-1]+'(fp_text user "+" (at %s 3 %s) (layer "F.SilkS") (effects (font (size 1 1) (thickness .15)))))' % (i,angle)
+    f=pcbnew.PCB_IO_KICAD_SEXPR().Parse(text).Cast()
+    b.Add(f)
+    f.SetReference('C'+str(i+1))
+    f.SetFPID(pcbnew.LIB_ID('Local','Original'))
+    f.SetOrientationDegrees(angle)
+    f.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(30+i*20),pcbnew.FromMM(45+i*10)))
+pcbnew.SaveBoard(sys.argv[2],b)
+'''
+    def native(code, *args):
+        completed = subprocess.run([str(_find_kicad_python()), '-B', '-c', code, *map(str,args)],
+            capture_output=True, timeout=30, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        assert completed.returncode == 0, completed.stderr.decode(errors='replace')
+
+    native(script, original, board)
+    unchanged = board.read_bytes()
+    converted_text = module('Converted', [('1',-2,-1),('2',2,-1),('3',1,2)],.8)
+    def staged(code, progress=None):
+        folder=service.staging_root/'Libraries/DSMU/LCSC'/code
+        pretty=folder/f'LCSC_{code}.pretty'
+        pretty.mkdir(parents=True)
+        (pretty/'Converted.kicad_mod').write_text(converted_text,encoding='utf-8')
+        (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (version 20241209) '
+            f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))')
+        return {'footprint':f'LCSC_{code}:Converted','symbol':f'LCSC_{code}:Part','c_code':code}
+    with patch('part_selection_footprints.LibraryImporter.convert', side_effect=staged):
+        preview=service.prepare('C456',['Local:Original'],refs=['C1','C2','C3'])
+    detail=service.comparison(preview['preview_id'],preview['default_reference_id'])
+    assert detail['alignment']['ok'], detail
+    result=service.commit({'preview_id':preview['preview_id'],'source':'converted',
+        'existing_id':preview['default_reference_id'],'target_mode':'existing','target_library':'Local',
+        'name':'Shared','acknowledged':True})
+    published=root/result['target_path']/'Shared.kicad_mod'
+    native('''import pcbnew,sys
+b=pcbnew.LoadBoard(sys.argv[1])
+for old in list(b.GetFootprints()):
+    new=pcbnew.PCB_IO_KICAD_SEXPR().Parse(open(sys.argv[2],encoding='utf-8').read()).Cast()
+    b.Add(new)
+    new.SetOrientationDegrees(old.GetOrientationDegrees())
+    new.SetPosition(old.GetPosition())
+    points={p.GetNumber():p.GetPosition() for p in old.Pads()}
+    for p in new.Pads():
+        delta=p.GetPosition()-points[p.GetNumber()]
+        assert abs(delta.x)<=3 and abs(delta.y)<=3, (old.GetReference(),p.GetNumber(),delta)
+''', board, published)
+    assert board.read_bytes() == unchanged
+    # Rename must still preserve every instance's full geometry, including text.
+    renamed=service.prepare_rename(['Local:Original'],'Renamed',code='C456',refs=['C1','C2','C3'])
+    service.library_detail(renamed['preview_id'],renamed['default_id'])
+    with pytest.raises(ValueError, match='几何不一致|拆行'):
+        service.commit({'preview_id':renamed['preview_id'],'source':'rename',
+            'existing_id':renamed['default_id'],'target_mode':'existing','target_library':'Local',
+            'name':'Renamed','acknowledged':True})
+
+
 def test_explicit_original_library_can_restore_a_previously_shifted_pcb(native_preview):
     root,service,preview,_,original,_=native_preview
     # An original library can be selected explicitly even if it is no longer

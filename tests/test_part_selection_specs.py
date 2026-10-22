@@ -26,6 +26,79 @@ def test_equivalent_nominal_and_package_match(validate):
     }
 
 
+def test_explanations_name_source_and_original_unrecognized_value(validate):
+    result = validate(row(value='MODEL, 1nF, 250V, C0G'), stock('Capacitance: 1nF'), explain=True)
+    assert result['status'] == 'unknown'
+    details = result['unknown_details']
+    assert any(d['field']=='value' and d['source']=='schematic' and 'MODEL, 1nF' in d['message'] for d in details)
+    assert any(d['field']=='dielectric' and 'C0G' in d['message'] for d in details)
+
+
+def test_verified_model_prefix_does_not_hide_nominal_or_missing_dielectric(validate):
+    result = validate(row('C1,C2', value='MODEL-C0G, 1nF, 250V, C0G'),
+        stock('Capacitance: 1nF; 温度系数: -', model='MODEL-C0G'), explain=True)
+    assert result['unknown_fields'] == ['dielectric']
+    assert result['unknown_details'][0]['refs'] == ['C1','C2']
+    assert '温度系数' in result['unknown_details'][0]['message']
+    assert '未提供' in result['unknown_details'][0]['message']
+    assert validate(row(value='MODEL-C0G'), stock(model='MODEL-C0G'))['status'] == 'unknown'
+
+
+def test_unrecognized_stock_and_complex_package_explain_separate_causes(validate):
+    result = validate(row(footprint='Local:SMD-2G'), stock('Capacitance: -', package='SMD,D5xL5.4mm'), explain=True)
+    assert any(d['source']=='stock' and '容值' in d['message'] for d in result['unknown_details'])
+    assert any(d['source']=='schematic' and 'SMD-2G' in d['message'] for d in result['unknown_details'])
+    assert any(d['source']=='stock' and 'SMD,D5xL5.4mm' in d['message'] for d in result['unknown_details'])
+
+
+def test_explicit_dielectric_mismatch_and_np0_equivalence(validate):
+    assert validate(row(value='1nF, C0G'), stock('Capacitance: 1nF; 温度系数: NP0'))['status'] == 'matched'
+    result = validate(row(value='1nF, C0G'), stock('Capacitance: 1nF; 温度系数: X7R'))
+    assert result['status'] == 'mismatch'
+    assert result['issues'][0]['field'] == 'dielectric'
+
+
+@pytest.mark.parametrize('detail,reason', [('Capacitance: -', '未提供'),
+    ('Capacitance: 1nF; Capacitance: 2nF', '多项冲突'), ('Capacitance: 50V', '无法唯一识别')])
+def test_stock_nominal_reasons_are_specific(validate, detail, reason):
+    result = validate(row(), stock(detail), explain=True)
+    assert reason in result['unknown_details'][0]['message']
+
+
+@pytest.mark.parametrize('model,value', [('OTHER', 'MODEL, 100nF'), ('MODEL', 'MODEL100nF'),
+    ('MODEL', 'MODEL'), ('MODEL', 'MODEL, 100nF / 1uF')])
+def test_model_prefix_cannot_guess_or_hide_ambiguous_nominal(validate, model, value):
+    assert validate(row(value=value), stock(model=model))['status'] == 'unknown'
+
+
+def test_missing_saved_field_and_failed_lookup_are_explained_without_edit_fallback(validate):
+    result = validate(row(), stock(), {'C1': {'footprint': 'DSMU:0603'}}, explain=True)
+    assert result['unknown_details'][0]['source'] == 'schematic'
+    assert 'Value 未填写' in result['unknown_details'][0]['message']
+    result = validate(row(), stock(ok=False, error='timeout'), explain=True)
+    assert {d['field'] for d in result['unknown_details']} == {'value', 'footprint'}
+    assert all('timeout' in d['message'] for d in result['unknown_details'])
+
+
+def test_unknown_details_remain_when_another_field_is_mismatched(validate):
+    result = validate(row('C1,C2', value='100nF, C0G'), stock('Capacitance: 1uF'), explain=True)
+    assert result['status'] == 'mismatch'
+    assert result['issues'][0]['field'] == 'value'
+    assert result['unknown_fields'] == ['dielectric']
+    assert result['unknown_details'][0]['refs'] == ['C1', 'C2']
+
+
+@pytest.mark.parametrize('detail', ['温度系数: -', '温度系数: X7R; Dielectric: C0G', '温度系数: C0G/X7R'])
+def test_missing_or_conflicting_dielectric_is_not_matched(validate, detail):
+    result = validate(row(value='1nF, C0G'), stock('Capacitance: 1nF; ' + detail), explain=True)
+    assert result['status'] == 'unknown'
+    assert result['unknown_fields'] == ['dielectric']
+
+
+def test_no_dielectric_required_for_electrolytic(validate):
+    assert validate(row(value='22uF, 35V'), stock('Capacitance: 22uF'))['status'] == 'matched'
+
+
 @pytest.mark.parametrize("value", [
     "4.7uH, Rated Current: 800mA, Saturation Current: 1A",
     "4.7uH, Rated Current: 800mA, Saturation Current: not specified",

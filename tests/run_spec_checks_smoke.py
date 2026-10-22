@@ -67,6 +67,22 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await pending.waitFor();
   assert.match(await pending.getAttribute('title'),/封装.*缺失或未识别/);
   assert.doesNotMatch(await pending.getAttribute('title'),/值和封装|参数不足/);
+  // Detailed unknown reasons remain visible alongside a definite mismatch.
+  await page.evaluate(()=>{
+   currentRows.find(row=>row.refs==='C1').spec_check={c_code:'C100',status:'mismatch',
+    issues:[{field:'value',refs:['C1'],expected:'100nF',actual:'10nF'}],unknown_fields:['dielectric'],
+    unknown_details:[{field:'dielectric',source:'stock',refs:['C1'],message:'原理图要求 C0G；商品温度系数未提供：- <script>bad()</script>'}]};
+   refreshSpecificationWarnings();
+  });
+  const warning=row('C1').getByRole('button',{name:'查看选料规格警告'});
+  await warning.waitFor();
+  assert.match(await warning.getAttribute('title'),/商品温度系数未提供：-/);
+  assert.doesNotMatch(await warning.getAttribute('title'),/信息缺失或未识别/);
+  await warning.click();
+  assert.match(await page.locator('#specWarningDialog').innerText(),/原理图 100nF.*商品 10nF/);
+  assert.match(await page.locator('#specWarningDialog').innerText(),/<script>bad\(\)<\/script>/);
+  assert.equal(await page.locator('#specWarningDialog script').count(),0);
+  await page.getByRole('button',{name:'关闭参数核对'}).click();
   await page.evaluate(()=>{
    currentRows.find(row=>row.refs==='C1').spec_check={c_code:'C100',status:'matched',issues:[],unknown_fields:[]};
    refreshSpecificationWarnings();

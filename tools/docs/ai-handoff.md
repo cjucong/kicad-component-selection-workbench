@@ -2,7 +2,7 @@
 
 ## 规格警告与主表筛选
 
-`part_selection_specs.py` 是只读标称值/尺寸核对器。`row_spec_check` 校验当前主料与缓存的 C 编码一致后，传入 `schematic_fields_by_ref`，不能用未同步的行编辑替代原理图基线。`POST /api/spec_check` 批量只读缓存和已保存原理图；`web/spec-warnings.js` 在库存/主料变化后合并请求、拒绝过期响应，行号显示警告或待核对。缺失数据和复杂封装保持 unknown，不能宣称安全替代。
+`part_selection_specs.py` 是只读标称值/尺寸/显式介质核对器。`row_spec_check` 校验当前主料与缓存的 C 编码一致后，传入 `schematic_fields_by_ref`，不能用未同步的行编辑替代原理图基线。`POST /api/spec_check` 批量只读缓存和已保存原理图；`web/spec-warnings.js` 在库存/主料变化后合并请求、拒绝过期响应，行号显示警告或待核对。缺失数据和复杂封装保持 unknown，不能宣称安全替代；`unknown_details` 必须写明原理图/商品来源、原始字段和具体原因，旧数据无该字段时才使用通用兼容文案。C0G/NP0 等效，型号前缀只有在精确匹配已验证主料型号且有明确分隔符时才剥离。
 
 主表列筛选见 `web/row-filters.js`，只控制可见性，库存总需求仍以所有已加载行计算。库存显示文案由 `localInventoryPresentation` 统一生成：无本地记录按可用零显示，商城必须有有效且成功查询的数值才能判充足；导入的未关联/冲突记录不自动计入。
 

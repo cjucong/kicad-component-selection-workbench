@@ -558,7 +558,7 @@ def row_spec_check(row: dict[str, object]) -> dict[str, object]:
     stock = row.get('stock') or {}
     if normalize_lcsc_c_code(stock.get('c_code')) != code:
         stock = {}
-    return {**validate_passive_specs(row, stock, actual_by_ref=row.get('schematic_fields_by_ref') or {}), 'c_code': code}
+    return {**validate_passive_specs(row, stock, actual_by_ref=row.get('schematic_fields_by_ref') or {}, explain=True), 'c_code': code}
 
 
 def row_review_status(row: dict[str, object]) -> str:
@@ -5015,7 +5015,7 @@ function rowForRefs(row, refs) {{
   clone.quantity = refs.length;
   clone.temp_split = true;
   if (row.spec_check) {{
-    clone.spec_check = {{...row.spec_check, status: "unknown", issues: [], unknown_fields: ["value", "footprint"]}};
+    clone.spec_check = {{...row.spec_check, status: "unknown", issues: [], unknown_fields: ["value", "footprint"], unknown_details: [], error: ""}};
     clone.spec_check_needs_refresh = true;
   }}
   for (const key of ["per_ref_sync_fields", "schematic_fields_by_ref", "per_ref_selection", "description_by_ref", "notes_by_ref", "field_diffs_by_ref", "external_schematic_updates", "schematic_field_conflicts", "stock_by_ref"]) {{

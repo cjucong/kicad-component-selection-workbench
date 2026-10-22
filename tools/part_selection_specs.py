@@ -21,6 +21,9 @@ _LABELS = {
           "\u7535\u5bb9\u503c", "\u7535\u5bb9\u91cf", "\u7535\u5bb9\u5bb9\u91cf"},
     "L": {"inductance", "nominal inductance", "\u611f\u503c", "\u7535\u611f\u503c", "\u7535\u611f\u91cf"},
 }
+_DIELECTRIC_LABELS = {'dielectric', 'temperature coefficient', 'temperature characteristic',
+                      '\u6e29\u5ea6\u7cfb\u6570', '\u6e29\u5ea6\u7279\u6027', '\u4ecb\u8d28', '\u7535\u4ecb\u8d28'}
+_DIELECTRIC = re.compile(r'(?<![\w-])(?:C0G|NP0|X[5678][RSTUV]|Y5V|Z5U)(?![\w-])', re.I)
 _KIND_WORDS = {
     "R": r"\bresistor\b|\bRES\b|\u7535\u963b",
     "C": r"\bcapacitor\b|\bCAP\b|\u7535\u5bb9",
@@ -79,6 +82,7 @@ def _kind(ref, fields):
 
 def _normalized_value(text):
     text = text.replace("\u03bc", "u").replace("\u00b5", "u").replace("\u2126", "\u03a9")
+    text = text.replace('\uff0c', ',').replace('\uff1b', ';')
     for name, unit in _CHINESE_UNITS.items():
         text = text.replace(name, unit)
     return text
@@ -198,7 +202,59 @@ def _package(value):
     return None
 
 
-def validate_passive_specs(row, stock, actual_by_ref=None):
+def _schematic_nominal(value, kind, model):
+    text, model = _text(value), _text(model)
+    if model and text.startswith(model):
+        tail = text[len(model):].lstrip()
+        if tail.startswith((',', ';', '\uff0c', '\uff1b')):
+            text = tail[1:].strip()
+    return _nominal(text, kind)
+
+
+def _dielectrics(text):
+    return list(dict.fromkeys('C0G' if item.upper() == 'NP0' else item.upper()
+                             for item in _DIELECTRIC.findall(_text(text))))
+
+
+def _stock_dielectric(stock):
+    sources = [stock.get('param_detail'), stock.get('param')]
+    entries = [entry for source in sources for entry in _parameter_entries(source)]
+    values = [value for label, value in entries if label in _DIELECTRIC_LABELS]
+    if values:
+        parsed = [_dielectrics(value) for value in values]
+        if all(len(items) == 1 for items in parsed) and len({items[0] for items in parsed}) == 1:
+            return parsed[0][0], ' / '.join(values)
+        return None, ' / '.join(value or '(\u7a7a)' for value in values)
+    parsed = {item for source in sources if isinstance(source, str) and not _parameter_entries(source)
+              for item in _dielectrics(source)}
+    return (next(iter(parsed)), next(iter(parsed))) if len(parsed) == 1 else (None, '')
+
+
+def _unknown_message(field, source, fields, stock, kind):
+    if field == 'footprint':
+        value = _text(fields.get('footprint') if source == 'schematic' else stock.get('package'))
+        origin = '\u5df2\u4fdd\u5b58\u539f\u7406\u56fe Footprint' if source == 'schematic' else '\u5546\u54c1\u5c01\u88c5'
+        return (origin + ' \u672a\u586b\u5199' if not value else
+                origin + '\u300c' + value + '\u300d\u4e0d\u662f\u53ef\u81ea\u52a8\u6838\u5bf9\u7684\u6807\u51c6\u5c3a\u5bf8\u522b\u540d\uff0c\u9700\u4eba\u5de5\u6838\u5bf9\u5c01\u88c5\u51e0\u4f55')
+    label = {'C': '\u5bb9\u503c', 'R': '\u963b\u503c', 'L': '\u611f\u503c'}[kind]
+    if source == 'schematic':
+        value = _text(fields.get('value'))
+        return ('\u5df2\u4fdd\u5b58\u539f\u7406\u56fe Value \u672a\u586b\u5199\uff0c\u7f3a\u5c11' + label if not value else
+                '\u5df2\u4fdd\u5b58\u539f\u7406\u56fe Value\u300c' + value + '\u300d\u65e0\u6cd5\u552f\u4e00\u8bc6\u522b' + label)
+    values = [value for item in ('param_detail', 'param')
+              for name, value in _parameter_entries(stock.get(item)) if name in _LABELS[kind]]
+    if values:
+        parsed = [_nominal(value, kind) for value in values]
+        missing = {'', '-', '--', 'n/a', 'none', '\u672a\u63d0\u4f9b'}
+        reason = ('\u672a\u63d0\u4f9b' if all(value.casefold() in missing for value in values) else
+                  '\u591a\u9879\u51b2\u7a81' if all(parsed) and len({item[0] for item in parsed}) > 1 else
+                  '\u65e0\u6cd5\u552f\u4e00\u8bc6\u522b')
+        return '\u5546\u54c1' + label + reason + '\uff1a' + ' / '.join(value or '(\u7a7a)' for value in values)
+    summary = _text(stock.get('param'))
+    return '\u5546\u54c1\u672a\u63d0\u4f9b\u53ef\u552f\u4e00\u8bc6\u522b\u7684' + label + ('\uff1b\u6458\u8981\uff1a\u300c' + summary + '\u300d' if summary else '')
+
+
+def validate_passive_specs(row, stock, actual_by_ref=None, *, explain=False):
     """Compare selected stock's nominal value/size with a passive grouped row.
 
     ``expected`` is the schematic requested field; ``actual`` is the selected
@@ -208,7 +264,9 @@ def validate_passive_specs(row, stock, actual_by_ref=None):
     source. Issues sharing a field and the same text are grouped by reference.
     ``mismatch`` takes precedence over ``unknown``. ``matched`` requires both
     fields to be comparable for every member. Unknown fields are ordered value,
-    footprint. Complex footprints are deliberately not compared, even verbatim.
+    footprint, dielectric. Dielectric is checked only when explicitly requested.
+    Complex footprints are deliberately not compared, even verbatim. With
+    ``explain=True``, unknown_details names each source, raw value, and reason.
     """
     row = row if isinstance(row, Mapping) else {}
     stock = stock if isinstance(stock, Mapping) else {}
@@ -224,10 +282,26 @@ def validate_passive_specs(row, stock, actual_by_ref=None):
             kind = "ambiguous"
         members.append((ref, fields, kind))
     result = {"status": "not_applicable", "issues": [], "unknown_fields": []}
+    details = {}
+
+    def unavailable(field, source, ref, message):
+        detail = details.setdefault((field, source, message), {
+            'field': field, 'source': source, 'refs': [], 'message': message})
+        if ref and ref not in detail['refs']:
+            detail['refs'].append(ref)
+
+    if explain:
+        result['unknown_details'] = []
     if not any(kind for _, _, kind in members):
         return result
     if stock.get("ok") is not True:
-        return {"status": "unknown", "issues": [], "unknown_fields": ["value", "footprint"]}
+        result.update(status='unknown', unknown_fields=['value', 'footprint'])
+        if explain:
+            result['unknown_details'] = [{'field': field, 'source': 'stock', 'refs': refs[:],
+                'message': '\u5f53\u524d C \u7f16\u7801\u5c1a\u65e0\u5df2\u9a8c\u8bc1\u5546\u54c1' + label +
+                ('\uff1b\u67e5\u8be2\u9519\u8bef\uff1a' + _text(stock.get('error')) if stock.get('error') else '')}
+                for field, label in [('value', '\u6807\u79f0\u503c\u53c2\u6570'), ('footprint', '\u5c01\u88c5\u4fe1\u606f')]]
+        return result
     unknown = set()
     issues = {}
     stock_values = {kind: _stock_nominal(stock, kind) for _, _, kind in members if kind in _UNITS}
@@ -235,25 +309,47 @@ def validate_passive_specs(row, stock, actual_by_ref=None):
     for ref, fields, kind in members:
         if kind not in _UNITS:
             unknown.update(("value", "footprint"))
+            unavailable('value', 'schematic', ref, '\u539f\u7406\u56fe\u5668\u4ef6\u7c7b\u578b\u65e0\u6cd5\u552f\u4e00\u786e\u5b9a\uff0c\u4e0d\u80fd\u6309\u666e\u901a\u963b\u5bb9\u611f\u6838\u5bf9\uff1bComment\uff1a' +
+                        (_text(fields.get('comment')) or '(\u672a\u586b\u5199)'))
+            unavailable('footprint', 'schematic', ref, '\u539f\u7406\u56fe\u5668\u4ef6\u7c7b\u578b\u65e0\u6cd5\u552f\u4e00\u786e\u5b9a\uff0c\u4e0d\u80fd\u6309\u666e\u901a\u963b\u5bb9\u611f\u5c3a\u5bf8\u6838\u5bf9')
             continue
         stock_value = stock_values[kind]
-        schematic_value = _nominal(fields.get("value"), kind)
-        comparisons = (
+        schematic_value = _schematic_nominal(fields.get("value"), kind, stock.get('model'))
+        comparisons = [
             ("value", schematic_value[0] if schematic_value else None,
              stock_value[0] if stock_value else None, stock_value[1] if stock_value else ""),
             ("footprint", _package(fields.get("footprint")), stock_package, _text(stock.get("package"))),
-        )
+        ]
+        requested = _dielectrics(fields.get('value')) if kind == 'C' else []
+        if requested:
+            actual_dielectric, raw_dielectric = _stock_dielectric(stock)
+            comparisons.append(('dielectric', requested[0] if len(requested) == 1 else None,
+                                actual_dielectric, raw_dielectric))
         for field, expected, actual, stock_text in comparisons:
             if expected is None or actual is None:
                 unknown.add(field)
+                for source, value in (('schematic', expected), ('stock', actual)):
+                    if value is not None:
+                        continue
+                    if field == 'dielectric':
+                        message = ('\u539f\u7406\u56fe Value \u4e2d\u6e29\u5ea6\u7cfb\u6570 / \u4ecb\u8d28\u8981\u6c42\u4e0d\u552f\u4e00\uff1a' + ' / '.join(requested)
+                                   if source == 'schematic' else
+                                   '\u539f\u7406\u56fe\u8981\u6c42\u6e29\u5ea6\u7cfb\u6570 / \u4ecb\u8d28 ' + ' / '.join(requested) +
+                                   '\uff1b\u5546\u54c1\u6e29\u5ea6\u7cfb\u6570 / \u4ecb\u8d28\u672a\u63d0\u4f9b\u6216\u65e0\u6cd5\u552f\u4e00\u8bc6\u522b' +
+                                   ('\uff1a' + raw_dielectric if raw_dielectric else '\uff08\u672a\u5217\u51fa\uff09'))
+                    else:
+                        message = _unknown_message(field, source, fields, stock, kind)
+                    unavailable(field, source, ref, message)
             elif expected != actual:
-                expected_text = _text(fields.get(field))
+                expected_text = ' / '.join(requested) if field == 'dielectric' else _text(fields.get(field))
                 key = (field, expected_text, stock_text)
                 issue = issues.setdefault(key, {"field": field, "refs": [],
                                                 "expected": expected_text, "actual": stock_text})
                 if ref:
                     issue["refs"].append(ref)
     result["issues"] = sorted(issues.values(), key=lambda issue: issue["field"] != "value")
-    result["unknown_fields"] = [field for field in ("value", "footprint") if field in unknown]
+    result["unknown_fields"] = [field for field in ("value", "footprint", "dielectric") if field in unknown]
+    if explain:
+        result['unknown_details'] = list(details.values())
     result["status"] = "mismatch" if issues else "unknown" if unknown else "matched"
     return result

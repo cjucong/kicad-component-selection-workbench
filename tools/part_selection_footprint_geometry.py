@@ -59,6 +59,23 @@ def _pad_positions(root):
     return pads
 
 
+def reference_layout_difference(source, reference):
+    """A shared replacement needs the same local numbered-pad centers, not text."""
+    try:
+        pads, baseline = _pad_positions(_parse_module(source)), _pad_positions(_parse_module(reference))
+        if set(pads) != set(baseline):
+            return '焊盘编号不同：' + ', '.join(sorted(set(pads) ^ set(baseline)))
+        if len(pads) < 2:
+            return '缺少至少两个唯一编号焊盘，无法核对方向'
+        for number in sorted(pads):
+            if math.dist(pads[number], baseline[number]) > 1e-6 + 1e-12:
+                return ('焊盘 %s 局部中心不同：(%g, %g) / (%g, %g) mm' %
+                        (number, *pads[number], *baseline[number]))
+        return ''
+    except (ValueError, TypeError, OverflowError) as exc:
+        return '焊盘坐标不可识别：' + str(exc)
+
+
 def _failure(reason):
     return {'ok': False, 'rotation_deg': 0.0, 'offset_mm': [0.0, 0.0],
             'max_error_mm': None, 'reason': str(reason)}
