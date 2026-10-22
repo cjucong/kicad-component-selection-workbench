@@ -24,6 +24,19 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.waitForSelector('#rows tr[data-refs="C1"]');
   assert.equal(await row('C1').getByRole('button',{name:'查看选料规格警告'}).count(),1);
   assert.equal(await row('R1').locator('.spec-warning-icon').count(),0);
+  // Body dimensions alone cannot prove pad compatibility; opening the explanation is read-only.
+  const beforeQuestion=await row('R618').innerText();
+  const bodySize=row('R618').getByRole('button',{name:'查看待核对规格'});
+  await bodySize.click();
+  const explanation=await page.locator('#specWarningDialog').innerText();
+  assert.match(explanation,/规格待人工确认/);
+  assert.match(explanation,/名称未包含焊盘间距、钻孔直径和引脚方向/);
+  assert.match(explanation,/还需要：焊盘间距、钻孔直径、引脚方向/);
+  assert.equal((explanation.match(/还需要：/g)||[]).length,1);
+  assert.match(explanation,/建议：保留当前本地封装/);
+  assert.doesNotMatch(explanation,/安全替换|可以替换|禁止自动替换/);
+  await page.getByRole('button',{name:'关闭参数核对'}).click();
+  assert.equal(await row('R618').innerText(),beforeQuestion);
   await row('C1').getByRole('button',{name:'查看选料规格警告'}).click();
   assert.match(await page.locator('#specWarningDialog').innerText(),/原理图 100nF.*商品 10nF/);
   assert.match(await page.locator('#specWarningDialog').innerText(),/原理图 DSMU:0603.*商品 0402/);
@@ -65,8 +78,13 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   });
   const pending=row('C1').getByRole('button',{name:'查看待核对规格'});
   await pending.waitFor();
-  assert.match(await pending.getAttribute('title'),/封装.*缺失或未识别/);
-  assert.doesNotMatch(await pending.getAttribute('title'),/值和封装|参数不足/);
+  assert.match(await pending.getAttribute('title'),/规格待人工确认/);
+  assert.match(await pending.getAttribute('title'),/保留当前本地封装/);
+  assert.match(await pending.getAttribute('title'),/封装信息缺失或未识别/);
+  assert.doesNotMatch(await pending.getAttribute('title'),/值和封装/);
+  await pending.click();
+  assert.match(await page.locator('#specWarningDialog').innerText(),/不凭不确定信息自动替换封装，不改变确认料状态/);
+  await page.getByRole('button',{name:'关闭参数核对'}).click();
   // Detailed unknown reasons remain visible alongside a definite mismatch.
   await page.evaluate(()=>{
    currentRows.find(row=>row.refs==='C1').spec_check={c_code:'C100',status:'mismatch',
@@ -103,7 +121,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert(bounds.x>=0 && bounds.x+bounds.width<=391);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({warnings:true,equivalent_values:true,live_refresh:true,saved_baseline:true,
-    inventory_messages:true,unknown_code:true,mobile_bounds:true,page_errors:errors}));
+    inventory_messages:true,unknown_code:true,footprint_question_details:true,mobile_bounds:true,page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
@@ -115,13 +133,15 @@ def main():
         schematic = '(kicad_sch ' + ' '.join(
             f'(symbol (property "Reference" "{ref}") (property "Comment" "{comment}") '
             f'(property "Value" "{value}") (property "Footprint" "DSMU:0603") (property "LCSC" "{code}"))'
-            for ref, comment, value, code in [('C1', 'capacitor', '100nF', 'C100'), ('R1', 'resistor', '100K', 'C200')]) + ')'
+            for ref, comment, value, code in [('C1', 'capacitor', '100nF', 'C100'),
+                ('R1', 'resistor', '100K', 'C200'), ('R618', 'resistor', '5kΩ', 'C618')]) + ')'
         (root / 'test.kicad_sch').write_text(schematic, encoding='utf-8')
         config = root / 'settings.json'
         config.write_text(json.dumps({'schematic_dir': '.', 'source_bom': '__schematic__', 'bom_dir': 'data'}), encoding='utf-8')
         app = PartSelectionApp(config)
         cache = {'C100': {'ok': True, 'c_code': 'C100', 'stock': '200', 'param_detail': '容值: 10nF', 'package': '0402'},
-                 'C200': {'ok': True, 'c_code': 'C200', 'stock': '0', 'param_detail': '阻值: 100kΩ', 'package': '0603'}}
+                 'C200': {'ok': True, 'c_code': 'C200', 'stock': '0', 'param_detail': '阻值: 100kΩ', 'package': '0603'},
+                 'C618': {'ok': True, 'c_code': 'C618', 'stock': '100', 'param_detail': '阻值: 5kΩ', 'package': '插件,D2.5xL6.8mm'}}
         save_stock_cache(app.stock_cache_path, cache)
 
         def fake_stock(code):

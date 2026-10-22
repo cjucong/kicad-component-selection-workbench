@@ -12,6 +12,7 @@ import re
 __all__ = ["validate_passive_specs"]
 
 _NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
+_TH_BODY_SIZE = re.compile(rf"(?:插件|直插)\s*[,，]\s*D\s*{_NUMBER}\s*[x×]\s*L?\s*{_NUMBER}\s*mm", re.I)
 _SCALE = {"": 0, "R": 0, "r": 0, "p": -12, "n": -9, "u": -6,
           "m": -3, "k": 3, "K": 3, "M": 6, "G": 9}
 _UNITS = {"R": r"(?:[Rr]|\u03a9|(?i:ohms?))", "C": r"[Ff]", "L": r"[Hh]"}
@@ -239,9 +240,9 @@ def _unknown_message(field, source, fields, stock, kind):
     if field == 'footprint':
         value = _text(fields.get('footprint') if source == 'schematic' else stock.get('package'))
         origin = '\u5df2\u4fdd\u5b58\u539f\u7406\u56fe Footprint' if source == 'schematic' else '\u5546\u54c1\u5c01\u88c5'
-        if source != 'schematic' and re.search(r'插件|直插|D\s*\d+(?:\.\d+)?\s*[xX×]\s*[L]?\s*\d+(?:\.\d+)?', value, re.I):
-            return (origin + '\u300c' + value + '\u300d仅提供本体外形尺寸；\n'
-                    '焊盘间距、钻孔直径和引脚方向未提供，需核对数据手册或封装预览')
+        if source != 'schematic' and _TH_BODY_SIZE.fullmatch(value):
+            return (origin + '\u300c' + value + '\u300d名称不足以确定焊盘布局；\n'
+                    '名称未包含焊盘间距、钻孔直径和引脚方向，需核对数据手册或实际封装')
         return (origin + ' \u672a\u586b\u5199' if not value else
                 origin + '\u300c' + value + '\u300d\u4e0d\u662f\u53ef\u81ea\u52a8\u6838\u5bf9\u7684\u6807\u51c6\u5c3a\u5bf8\u522b\u540d\uff0c\u9700\u4eba\u5de5\u6838\u5bf9\u5c01\u88c5\u51e0\u4f55')
     label = {'C': '\u5bb9\u503c', 'R': '\u963b\u503c', 'L': '\u611f\u503c'}[kind]
@@ -260,6 +261,68 @@ def _unknown_message(field, source, fields, stock, kind):
         return '\u5546\u54c1' + label + reason + '\uff1a' + ' / '.join(value or '(\u7a7a)' for value in values)
     summary = _text(stock.get('param'))
     return '\u5546\u54c1\u672a\u63d0\u4f9b\u53ef\u552f\u4e00\u8bc6\u522b\u7684' + label + ('\uff1b\u6458\u8981\uff1a\u300c' + summary + '\u300d' if summary else '')
+
+
+def _unknown_missing(field, source, fields, stock, kind):
+    """Return the concrete information still needed for an unknown check."""
+    if field == 'footprint':
+        value = _text(fields.get('footprint') if source == 'schematic' else stock.get('package'))
+        if source != 'schematic' and _TH_BODY_SIZE.fullmatch(value):
+            return ['焊盘间距', '钻孔直径', '引脚方向']
+        return ['可识别的封装几何', '焊盘数量与编号', '焊盘相对坐标和尺寸']
+    if field == 'value':
+        return ['可唯一识别的标称值']
+    if field == 'dielectric':
+        return ['温度系数 / 介质']
+    return []
+
+
+def _assessment(status, unknown_fields, details):
+    """Explain a read-only check without granting replacement compatibility."""
+    if status == 'matched':
+        return {
+            'confidence': 'checked_fields_only',
+            'decision': 'check_only',
+            'category': 'checked_fields_match',
+            'summary': '已核对字段相符，不代表完整电气或封装兼容',
+            'missing': [],
+            'recommended_action': '封装替换仍需按实际焊盘布局及器件数据手册确认',
+        }
+    if status == 'mismatch':
+        return {
+            'confidence': 'conflict',
+            'decision': 'review_conflict',
+            'category': 'specification_conflict',
+            'summary': '已核对字段存在明确差异，不是单纯信息不足',
+            'missing': [],
+            'recommended_action': '请先核实下列原理图要求与商品参数差异，再决定是否换料；此提示不自动修改选型',
+        }
+    missing = []
+    for detail in details.values():
+        for item in detail.get('missing', []):
+            if item not in missing:
+                missing.append(item)
+    for field in unknown_fields:
+        if any(detail.get('field') == field and detail.get('missing') for detail in details.values()):
+            continue
+        fallback = {
+            'footprint': ['可识别的封装几何', '焊盘数量与编号', '焊盘相对坐标和尺寸'],
+            'value': ['可唯一识别的标称值'],
+            'dielectric': ['温度系数 / 介质'],
+        }.get(field, [field])
+        for item in fallback:
+            if item not in missing:
+                missing.append(item)
+    category = 'footprint_geometry_missing' if unknown_fields == ['footprint'] else 'specification_insufficient'
+    return {
+        'confidence': 'insufficient',
+        'decision': 'keep_existing',
+        'category': category,
+        'summary': '封装名称不足以判断兼容性' if unknown_fields == ['footprint'] else '核对信息不足，不能判定一致或不符',
+        'missing': missing,
+        'recommended_action': ('保留当前本地封装；如需替换，请核对转换封装或数据手册中的焊盘编号、坐标、尺寸及通孔钻孔。仅改名不证明兼容'
+                               if 'footprint' in unknown_fields else '补充下列缺失信息后重新核对；不因问号修改原有确认状态'),
+    }
 
 
 def validate_passive_specs(row, stock, actual_by_ref=None, *, explain=False):
@@ -294,7 +357,8 @@ def validate_passive_specs(row, stock, actual_by_ref=None, *, explain=False):
 
     def unavailable(field, source, ref, message):
         detail = details.setdefault((field, source, message), {
-            'field': field, 'source': source, 'refs': [], 'message': message})
+            'field': field, 'source': source, 'refs': [], 'message': message,
+            'missing': _unknown_missing(field, source, fields, stock, kind)})
         if ref and ref not in detail['refs']:
             detail['refs'].append(ref)
 
@@ -307,8 +371,11 @@ def validate_passive_specs(row, stock, actual_by_ref=None, *, explain=False):
         if explain:
             result['unknown_details'] = [{'field': field, 'source': 'stock', 'refs': refs[:],
                 'message': '\u5f53\u524d C \u7f16\u7801\u5c1a\u65e0\u5df2\u9a8c\u8bc1\u5546\u54c1' + label +
-                ('\uff1b\u67e5\u8be2\u9519\u8bef\uff1a' + _text(stock.get('error')) if stock.get('error') else '')}
+                ('\uff1b\u67e5\u8be2\u9519\u8bef\uff1a' + _text(stock.get('error')) if stock.get('error') else ''),
+                'missing': _unknown_missing(field, 'stock', {}, stock, None)}
                 for field, label in [('value', '\u6807\u79f0\u503c\u53c2\u6570'), ('footprint', '\u5c01\u88c5\u4fe1\u606f')]]
+            result['assessment'] = _assessment(result['status'], result['unknown_fields'],
+                                               {item['field']: item for item in result['unknown_details']})
         return result
     unknown = set()
     issues = {}
@@ -360,4 +427,6 @@ def validate_passive_specs(row, stock, actual_by_ref=None, *, explain=False):
     if explain:
         result['unknown_details'] = list(details.values())
     result["status"] = "mismatch" if issues else "unknown" if unknown else "matched"
+    if explain:
+        result['assessment'] = _assessment(result['status'], result['unknown_fields'], details)
     return result

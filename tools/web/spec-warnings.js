@@ -1,7 +1,18 @@
 /* Checks always use the saved schematic, independent of editable row values. */
 function specificationSummary(check) {
   const labels = {value: '标称值', footprint: '封装', dielectric: '温度系数 / 介质'};
-  const lines = (check?.issues || []).map(issue => `${(issue.refs || []).join('、')} ${labels[issue.field] || issue.field}：原理图 ${issue.expected}；商品 ${issue.actual}`);
+  const assessment = check?.assessment || (check?.status === 'unknown' ? {
+    summary: '自动核对尚不能判定一致或不符', decision: 'keep_existing',
+    recommended_action: '先核对下列原因；缺少封装依据时建议保留当前本地封装',
+  } : null);
+  const missing = [...new Set([...(assessment?.missing || []),
+    ...(check?.unknown_details || []).flatMap(detail => detail.missing || [])])];
+  const lines = [];
+  if (assessment?.summary) lines.push(`处理结论：${assessment.summary}`);
+  if (assessment?.decision === 'keep_existing') lines.push('处理原则：不凭不确定信息自动替换封装，不改变确认料状态');
+  if (missing.length) lines.push(`还需要：${missing.join('、')}`);
+  if (assessment?.recommended_action) lines.push(`建议：${assessment.recommended_action}`);
+  lines.push(...(check?.issues || []).map(issue => `${(issue.refs || []).join('、')} ${labels[issue.field] || issue.field}：原理图 ${issue.expected}；商品 ${issue.actual}`));
   for (const detail of check?.unknown_details || []) {
     lines.push(`${(detail.refs || []).join('、')} ${detail.message}`.trim());
   }
@@ -43,7 +54,7 @@ if (typeof document !== 'undefined') (() => {
       button.type = 'button';
       button.className = 'spec-warning-icon' + (unknown ? ' spec-unknown' : '');
       button.textContent = mismatch ? '\u26a0' : '?';
-      button.title = (mismatch ? '选料规格不符\n' : '规格待核对\n') + detail;
+      button.title = (mismatch ? '选料规格不符\n' : '规格待人工确认\n') + detail;
       button.setAttribute('aria-label', mismatch ? '查看选料规格警告' : '查看待核对规格');
       button.addEventListener('click', () => {
         dialog.querySelector('[data-spec-details]').textContent = code + '\n' + button.title;

@@ -52,13 +52,55 @@ def test_unrecognized_stock_and_complex_package_explain_separate_causes(validate
 
 
 def test_through_hole_product_size_explains_missing_footprint_geometry(validate):
-    result = validate(row(ref='R618', value='MMFR2568B500KV9'),
+    result = validate(row(ref='R618', value='5kΩ'),
                       stock('Resistance: 5kΩ', package='插件,D2.5xL6.8mm'), explain=True)
     messages = [d['message'] for d in result['unknown_details']
                 if d['source'] == 'stock' and d['field'] == 'footprint']
     assert messages
-    assert '仅提供本体外形尺寸' in messages[0]
-    assert '焊盘间距、钻孔直径和引脚方向未提供' in messages[0]
+    assert '名称不足以确定焊盘布局' in messages[0]
+    assert '名称未包含焊盘间距、钻孔直径和引脚方向' in messages[0]
+    assessment = result['assessment']
+    assert assessment['decision'] == 'keep_existing'
+    assert assessment['category'] == 'footprint_geometry_missing'
+    assert assessment['missing'] == ['焊盘间距', '钻孔直径', '引脚方向']
+    assert '保留当前本地封装' in assessment['recommended_action']
+
+
+def test_explicit_conflict_requests_review_without_claiming_a_replacement_gate(validate):
+    result = validate(row(ref='R618', value='5.1kΩ'),
+                      stock('Resistance: 5kΩ', package='0603'), explain=True)
+    assert result['status'] == 'mismatch'
+    assert result['assessment']['decision'] == 'review_conflict'
+    assert '明确差异' in result['assessment']['summary']
+    assert '不自动修改选型' in result['assessment']['recommended_action']
+
+
+def test_smd_body_dimensions_do_not_request_through_hole_drilling(validate):
+    result = validate(row(footprint='0603'), stock(package='SMD,D5xL5.4mm'), explain=True)
+    assert result['status'] == 'unknown'
+    assert '钻孔直径' not in result['assessment']['missing']
+    assert len(result['assessment']['missing']) == len(set(result['assessment']['missing']))
+
+
+def test_through_hole_name_with_extra_geometry_does_not_claim_it_is_missing(validate):
+    result = validate(row('R1', '5kΩ'),
+                      stock('Resistance: 5kΩ', package='插件,D2.5xL6.8mm,P10,D0.6'), explain=True)
+    assert result['status'] == 'unknown'
+    assert all('名称未包含焊盘间距' not in detail['message'] for detail in result['unknown_details'])
+
+
+def test_checked_size_and_value_do_not_claim_complete_replacement_compatibility(validate):
+    result = validate(row(), stock(), explain=True)
+    assert result['status'] == 'matched'
+    assert result['assessment']['decision'] == 'check_only'
+    assert '不代表完整' in result['assessment']['summary']
+
+
+def test_only_missing_dielectric_does_not_request_footprint_geometry(validate):
+    result = validate(row(value='100nF, C0G'), stock(), explain=True)
+    assert result['unknown_fields'] == ['dielectric']
+    assert result['assessment']['missing'] == ['温度系数 / 介质']
+    assert '焊盘' not in result['assessment']['recommended_action']
 
 
 def test_explicit_dielectric_mismatch_and_np0_equivalence(validate):
