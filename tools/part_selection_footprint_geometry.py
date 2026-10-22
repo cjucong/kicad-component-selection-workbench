@@ -24,7 +24,7 @@ _SUPPORTED = {
     'version', 'generator', 'generator_version', 'layer', 'descr', 'tags', 'attr',
     'autoplace_cost90', 'autoplace_cost180', 'solder_mask_margin', 'solder_paste_margin',
     'solder_paste_ratio', 'clearance', 'zone_connect', 'thermal_width', 'thermal_gap',
-    'path', 'uuid', 'tedit', 'tstamp', 'private_layers', 'net_tie_pad_groups',
+    'path', 'sheetname', 'sheetfile', 'uuid', 'tedit', 'tstamp', 'private_layers', 'net_tie_pad_groups',
     'embedded_fonts', 'duplicate_pad_numbers_are_jumpers', 'jumper_pad_groups',
     'at', 'property', 'fp_text', 'fp_text_box', 'pad', 'zone',
     'fp_line', 'fp_rect', 'fp_arc', 'fp_circle', 'fp_poly', 'fp_curve',

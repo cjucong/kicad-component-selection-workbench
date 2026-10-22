@@ -23,7 +23,24 @@ def uid():
     return str(uuid4())
 
 
-def verify_snapshot(root, baseline, current):
+def symbol_pins(definition):
+    return definition.children_named('pin') + [
+        pin for unit in definition.children_named('symbol') for pin in symbol_pins(unit)]
+
+
+def validate_netlist(text, parts):
+    netlist = parse_sexpr(text, 'export')
+    actual = {(node.child('ref').arg(), node.child('pin').arg()): net.child('name').arg()
+              for net in netlist.child('nets').children_named('net')
+              for node in net.children_named('node')}
+    for item in parts:
+        for number in item['pin_numbers']:
+            expected = '/' + item['ref'] + '_' + number
+            assert actual.get((item['ref'], number)) == expected, (item['ref'], number, 'fixture net', actual)
+
+
+def verify_snapshot(root, baseline, current, stage):
+    assert stage in ('rename', 'converted'), 'Unknown verification stage'
     schematic = parse_sexpr((root / 'FlowQA.kicad_sch').read_text(encoding='utf-8'), 'kicad_sch')
     expected = {}
     for symbol in schematic.children_named('symbol'):
@@ -33,6 +50,8 @@ def verify_snapshot(root, baseline, current):
     assert set(current['parts']) == set(baseline['parts']), 'Footprints added/deleted'
     for ref, old in baseline['parts'].items():
         new = current['parts'][ref]
+        target = 'Local:' + ('Renamed_' if stage == 'rename' else 'Converted_') + ref
+        assert new['id'] == target, (ref, 'Wrong workflow stage', new['id'], target)
         assert new['id'] == expected[ref], (ref, 'PCB does not match schematic', new['id'], expected[ref])
         assert new['id'] != old['id'], (ref, 'Footprint was never replaced')
         for key in ('position_nm', 'angle', 'back', 'path'):
@@ -42,6 +61,9 @@ def verify_snapshot(root, baseline, current):
             actual = new['pads'][number]
             assert max(abs(a-b) for a,b in zip(actual['position_nm'], pad['position_nm'])) <= 5, (ref, number, 'position')
             assert actual['net'] == pad['net'], (ref, number, 'net')
+            if stage == 'rename':
+                for key in ('size_nm', 'angle'):
+                    assert actual[key] == pad[key], (ref, number, key)
 
 
 def native(payload):
@@ -100,7 +122,7 @@ def worker(payload):
             pcbnew.PCB_IO_KICAD_SEXPR().FootprintSave(str(directory), fp)
             fp.SetReference(item['ref'])
             fp.SetValue(item['value'])
-            fp.SetPath(pcbnew.KIID_PATH('/' + payload['sheet_uuid'] + '/' + item['uuid']))
+            fp.SetPath(pcbnew.KIID_PATH('/' + item['uuid']))
             if item['back']:
                 fp.Flip(origin, False)
             fp.SetOrientationDegrees(item['angle'])
@@ -161,7 +183,9 @@ def make_project(root, converter):
         start, end = atom.start - definition.start, atom.end - definition.start
         libs.append(block[:start] + json.dumps(lib_id) + block[end:])
         sx, sy = 70 + index * 70, 80
-        pins = [p for unit in definition.children_named('symbol') for p in unit.children_named('pin')]
+        pins = symbol_pins(definition)
+        assert pins, (item['ref'], 'No pins in converted test symbol')
+        item['pin_numbers'] = [p.child('number').arg() for p in pins]
         pin_blocks = []
         for p in pins:
             number = p.child('number').arg()
@@ -183,6 +207,13 @@ def make_project(root, converter):
     schematic += '(lib_symbols ' + ''.join(libs) + ')' + ''.join(instances + labels)
     schematic += '(sheet_instances (path "/" (page "1"))))'
     (root / 'FlowQA.kicad_sch').write_text(schematic, encoding='utf-8')
+    from part_selection_footprint_geometry import _find_kicad_python
+    netlist = root / 'fixture.net'
+    flags = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+    subprocess.run([str(_find_kicad_python().parent / 'kicad-cli.exe'), 'sch', 'export', 'netlist',
+                    '-o', str(netlist), str(root / 'FlowQA.kicad_sch')],
+                   check=True, capture_output=True, timeout=60, **flags)
+    validate_netlist(netlist.read_text(encoding='utf-8'), parts)
     (root / 'FlowQA.kicad_pro').write_text('{}', encoding='utf-8')
     table = root / 'fp-lib-table'
     from part_selection_library import table_text
@@ -208,7 +239,7 @@ def main():
         root, report = Path(session['root']), Path(session['report'])
         baseline = json.loads((report / 'baseline.json').read_text(encoding='utf-8'))
         current = native({'operation': 'snapshot', 'root': str(root)})
-        verify_snapshot(root, baseline, current)
+        verify_snapshot(root, baseline, current, args.stage)
         (report / (args.stage + '.json')).write_text(json.dumps(current, indent=2), encoding='utf-8')
         print('VERIFIED ' + args.stage)
         return
@@ -217,9 +248,9 @@ def main():
         session = json.loads(args.launch_session.read_text(encoding='utf-8'))
         root = Path(session['root'])
         # Only an active harness owns this deliberately short temporary root.
-        cache = next((p for p in root.parents if p.name.startswith('kq-')), None)
-        if cache is None or not (root / 'FlowQA.kicad_pro').is_file():
+        if not root.parent.name.startswith('flow-') or not (root / 'FlowQA.kicad_pro').is_file():
             parser.error('Not an active temporary workflow fixture')
+        cache = Path(session['cache'])
         launch_suite(root, cache, _find_kicad_python())
         return
     if not args.report_dir or not args.report_dir.is_absolute():
@@ -234,7 +265,7 @@ def main():
     converter = installed / 'third_party/EasyKiConverter/runtime/easykiconverter.exe'
     with ExitStack() as stack:
         # Keep real converter output below Windows' legacy path length limit.
-        cache = stack.enter_context(tempfile.TemporaryDirectory(prefix='kq-', dir=ROOT.anchor))
+        cache = stack.enter_context(tempfile.TemporaryDirectory(prefix='fq-', dir=ROOT.anchor))
         previous_cache = os.environ.get('KICAD_PART_SELECTION_CACHE')
         def restore_cache():
             if previous_cache is None:
@@ -243,7 +274,7 @@ def main():
                 os.environ['KICAD_PART_SELECTION_CACHE'] = previous_cache
         stack.callback(restore_cache)
         os.environ['KICAD_PART_SELECTION_CACHE'] = cache
-        directory = stack.enter_context(temporary_project(prefix='flow-'))
+        directory = stack.enter_context(temporary_project(prefix='flow-', short_paths=True))
         root = Path(directory)
         payload = make_project(root, str(converter))
         baseline = native(payload)
@@ -253,7 +284,8 @@ def main():
         raw = json.loads(config.read_text(encoding='utf-8'))
         raw['open_lcsc_search_on_replace'] = 'false'
         config.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding='utf-8')
-        manifest = {'root': str(root), 'config': str(config), 'installed': str(installed), 'report': str(report)}
+        manifest = {'root': str(root), 'config': str(config), 'installed': str(installed),
+                    'report': str(report), 'cache': cache}
         (report / 'session.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         print('READY ' + json.dumps(manifest), flush=True)
         for line in sys.stdin:
@@ -267,7 +299,7 @@ def main():
                 current = native({'operation': 'snapshot', 'root': str(root)})
                 if command.startswith('verify '):
                     stage = command.split()[1]
-                    verify_snapshot(root, baseline, current)
+                    verify_snapshot(root, baseline, current, stage)
                     (report / (stage + '.json')).write_text(json.dumps(current, indent=2), encoding='utf-8')
                     print('VERIFIED ' + stage, flush=True)
                 else:

@@ -74,7 +74,9 @@ pytest 可使用 `conftest.py` 的 `scratch_project`；unittest 在 setUp 中立
 
 ## 真实冒烟
 
-`run_native_footprint_workflow.py` 为真实工作台和 KiCad 更新流程创建可清理的双器件工程：联网调用已安装转换器，给原封装加入非零局部原点和 90 度旋转，PCB 包含正面 37 度电阻、背面 90 度芯片及各焊盘走线。只用于 Windows、KiCad 10 和已安装插件；报告目录必须在仓库和正式工程外。它不是自动通过的 pytest，也不模拟 KiCad 的更新操作。
+原生流程夹具使用同盘短路径的一次性工程，避免 KiCad 管理器将长路径省略后无法核实工程归属。PCB 实例配准回归同时覆盖更新后附带的 `sheetname` / `sheetfile` 元数据，不把这些字段误判为不支持的几何。
+
+`run_native_footprint_workflow.py` 为真实工作台和 KiCad 更新流程创建可清理的双器件工程：联网调用已安装转换器，兼容平铺及分单元符号引脚，先用 KiCad CLI 导出网表验证每个引脚网络再建立 PCB 基线。给原封装加入非零局部原点和 90 度旋转，PCB 包含正面 37 度电阻、背面 90 度芯片及各焊盘走线。只用于 Windows、KiCad 10 和已安装插件；报告目录必须在仓库和正式工程外。它不是自动通过的 pytest，也不模拟 KiCad 的更新操作。
 
 ```powershell
 python -B tests/run_native_footprint_workflow.py --report-dir C:/external/footprint-workflow

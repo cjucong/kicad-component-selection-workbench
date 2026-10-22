@@ -112,6 +112,8 @@ f=pcbnew.PCB_IO_KICAD_SEXPR().Parse(open(sys.argv[1],encoding='utf-8').read()).C
 b.Add(f)
 f.SetReference('U3')
 f.SetFPID(pcbnew.LIB_ID('Local','Original'))
+f.SetSheetname('Fixture')
+f.SetSheetfile('fixture.kicad_sch')
 if sys.argv[3]=='True': f.Flip(pcbnew.VECTOR2I(0,0),False)
 f.SetOrientationDegrees(float(sys.argv[4]))
 f.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(90.5),pcbnew.FromMM(96.735)))

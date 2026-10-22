@@ -10,8 +10,10 @@ from part_selection_runtime import runtime_directory
 
 
 class _TemporaryProject:
-    def __init__(self, prefix):
+    def __init__(self, prefix, short_paths=False):
         directory = runtime_directory(ROOT) / "tests"
+        if short_paths:
+            directory = Path(directory.anchor)
         directory.mkdir(parents=True, exist_ok=True)
         self._container = tempfile.TemporaryDirectory(prefix=prefix, dir=directory)
         # Runtime caches are siblings of the project, so contain both together.
@@ -40,5 +42,5 @@ class _TemporaryProject:
         self.cleanup()
 
 
-def temporary_project(prefix="test_"):
-    return _TemporaryProject(prefix)
+def temporary_project(prefix="test_", *, short_paths=False):
+    return _TemporaryProject(prefix, short_paths=short_paths)
