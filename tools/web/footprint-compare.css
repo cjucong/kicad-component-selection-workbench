@@ -95,6 +95,10 @@
 .fp-alignment[data-ok=true][data-review=true] { color:#916015; background:#fff8e8; }
 .fp-sources { display:flex; flex-wrap:wrap; gap:8px 18px; padding-top:12px; }
 .fp-sources label { display:flex; align-items:center; gap:6px; }
+.fp-sources label[hidden] { display:none; }
+.fp-management { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+.fp-management button { padding:5px 9px; border:1px solid #b9c6ce; border-radius:3px; background:#fff; font:inherit; cursor:pointer; }
+.fp-management [role=status] { color:#64727a; font-size:12px; overflow-wrap:anywhere; }
 .fp-rename-fields { margin:8px 0 12px; }
 @media(max-width:650px) {
   .fp-compare-content { grid-template-columns:minmax(0,1fr); }

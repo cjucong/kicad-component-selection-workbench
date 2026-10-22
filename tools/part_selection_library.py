@@ -133,9 +133,10 @@ def table_text(path, nickname, uri, kind):
 
 
 class LibraryImporter:
-    def __init__(self, project_root, converter=None):
+    def __init__(self, project_root, converter=None, *, import_lock=None):
         self.root = Path(project_root).resolve()
         self.configured = converter
+        self.import_lock = import_lock if import_lock is not None else IMPORT_LOCK
 
     def _normalize(self, folder, nickname):
         # Upstream emits a legacy namespace and dangling model links even without --3d-model.
@@ -191,7 +192,7 @@ class LibraryImporter:
         if not isinstance(code, str) or not re.fullmatch(r'C[0-9]+', code):
             raise ValueError('A single valid LCSC C code is required')
         notify = progress or (lambda stage, message: None)
-        with IMPORT_LOCK:
+        with self.import_lock:
             nickname = 'LCSC_' + code
             destination = checked_path(self.root, self.root / 'Libraries/DSMU/LCSC' / code)
             tables = [checked_path(self.root, self.root / name) for name in ('sym-lib-table', 'fp-lib-table')]

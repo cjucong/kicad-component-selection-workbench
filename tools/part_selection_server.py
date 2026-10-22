@@ -1496,7 +1496,7 @@ class PartSelectionApp:
         self.stock_cache_path = self.config["stock_cache"]
         self.local_inventory_path = self.config["local_inventory"]
         self.search_jobs = CandidateSearchJobs(self.lcsc_search, self.cached_search_seed)
-        self.selection_jobs = SelectionJobs(self.select_candidate)
+        self.selection_jobs = SelectionJobs(self.run_selection_job)
         self.footprint_choices = FootprintChoices(self.project_root, self.config.get("converter_executable"))
         self.selection_save_lock = threading.RLock()
         self.inventory_previews = OrderedDict()
@@ -2032,6 +2032,84 @@ class PartSelectionApp:
         overrides = save_override_updates(self.overrides_path, updates, capture_undo=True)
         return {"ok": True, "refs": refs, "override": overrides.get(refs[0], {})}
 
+    def run_selection_job(self, payload, progress=None):
+        if payload.get("operation") == "row-footprint":
+            return self.row_footprint(payload, progress=progress)
+        return self.select_candidate(payload, progress=progress)
+
+    def row_footprint(self, payload, progress=None):
+        """Standalone footprint edits never go through candidate selection or stock writes."""
+        choice = payload.get("footprint_choice")
+        parent = payload.get("parent_preview")
+        if choice is not None and not isinstance(choice, dict):
+            raise ValueError("footprint_choice must be an object")
+        token = choice.get("preview_id") if choice is not None else parent
+        context = self.footprint_choices.context(token) if token else None
+        if token and (not context or context.get("operation") != "row-footprint"):
+            raise ValueError("该封装预览不是行封装操作，请重新打开")
+        if context:
+            refs, revisions, actual = context["refs"], context["revisions"], context["actual"]
+        else:
+            refs = split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))
+            if not refs:
+                raise ValueError("refs are required")
+            initial = load_overrides(self.overrides_path)
+            revisions = {ref: initial.get(ref, {}) for ref in refs}
+            actual = self.read_schematic_fields(self.config["schematic_dir"], refs, SCHEMATIC_SYNC_FIELDS)
+            if any(ref not in actual for ref in refs):
+                raise ValueError("部分位号不存在于已保存原理图，请重新读取")
+            context = {"operation": "row-footprint", "refs": refs, "revisions": revisions,
+                       "actual": actual, "bom": payload.get("bom", "")}
+        with self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
+            current = load_overrides(self.overrides_path)
+            if any(current.get(ref, {}) != revisions[ref] for ref in refs):
+                raise ValueError("预览期间该行已被修改，请重新打开；没有保存封装修改")
+            if self.read_schematic_fields(self.config["schematic_dir"], refs, SCHEMATIC_SYNC_FIELDS) != actual:
+                raise ValueError("原理图字段发生变化，请重新预览")
+            ids = list(dict.fromkeys(str(current.get(ref, {}).get("field_overrides", {}).get("footprint",
+                actual[ref].get("footprint", ""))) for ref in refs))
+            codes = {normalize_lcsc_c_code("" if current.get(ref, {}).get("decision") in
+                {"ClearSelection", "Reject", "NoChange", "DNP"} else
+                current.get(ref, {}).get("stock_c_code") or choose_effective_c_code(
+                    {"accepted_c_code": actual[ref].get("lcsc_c_code", "")}, current.get(ref, {}))) for ref in refs}
+            code = next(iter(codes)) if len(codes) == 1 else ""
+            package = ""
+            if code:
+                cached = load_stock_cache(self.stock_cache_path).get(code, {})
+                if normalize_lcsc_c_code(cached.get("c_code", code)) == code:
+                    package = str(cached.get("package") or "")
+            if choice is not None:
+                changes_geometry = self.footprint_choices.changes_geometry(choice)
+                library = self.footprint_choices.commit(choice)
+                if "conflict" in library:
+                    return {"ok": True, "footprint_conflict": library["conflict"]}
+                try:
+                    result = self.save_field_override({"refs": ",".join(refs), "bom": context["bom"],
+                        "field_overrides": {"footprint": library["footprint"]}},
+                        baseline=actual, mark_unconfirmed=changes_geometry)
+                except Exception:
+                    self.footprint_choices.rollback(choice["preview_id"])
+                    raise
+                return {**result, "library": library}
+        mode = payload.get("mode", "library")
+        if mode == "library":
+            preview = self.footprint_choices.prepare_library(ids, package)
+            state = self.footprint_choices.previews[preview["preview_id"]]
+            preview.update(c_code=code, suggested_name=ids[0].split(":")[-1] if ids else "",
+                default_library=next((i.split(":")[0] for i in ids if ":" in i), ""),
+                existing=[{k:v for k,v in entry.items() if k not in ("path", "hash")} for entry in state["existing"]],
+                alignment_ids=ids, default_reference_id=preview["default_id"], compatible=False)
+        elif mode == "rename":
+            preview = self.footprint_choices.prepare_rename(ids, package, code=code, refs=refs)
+        elif mode == "convert":
+            if not re.fullmatch(r"C\d+", code):
+                raise ValueError("没有唯一有效 C 编码，仍可预览本地封装、选库或改名")
+            preview = self.footprint_choices.prepare(code, ids, package, progress, refs=refs)
+        else:
+            raise ValueError("Invalid footprint mode")
+        self.footprint_choices.bind(preview["preview_id"], context)
+        return {"ok": True, "preview": preview}
+
     def select_candidate(self, payload: dict[str, object], progress=None) -> dict[str, object]:
         choice = payload.get("footprint_choice")
         context = None
@@ -2039,7 +2117,7 @@ class PartSelectionApp:
             if not isinstance(choice, dict):
                 raise ValueError("footprint_choice must be an object")
             context = self.footprint_choices.context(choice.get("preview_id"))
-            if not context:
+            if not context or context.get("operation") == "row-footprint":
                 raise ValueError("该封装预览没有关联选料，请重新选择")
             payload = context["payload"]
         refs = split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))
@@ -2162,7 +2240,7 @@ class PartSelectionApp:
             result["library"] = library
         return result
 
-    def save_field_override(self, payload: dict[str, object]) -> dict[str, object]:
+    def save_field_override(self, payload: dict[str, object], *, baseline=None, mark_unconfirmed=False) -> dict[str, object]:
         refs = split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))
         raw_fields = payload.get("field_overrides", {})
         if not refs:
@@ -2206,6 +2284,11 @@ class PartSelectionApp:
                 previous = overrides.get(ref, {})
                 selection = inherited.get(ref, {})
                 ref_update = {**selection, **update, "field_overrides": {**selection.get("field_overrides", {}), **fields}}
+                if baseline is not None:
+                    ref_update["schematic_field_snapshot"] = {
+                        **baseline.get(ref, {}), **normalize_schematic_field_snapshot(previous.get("schematic_field_snapshot"))}
+                if mark_unconfirmed and not selection:
+                    ref_update["review_status"] = "Pending"
                 if selection:
                     ref_update["schematic_field_snapshot"] = {
                         **actual.get(ref, {}), **normalize_schematic_field_snapshot(previous.get("schematic_field_snapshot"))}
@@ -3565,6 +3648,14 @@ def make_handler(app: PartSelectionApp):
                 if parsed.path == "/api/start_selection":
                     json_response(self, app.selection_jobs.start(payload))
                     return
+                if parsed.path == "/api/row_footprint":
+                    json_response(self, app.row_footprint(payload))
+                    return
+                if parsed.path == "/api/start_row_footprint":
+                    if payload.get("mode") != "convert" or payload.get("footprint_choice") is not None:
+                        raise ValueError("Only staged conversion can run in the background")
+                    json_response(self, app.selection_jobs.start({**payload, "operation": "row-footprint"}))
+                    return
                 if parsed.path == "/api/select_candidate":
                     json_response(self, app.select_candidate(payload))
                     return
@@ -3822,6 +3913,10 @@ tr.hidden-row {{ display: none; }}
 .stock-card {{ display: grid; gap: 3px; }}
 .supply-primary {{ display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 5px; }}
 .supply-primary input.edit {{ flex: 1 1 95px; min-width: 80px; width: 95px; margin: 0; }}
+.supply-counts {{ display:flex; flex-wrap:wrap; gap:4px 16px; align-items:baseline; line-height:1.8; }}
+.stock-retry {{ font:inherit; padding:0; color:#a33; }}
+.footprint-edit-control {{ display:grid; grid-template-columns:minmax(0,1fr) 28px; align-items:start; gap:4px; }}
+.footprint-edit-control .footprint-library {{ grid-column:1 / -1; }}
 .supply-icon {{ display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px; width: 24px; height: 26px; padding: 2px; box-sizing: border-box; }}
 .supply-icon[hidden] {{ display: none; }}
 .supply-order {{ margin: 4px 0; overflow-wrap: anywhere; }}
@@ -4138,7 +4233,7 @@ tr.hidden-row {{ display: none; }}
 <thead>
 <tr>
 <th data-col="row_no" style="width:64px"><input type="checkbox" id="selectVisibleRows" aria-label="选择当前筛选结果" title="选择当前筛选结果">行号</th><th data-col="review" style="width:240px">确认料 / 同步差异</th><th data-col="refs" style="width:150px">位号</th><th data-col="page_refs" style="width:220px">页面位号</th><th data-col="quantity" style="width:70px">单套用量</th><th data-col="comment" style="width:110px">Comment</th><th data-col="value" style="width:110px">Value</th><th data-col="footprint" style="width:95px">Footprint<span id="footprintLibrarySummary" class="footprint-library-summary"></span></th>
-<th data-col="stock" style="width:280px">选用物料 / 供货</th><th data-col="local_inventory" style="width:170px">本地库存</th><th data-col="order" style="width:90px">MOQ/MPQ</th><th data-col="price" style="width:100px">价格</th><th data-col="param" style="width:320px">物料参数</th><th data-col="alternates" style="width:360px">备选料</th><th data-col="note" style="width:220px">备注</th>
+<th data-col="stock" style="width:280px">选料 / 库存</th><th data-col="order" style="width:90px">MOQ/MPQ</th><th data-col="price" style="width:100px">价格</th><th data-col="param" style="width:320px">物料参数</th><th data-col="alternates" style="width:360px">备选料</th><th data-col="note" style="width:220px">备注</th>
 </tr>
 </thead>
 <tbody id="rows"></tbody>
@@ -4163,7 +4258,7 @@ tr.hidden-row {{ display: none; }}
     <div class="modal-query">
       <input id="candidateKeyword" spellcheck="false" placeholder="搜索型号、参数、C 编码，按回车搜索" aria-label="搜索器件">
       <div id="candidateReplacementOptions" class="candidate-options" role="group" aria-label="选用主料更新选项" title="物料参数默认更新，保存选料后仍需同步原理图">
-        <label title="选择库封装、仅改名保留几何，或转换立创封装">封装 <select id="candidateFootprintMode" aria-label="封装更新方式"><option value="keep" selected>不替换</option><option value="library">替换库封装</option><option value="rename">仅改名保留几何</option><option value="convert">替换立创封装</option></select></label>
+        <label title="保留封装、选择库封装或转换立创封装">封装 <select id="candidateFootprintMode" aria-label="封装更新方式"><option value="keep" selected>不替换</option><option value="library">替换库内部封装</option><option value="convert">替换立创封装</option></select></label>
         <label title="芯片使用完整型号；阻容感使用对应数值">Value <select id="candidateReplaceValue" aria-label="Value 更新方式"><option value="false" selected>不替换</option><option value="true">替换</option></select></label>
         <label title="芯片使用完整型号；阻容感使用 resistor / capacitor / inductor，型号保留在物料参数中">Comment <select id="candidateReplaceComment" aria-label="Comment 更新方式"><option value="false" selected>不替换</option><option value="true">替换</option></select></label>
       </div>
@@ -4480,14 +4575,14 @@ function isActiveStockRun(run) {{
 
 const UI_STORAGE_KEY = "pxie4137_part_selection_ui_v2";
 const DEFAULT_VIEW_STORAGE_KEY = `${{UI_STORAGE_KEY}}_default_v1`;
-const UI_SCHEMA_VERSION = 7;
+const UI_SCHEMA_VERSION = 8;
 let defaultColumnWidthFrame = 0;
 let candidateColumnWidthFrame = 0;
 const DEFAULT_COLUMNS = [
   ["row_no", "行号"], ["review", "确认料"],
   ["refs", "位号"], ["page_refs", "页面位号"], ["quantity", "单套用量"],
   ["comment", "Comment"], ["value", "Value"], ["footprint", "Footprint"],
-  ["stock", "选用物料 / 供货"], ["local_inventory", "本地库存"],
+  ["stock", "选料 / 库存"],
   ["order", "MOQ/MPQ"], ["price", "价格"], ["param", "物料参数"],
   ["alternates", "备选料"], ["note", "备注"]
 ];
@@ -4499,7 +4594,7 @@ const CANDIDATE_COLUMNS = [
 
 function migrateSupplyColumns(view) {{
   if (Array.isArray(view.columnOrder)) {{
-    view.columnOrder = [...new Set(view.columnOrder.map(key => key === "c_code" ? "stock" : key))];
+    view.columnOrder = [...new Set(view.columnOrder.map(key => ["c_code", "local_inventory"].includes(key) ? "stock" : key))];
   }}
   const hidden = view.hiddenColumns;
   if (hidden && Object.prototype.hasOwnProperty.call(hidden, "c_code")) {{
@@ -4510,6 +4605,14 @@ function migrateSupplyColumns(view) {{
   if (widths && Object.prototype.hasOwnProperty.call(widths, "c_code")) {{
     widths.stock = Math.max(220, Number(widths.stock || widths.c_code) || 280);
     delete widths.c_code;
+  }}
+  if (hidden && Object.prototype.hasOwnProperty.call(hidden, "local_inventory")) {{
+    hidden.stock = hidden.stock === true && hidden.local_inventory === true;
+    delete hidden.local_inventory;
+  }}
+  if (widths && Object.prototype.hasOwnProperty.call(widths, "local_inventory")) {{
+    widths.stock = Math.max(220, Number(widths.stock || widths.local_inventory) || 280);
+    delete widths.local_inventory;
   }}
   return view;
 }}
@@ -4680,7 +4783,7 @@ function columnWidthLimits(key, candidate) {{
   }} : {{
     row_no: [64, 80], review: [210, 300], refs: [100, 200], page_refs: [130, 240],
     quantity: [70, 95], comment: [120, 240], value: [100, 190], footprint: [130, 250],
-    stock: [220, 310], local_inventory: [145, 210], order: [80, 115],
+    stock: [240, 330], order: [80, 115],
     price: [100, 160], param: [220, 360], alternates: [220, 380], note: [160, 280]
   }};
   return limits[key] || [80, 280];
@@ -5276,21 +5379,22 @@ function stockAlreadyQueried(stock) {{
 }}
 
 function renderStock(stock) {{
-  const status = stock.status || "";
-  const visual = stockVisual(stock);
-  const detail = stock.ok ? `库存 ${{esc(stock.stock || "0")}}${{stock.delivery ? ` · ${{esc(stock.delivery)}}` : ""}}` : esc(stock.error || status);
-  const extra = [stock.channel, stock.stock_sz != null ? `深圳 ${{stock.stock_sz}} / 江苏 ${{stock.stock_js || 0}} / 香港 ${{stock.stock_hk || 0}}` : "",
-    stock.fetched_at ? `查询时间: ${{String(stock.fetched_at).replace("T", " ")}}` : ""].filter(Boolean);
-  return `<div class="stock-card ${{visual.detailClass}}"><div><span class="stock-pill ${{visual.pill}}">${{esc(visual.text)}}</span> ${{detail}}</div>${{extra.length ? `<details class="stock-details"><summary>库存详情</summary>${{extra.map(esc).join("<br>")}}</details>` : ""}}</div>`;
+  if (!stock.c_code) return '<span>现货 —</span>';
+  if (stock.ok) return `<span>现货 <strong>${{esc(stock.stock ?? "待核实")}}</strong></span>`;
+  if (stock.status === "查询中") return '<span class="stock-wait">现货 查询中…</span>';
+  if (stock.status === "待查询") return '<span class="stock-wait">现货 待查询</span>';
+  return `<button type="button" class="action-link stock-retry" data-action="query-stock" title="${{esc(stock.error || stock.status || "点击重试")}}">现货 查询失败，重试</button>`;
 }}
 
-function renderStockCell(stock) {{
-  if (Array.isArray(stock?.entries)) {{
-    const entries = stock.entries.map(item => `<div class="stock-ref-entry"><strong>${{esc(item.ref)}}</strong> · ${{renderStock(item.stock || {{}})}}</div>`).join("");
-  return `<div class="stock-mixed-list">${{entries}}</div><button type="button" class="small stock-query" data-action="query-stock">刷新组内库存</button>`;
-  }}
-  if (!stock.c_code) return '<div class="stock-wait">未选立创自营料</div>';
-  return `${{renderStock(stock)}}<button type="button" class="small stock-query" data-action="query-stock">查询库存</button>`;
+function renderStockCell(stock, row = null) {{
+  const order = row?.procurement_choice || {{}};
+  const detail = [renderSupplyOrder(row), esc(stock.channel || ""),
+    stock.stock_sz != null ? esc(`深圳 ${{stock.stock_sz}} / 江苏 ${{stock.stock_js || 0}} / 香港 ${{stock.stock_hk || 0}}`) : "",
+    stock.delivery && !/(?:最快|小时.*发货|发货.*小时)/.test(stock.delivery) ? esc(stock.delivery) : "",
+    stock.fetched_at ? esc(`查询时间: ${{String(stock.fetched_at).replace("T", " ")}}`) : ""].filter(Boolean);
+  const market = Array.isArray(stock?.entries) ? '<span>现货 待核实</span>' : renderStock(stock);
+  return `<div class="supply-counts">${{market}}<span data-local-inventory>本地库存 读取中…</span></div>`
+    + (detail.length ? `<details class="stock-details"><summary>供货详情</summary>${{detail.join("<br>")}}</details>` : "");
 }}
 
 function renderSupplyOrder(row) {{
@@ -5539,9 +5643,11 @@ rowsEl.addEventListener("change", event => {{
 
 function setStockCells(tr, stock) {{
   if (normalizeCCode(stock.c_code) !== normalizeCCode(tr.dataset.stockCode)) return;
+  const editor = tr.querySelector("[data-field='replacement_c_code']");
+  if (editor && normalizeCCode(editor.value) !== normalizeCCode(stock.c_code)) return;
   const currentRow = rowDataForElement(tr);
   if (currentRow && !currentRow.selection_codes_mixed && stockCode(currentRow) === normalizeCCode(stock.c_code)) currentRow.stock = stock;
-  tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(stock);
+  tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(stock, currentRow);
   tr.dataset.stockQueried = stockAlreadyQueried(stock) ? "1" : "0";
   tr.dataset.stockLow = stockIsLow(stock) ? "1" : "0";
   tr.dataset.stockIssue = stockIsIssue(stock) ? "1" : "0";
@@ -5606,7 +5712,7 @@ function footprintFieldValue(input, raw = input?.value || "") {{
 
 function footprintEditor(row) {{
   const parts = footprintParts(row.footprint);
-  return `<span class="footprint-library" data-footprint-library-label hidden></span><textarea class="edit field-edit mono" data-field="footprint" data-footprint-library="${{esc(parts.library)}}" title="完整封装: ${{esc(row.footprint || "")}}；可输入 库名:封装名 切换库">${{esc(parts.name)}}</textarea>`;
+  return `<div class="footprint-edit-control"><span class="footprint-library" data-footprint-library-label hidden></span><textarea class="edit field-edit mono" data-field="footprint" data-footprint-library="${{esc(parts.library)}}" title="完整封装: ${{esc(row.footprint || "")}}；可输入 库名:封装名 切换库">${{esc(parts.name)}}</textarea><button type="button" class="value-parameters-button" data-action="manage-footprint" title="预览／管理封装：对比、替换或仅改名" aria-label="预览／管理封装"><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-layers"></use></svg></button></div>`;
 }}
 
 function refreshFootprintLibraries() {{
@@ -6156,30 +6262,41 @@ async function exportPumpTable() {{
   setState(`已导出泵表：${{data.count}} 条，${{data.path}}`, "saved");
 }}
 
-async function refreshRowStock(tr, code, run = beginStockQueryRun()) {{
+const pendingStockRequests = new Map();
+function requestStock(code) {{
+  if (!pendingStockRequests.has(code)) {{
+    const promise = (async () => {{
+      const res = await fetch(`/api/stock?code=${{encodeURIComponent(code)}}`);
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || "库存查询失败");
+      return data.stock || {{status:"查询失败", c_code:code}};
+    }})();
+    pendingStockRequests.set(code, promise);
+    promise.finally(() => {{ if (pendingStockRequests.get(code) === promise) pendingStockRequests.delete(code); }}).catch(() => {{}});
+  }}
+  return pendingStockRequests.get(code);
+}}
+
+async function refreshRowStock(tr, code, run = null) {{
   const normalized = normalizeCCode(code);
-  tr.dataset.stockCode = normalized;
+  const version = rowsLoadVersion, bom = loadedRowsBom;
+  const active = () => version === rowsLoadVersion && bom === loadedRowsBom && (!run || isActiveStockRun(run));
   if (!normalized) {{
     setStockCells(tr, {{status: "请提供料号", c_code: "", error: "请提供料号"}});
-    if (isActiveStockRun(run)) stockQueryController = null;
     return;
   }}
   setStockCells(tr, {{status: "查询中", c_code: normalized}});
   try {{
-    const res = await fetch(`/api/stock?code=${{encodeURIComponent(normalized)}}`, {{signal: run.signal}});
-    const data = await res.json();
-    if (!isActiveStockRun(run) || !document.body.contains(tr)) return;
-    setStockCells(tr, data.stock || {{status: "查询失败", c_code: normalized}});
+    const stock = await requestStock(normalized);
+    if (active()) updateRowsForStock(normalized, stock);
   }} catch (err) {{
     if (err.name === "AbortError") return;
-    if (isActiveStockRun(run) && document.body.contains(tr)) {{
-      setStockCells(tr, {{status: "查询失败", c_code: normalized, error: err.message || String(err)}});
-    }}
-    throw err;
+    if (active()) updateRowsForStock(normalized, {{status: "查询失败", c_code: normalized, error: err.message || String(err)}});
   }}
 }}
 
 async function queryRowStock(tr) {{
+  await flushRowEdits();
   const row = rowDataForElement(tr);
   if (row?.selection_codes_mixed && Array.isArray(row.stock?.entries)) {{
     const run = beginStockQueryRun();
@@ -6196,13 +6313,8 @@ async function queryRowStock(tr) {{
     }}
     return;
   }}
-  const run = beginStockQueryRun();
-  const inputCode = normalizeCCode(tr.querySelector("[data-field='replacement_c_code']").value);
-  const effectiveCode = normalizeCCode(tr.querySelector("[data-effective-code]").textContent);
-  const originalCodeValue = normalizeCCode(tr.dataset.originalCode);
-  const code = inputCode || effectiveCode || originalCodeValue;
-  if (inputCode) await saveStockCode(tr, inputCode);
-  await refreshRowStock(tr, code, run);
+  const code = normalizeCCode(tr.querySelector("[data-field='replacement_c_code']").value);
+  await refreshRowStock(tr, code);
 }}
 
 async function acceptReplacement(tr) {{
@@ -6309,14 +6421,11 @@ function renderRows(rows) {{
           <button type="button" class="small action-link" data-action="open-candidates">更换型号</button>
           <input class="edit mono" data-field="replacement_c_code" aria-label="主料 C 编码" placeholder="未选 C 编码" value="${{esc(replacement)}}" spellcheck="false">
           <a class="supply-icon" data-primary-code-link data-secondary-search="${{esc(effective)}}" href="${{esc(lcscUrl(effective))}}" target="_blank" rel="noopener" title="在立创查询此 C 编码" aria-label="在立创查询此 C 编码" ${{effective ? "" : "hidden"}}><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-search"></use></svg></a>
-          <button type="button" class="small supply-icon" data-action="clear-primary" title="清空主料 C 编码" aria-label="清空主料 C 编码"><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button>
         </div>
         <span data-effective-code hidden>${{esc(effective)}}</span>
         <input type="hidden" data-field="status" value="${{esc(selectedStatus)}}">
-        ${{renderSupplyOrder(row)}}
-        <div data-stock-cell>${{renderStockCell(stock)}}</div>
+        <div data-stock-cell>${{renderStockCell(stock, row)}}</div>
       </td>
-      <td data-col="local_inventory" data-local-inventory></td>
       <td data-col="order" class="mono" data-stock-order>${{esc(stock.moq || "")}} / ${{esc(stock.mpq || "")}}</td>
       <td data-col="price" class="mono" data-stock-price>${{esc(stock.price || "")}}</td>
       <td data-col="param" class="param-text" data-stock-param data-stock-param-text="${{esc(stockParamText(stock))}}">${{renderStockParam(stock)}}</td>
@@ -6350,7 +6459,7 @@ function updateRowsForStock(code, stock) {{
         changed = true;
       }}
       if (changed) {{
-        tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(row.stock);
+        tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(row.stock, row);
         refreshRowState(tr);
       }}
     }}
@@ -6630,7 +6739,9 @@ async function openCandidates(tr) {{
   candidateKeyword.value = candidateKeywordForRow(tr);
   candidateRows.innerHTML = '<tr><td colspan="8">正在同步搜索：官网 + 结构化候选</td></tr>';
   candidateModal.classList.add("open");
+  const initialKeyword = candidateKeyword.value, initialSearch = candidateSearchToken;
   const autoSearch = await shouldOpenSearchOnReplace();
+  if (initialSearch !== candidateSearchToken || candidateTargetRow !== tr || candidateKeyword.value !== initialKeyword) return;
   if (autoSearch) void launchOfficialSearch(candidateKeyword.value.trim());
   void searchCandidates().catch(err => {{
     candidateRows.innerHTML = `<tr><td colspan="8" class="bad">结构化查询失败：${{esc(err.message || String(err))}}；网页搜索仍可继续使用</td></tr>`;
@@ -7103,6 +7214,7 @@ function resetCandidateFilters() {{
 }}
 
 function invalidateCandidateSearch() {{
+  clearTimeout(candidateSearchTimer);
   const sequence = ++candidateSearchToken;
   if (candidateSearchController) candidateSearchController.abort();
   candidateSearchController = null;
@@ -7190,6 +7302,7 @@ function candidateSearchStatusText(data) {{
 }}
 
 async function searchCandidates(forceRefresh = false) {{
+  if (candidateComposing) return;
   invalidateCandidateSearch();
   const requestToken = ++candidateSearchToken;
   const keyword = candidateKeyword.value.trim();
@@ -7560,7 +7673,7 @@ async function loadRows(anchor = null) {{
     renderRows(data.rows);
     restoreRowAnchor(anchor);
     const refCount = data.rows.flatMap(row => row.refs_list || [row.ref]).length;
-    setState(`已加载 ${{data.rows.length}} 个分组 / ${{refCount}} 个位号；库存需手动查询`, "saved");
+    setState(`已加载 ${{data.rows.length}} 个分组 / ${{refCount}} 个位号；输入 C 编码后自动查询库存`, "saved");
   }} catch (err) {{
     if (version !== rowsLoadVersion) return;
     setState(`加载 BOM 失败：${{err.message || String(err)}}`, "error");
@@ -7638,6 +7751,13 @@ async function persistRowInput(entry) {{
   if (field === "replacement_c_code") {{
     if (value && !/^C[0-9]+$/i.test(value)) throw new Error("请输入完整 C 编码，例如 C49678");
     const code = value.toUpperCase();
+    const current = currentRows.find(row => row.refs === refs);
+    if (current && code === stockCode(current) && !current.selection_codes_mixed) {{
+      input.dataset.savedValue = entry.value;
+      tr.classList.remove("changed");
+      if (code && input.value.trim().toUpperCase() === code) void refreshRowStock(tr, code);
+      return;
+    }}
     Object.assign(payload, {{decision: code ? "AcceptManual" : "ClearSelection", accepted_c_code: code,
       manual_c_code: code, stock_c_code: code, status: code ? "ChangedToNewCode" : "Rejected", review_status: "Pending"}});
     endpoint = "/api/override";
@@ -7682,7 +7802,7 @@ async function persistRowInput(entry) {{
         tr.querySelector("[data-effective-code]").textContent = code || "未选料";
         tr.querySelector("[data-field='status']").value = payload.status;
         tr.querySelector("[data-field='review_status']").value = "Pending";
-        tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(row.stock);
+        tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(row.stock, row);
         tr.querySelector("[data-stock-param]").innerHTML = "";
         tr.querySelector("[data-stock-param]").dataset.stockParamText = "";
         tr.querySelector("[data-stock-order]").textContent = "";
@@ -7708,6 +7828,9 @@ async function persistRowInput(entry) {{
   if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");
   const merged = (data.merged_into || []).map(item => item.target_refs.join(",") + (item.c_code ? "（" + item.c_code + "）" : "（订货料）")).join("、");
   setState(merged ? `已合并到 ${{merged}}，沿用目标行选型；请核对并同步原理图` : `已自动保存 ${{refs}} 的 ${{field}}`, "saved");
+  if (field === "replacement_c_code" && value && input.value.trim().toUpperCase() === value.toUpperCase()) {{
+    void refreshRowStock(tr, value).catch(error => setState(error.message, "error"));
+  }}
 }}
 
 rowsEl.addEventListener("input", event => {{
@@ -7794,6 +7917,7 @@ rowsEl.addEventListener("click", async event => {{
     if (action === "eng") await saveRow(tr, "AcceptEngineering", tr.dataset.engineering);
     if (action === "lcsc") await saveRow(tr, "AcceptLCSC", tr.dataset.lcsc);
     if (action === "query-stock") await queryRowStock(tr);
+    if (action === "manage-footprint") await window.manageRowFootprint(tr);
     if (action === "clear-primary") {{
       const input = tr.querySelector("[data-field='replacement_c_code']");
       input.value = "";
@@ -7979,10 +8103,21 @@ document.getElementById("clearCandidateFilters").addEventListener("click", () =>
   inStockOnly.checked = false;
   renderCandidateResults();
 }});
-candidateKeyword.addEventListener("input", invalidateCandidateSearch);
+let candidateSearchTimer = null, candidateComposing = false;
+function scheduleCandidateSearch() {{
+  clearTimeout(candidateSearchTimer);
+  invalidateCandidateSearch();
+  if (candidateComposing || !candidateKeyword.value.trim()) return;
+  candidateSearchProgress.textContent = "等待输入完成…";
+  candidateSearchTimer = setTimeout(() => {{ candidateSearchTimer = null; searchCandidates(); }}, 600);
+}}
+candidateKeyword.addEventListener("input", scheduleCandidateSearch);
+candidateKeyword.addEventListener("compositionstart", () => {{ candidateComposing = true; clearTimeout(candidateSearchTimer); invalidateCandidateSearch(); }});
+candidateKeyword.addEventListener("compositionend", () => {{ candidateComposing = false; scheduleCandidateSearch(); }});
 candidateKeyword.addEventListener("keydown", event => {{
-  if (event.key === "Enter") {{
+  if (event.key === "Enter" && !event.isComposing && !candidateComposing && event.keyCode !== 229) {{
     event.preventDefault();
+    clearTimeout(candidateSearchTimer);
     searchCandidates();
   }}
 }});

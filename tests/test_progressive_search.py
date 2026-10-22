@@ -297,7 +297,7 @@ class ProgressiveFrontendTest(unittest.TestCase):
         self.assertIn('inStockOnly.addEventListener("change", renderCandidateResults)', html)
         self.assertTrue('forceCandidateSearch' not in html)
         self.assertIn('progressive=1', html)
-        self.assertIn('candidateKeyword.addEventListener("input", invalidateCandidateSearch)', html)
+        self.assertIn('candidateKeyword.addEventListener("input", scheduleCandidateSearch)', html)
         self.assertNotIn('inStockOnly.addEventListener("change", searchCandidates)', html)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
@@ -306,7 +306,7 @@ class ProgressiveFrontendTest(unittest.TestCase):
         functions = re.search(r'function invalidateCandidateSearch\(\).*?(?=async function chooseCandidate)', page, re.S).group()
         harness = r'''
 const assert = require('node:assert/strict');
-let candidateSearchToken=0, candidateSearchController=null, candidateRawItems=[];
+let candidateSearchToken=0, candidateSearchController=null, candidateRawItems=[], candidateSearchTimer=null, candidateComposing=false;
 const candidateParameterRequests=new Map(), normalizeCCode=value=>value||'';
 let currentCandidateItems, currentProcurementQuotes;
 const candidateSearchClient='test', candidateKeyword={value:'OLD'}, inStockOnly={checked:false};

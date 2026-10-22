@@ -164,7 +164,7 @@ class CandidateSelectionTest(unittest.TestCase):
 
         parser = SelectParser()
         parser.feed(html)
-        for key, values in [('candidateFootprintMode', ['keep', 'library', 'rename', 'convert']),
+        for key, values in [('candidateFootprintMode', ['keep', 'library', 'convert']),
                             ('candidateReplaceValue', ['false', 'true']),
                             ('candidateReplaceComment', ['false', 'true'])]:
             with self.subTest(key=key):

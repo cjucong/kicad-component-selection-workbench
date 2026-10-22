@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from uuid import uuid4
 
@@ -121,6 +122,8 @@ class FootprintChoices:
         self.converter = converter
         self.previews = OrderedDict()
         self.staging_root = None
+        self.conversion_lock = threading.RLock()
+        self.conversion_cache = OrderedDict()
 
     def libraries(self):
         table = checked_path(self.root, self.root / 'fp-lib-table')
@@ -241,7 +244,7 @@ class FootprintChoices:
         return state, entries
 
     def prepare_rename(self, existing_ids, package='', code='', *, refs=()):
-        if not re.fullmatch(r'C[0-9]+', str(code)):
+        if code and not re.fullmatch(r'C[0-9]+', str(code)):
             raise ValueError('Invalid C code')
         with IMPORT_LOCK:
             self._expire()
@@ -294,16 +297,31 @@ class FootprintChoices:
             raise ValueError('Invalid C code')
         with IMPORT_LOCK:
             self._expire()
-            temp = runtime_directory(self.root)
-            work = Path(tempfile.mkdtemp(prefix='footprint-preview-', dir=temp))
-            self.staging_root = work
-            try:
-                converted = LibraryImporter(work, self.converter).convert(code, progress=progress)
+        work = Path(tempfile.mkdtemp(prefix='footprint-preview-', dir=runtime_directory(self.root)))
+        try:
+            # Network conversion owns only its isolated staging lock, never the project lock.
+            with self.conversion_lock:
+                self.staging_root = work
+                cached = self.conversion_cache.get(code)
+                cache_valid = cached and time.monotonic() - cached['time'] <= 1800
+                if cache_valid:
+                    converted = deepcopy(cached['converted'])
+                else:
+                    converted = LibraryImporter(work, self.converter, import_lock=self.conversion_lock).convert(code, progress=progress)
                 lib, name = converted['footprint'].split(':', 1)
                 folder = work / 'Libraries/DSMU/LCSC' / code
                 module = checked_path(work, folder / (lib + '.pretty') / (item_name(name) + '.kicad_mod'))
                 symbol = checked_path(work, folder / (lib + '.kicad_sym'))
+                if cache_valid:
+                    module.parent.mkdir(parents=True, exist_ok=True)
+                    module.write_bytes(cached['module'])
+                    symbol.write_bytes(cached['symbol'])
                 info = footprint_info(module)
+                self.conversion_cache[code] = {'time': time.monotonic(), 'converted': deepcopy(converted),
+                                               'module': module.read_bytes(), 'symbol': symbol.read_bytes()}
+                while len(self.conversion_cache) > 8:
+                    self.conversion_cache.popitem(last=False)
+            with IMPORT_LOCK:
                 libs = self.libraries()
                 existing = []
                 ids = list(dict.fromkeys(existing_ids))
@@ -378,9 +396,9 @@ class FootprintChoices:
                         'compatible': compatible, 'converted_svg': '', 'converted_info': info, 'comparison_available': True,
                         'metrics': ['焊盘数量', '焊盘编号', '单焊盘尺寸', '钻孔'],
                         'warning': '' if compatible else '原封装缺失或焊盘编号不同，不能直接采用转换封装；请先人工核对。'}
-            except Exception:
-                shutil.rmtree(work, ignore_errors=True)
-                raise
+        except Exception:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
 
     def _alignment(self, state, identifier):
         from part_selection_footprint_geometry import align_module
@@ -415,7 +433,19 @@ class FootprintChoices:
             self.context(preview_id)
             state = self.previews[preview_id]
             if state.get('kind') in ('library', 'rename'):
-                raise ValueError('该预览没有立创转换封装')
+                self.library_detail(preview_id, identifier)
+                entry = next(e for e in state['existing'] if e['id'] == identifier)
+                if state['work'] is None:
+                    state['work'] = Path(tempfile.mkdtemp(prefix='local-footprint-', dir=runtime_directory(self.root)))
+                if 'comparison' not in entry:
+                    output = state['work'] / uuid4().hex
+                    output.mkdir()
+                    rendered = render_comparison(entry['path'], entry['path'], output)
+                    if rendered.get('ok') is False:
+                        raise ValueError('本地封装预览失败：' + str(rendered.get('reason') or '渲染不可用'))
+                    entry['comparison'] = {**rendered, 'converted_layers': {}, 'local_only': True}
+                self._verify(state)
+                return deepcopy(entry['comparison'])
             self._verify(state)
             aligned, entry = self._alignment(state, identifier)
             if 'comparison' not in aligned:
@@ -436,6 +466,43 @@ class FootprintChoices:
         if not state or time.monotonic() - state['time'] > 1800:
             raise ValueError('封装预览已过期，请重新转换')
         return deepcopy(state.get('context'))
+
+    def rollback(self, preview_id):
+        """Undo this publication only, without overwriting concurrent library edits."""
+        with IMPORT_LOCK:
+            state = self.previews[preview_id]
+            writes = state.get('rollback', {})
+            for path, before in writes.items():
+                if not path.exists() or digest(path) != state['published'].get(path):
+                    raise RuntimeError('库文件已被其他操作修改，请从事务备份恢复：' + str(path))
+            for path, before in writes.items():
+                if before is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(before)
+            state.pop('result', None)
+            state.pop('published', None)
+            state.pop('rollback', None)
+
+    def changes_geometry(self, choice):
+        """Compare selected geometry with the preview's frozen baseline, not its name."""
+        with IMPORT_LOCK:
+            self.context(choice.get('preview_id'))
+            state = self.previews[choice['preview_id']]
+            self._verify(state)
+            if choice.get('source') == 'rename':
+                return False
+            baseline_ids = state.get('baseline_ids', state['original_ids'])
+            originals = [e for e in state['existing'] if e['id'] in baseline_ids]
+            if choice.get('source') == 'existing':
+                entry = next(e for e in state['existing'] if e['id'] == choice.get('existing_id'))
+                target = entry['path']
+            else:
+                aligned, _ = self._alignment(state, choice.get('existing_id'))
+                target = aligned['path'] or state['module']
+            selected = geometry(target.read_text(encoding='utf-8-sig'))
+            return len(originals) != len(set(baseline_ids)) or any(
+                geometry(e['path'].read_text(encoding='utf-8-sig')) != selected for e in originals)
 
     def _verify(self, state):
         files = [(state['work'] if e.get('source')=='pcb' else self.root, e['path'], e['hash'])
@@ -663,5 +730,5 @@ class FootprintChoices:
                     'refs':[reference['placement']['ref']] if reference.get('placement') else [],
                     'placement':{k:v for k,v in reference.get('placement',{}).items() if k!='path'}}
                 published.extend([symbol_path, self.root / 'sym-lib-table'])
-            state.update(result=result, choice=deepcopy(choice), published={p: digest(p) for p in published})
+            state.update(result=result, choice=deepcopy(choice), published={p: digest(p) for p in published}, rollback=original)
             return deepcopy(result)

@@ -18,6 +18,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | --- | --- |
 | `test_workbench_undo.py`、`run_workbench_undo_smoke.py` | 未同步编辑链快照、重开保持、旧记录回退、同步后失效、过期预览及缺位号保护；Chromium 取消/确认、自动保存队列、选料和确认状态恢复、桌面/窄屏边界。仅用一次性工程，不回写生产 CAD |
 | `test_supply_column.py`、`run_supply_column_smoke.py` | 合并主料/供货列、旧列布局及默认配置迁移；Chromium 编码自动保存/清空/重开、库存刷新保持输入焦点、订货渠道链接及桌面/窄屏控件边界。使用合成工程与本地库存响应，不联网或写生产 CAD |
+| `test_row_footprint.py`、`run_inventory_footprint_smoke.py` | 独立行封装预览/应用、无编码改名、确认状态、过期/取消/转换失败隔离、同名冲突及事务回滚；合并库存的未知与零值、同编码请求合并、跨行并行和迟到结果保护。使用可清理合成工程，不写生产 CAD |
 | `test_part_selection_specs.py`、`test_spec_check_integration.py`、`run_spec_checks_smoke.py` | 阻容感值等价、限制信息、可靠尺寸识别、缺失信息及只读 API 与原理图基线；Chromium 警告弹窗、迟到响应、字段编辑和实时库存反馈 |
 | `test_row_filters.py`、`run_row_filters_smoke.py` | 主表字段/页面多选组合、条件保存和清除；筛选不减少共享库存总需求；Chromium 桌面/窄屏、隐藏列、存储失败及候选窗口隔离 |
 | `test_part_selection_inventory.py`、`run_local_inventory_smoke.py` | 汇总列优先、去重/冲突、待匹配采购编码、确认令牌与变更检测、原子失败保护、共享库存/NC/套数、路径迁移、HTTP 与真实 Chromium 导入/持久化/列设置；只用合成表格及一次性工程 |
@@ -98,7 +99,7 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `python -B tests/run_directed_row_merge_smoke.py` 在 Chromium 中分别以自动保存和 Enter 将 `4.7nF` 并入已有 `4.7nF 50V` 目标行，验证目标 C 编码、参数、备选与确认状态保留、待同步差异正确及重开持久化。仅使用 `test_directed_row_merge.py` 的一次性合成工程，不写真实工程、不执行 KiCad 同步；单元回归另覆盖 Comment/封装、反向位号、订货链接、目标不唯一和无目标场景。
 
-`python -B tests/run_candidate_search_smoke.py` 使用真实 Chromium 和一次性合成工程，模拟上游分阶段响应，验证查询中不误报无结果、部分返回、补充来源、最终空结果与失败、筛选交互，以及 1475 / 800 / 390 像素宽度的状态栏布局。可设置工程外目录 `CANDIDATE_SCREENSHOTS` 保存截图。此测试不访问真实商城、不选择主料、不改生产记录，不代表真实网络时延验证。
+`python -B tests/run_candidate_search_smoke.py` 使用真实 Chromium 和一次性合成工程，模拟上游分阶段响应，验证 600 ms 自动搜索、输入法组合输入、Enter 立即搜索、清空失效，以及查询中不误报无结果、部分返回、补充来源、最终空结果与失败、筛选交互和 1475 / 800 / 390 像素宽度的状态栏布局。可设置工程外目录 `CANDIDATE_SCREENSHOTS` 保存截图。此测试不访问真实商城、不选择主料、不改生产记录，不代表真实网络时延验证。
 
 `python -B tests/run_candidate_parameter_completion_smoke.py` 使用真实 Chromium 与合成列表/详情响应，验证首屏不等待详情、不误报厂商缺参、旧查询迟到参数不串料、完整参数筛选、失败重试、选用后保存及 CAD 保持不变。截图存到工程外运行缓存，Node 需能解析 playwright（可设置 NODE_PATH）。真实商城读取需另行只读验证，不能把此离线测试当作联网验证。
 

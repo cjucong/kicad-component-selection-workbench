@@ -20,11 +20,13 @@ def page():
 def test_one_supply_column_and_no_visible_code_status_controls():
     html = page()
     assert '<th data-col="c_code"' not in html
-    assert re.search(r'<th data-col="stock"[^>]*>选用物料 / 供货</th>', html)
+    assert re.search(r'<th data-col="stock"[^>]*>选料 / 库存</th>', html)
+    assert '<th data-col="local_inventory"' not in html
     assert '<select class="edit" data-field="status">' not in html
-    assert 'data-action="clear-primary"' in html
+    assert 'data-action="clear-primary"' not in html
+    assert '>查询库存</button>' not in html
     assert 'aria-label="主料 C 编码"' in html
-    assert '["stock", "选用物料 / 供货"]' in html
+    assert '["stock", "选料 / 库存"]' in html
     assert '["c_code", "C编码"]' not in html
 
 
@@ -42,6 +44,11 @@ def test_legacy_supply_view_migration_preserves_unrelated_preferences():
         ({'columnOrder':['stock','value','c_code'], 'hiddenColumns':{'c_code':True,'stock':True},
           'columnWidths':{'c_code':185}},
          {'columnOrder':['stock','value'],'hiddenColumns':{'stock':True},'columnWidths':{'stock':220}}),
+        ({'columnOrder':['value','local_inventory','note','stock'],
+          'hiddenColumns':{'local_inventory':False,'stock':True,'note':True},
+          'columnWidths':{'local_inventory':180,'stock':290,'note':150}},
+         {'columnOrder':['value','stock','note'],'hiddenColumns':{'stock':False,'note':True},
+          'columnWidths':{'stock':290,'note':150}}),
     ]
     script = match.group() + '\nconst assert=require("node:assert/strict");\n'
     script += 'for (const [input,expected] of '+json.dumps(cases)+') {\n'

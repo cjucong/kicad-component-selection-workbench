@@ -25,6 +25,8 @@ const assert = require('node:assert/strict');
     page.setDefaultTimeout(12000);
     const errors = [];
     page.on('pageerror', e=>errors.push(e.message));
+    await page.route('**/api/stock?*', route=>route.fulfill({contentType:'application/json',
+      body:JSON.stringify({stock:{ok:true,c_code:new URL(route.request().url()).searchParams.get('code'),stock:'200'}})}));
     await page.goto(process.env.ROW_TEST_URL);
     await page.waitForFunction(()=>document.querySelectorAll('#rows tr').length===1, null, {timeout:12000}).catch(async e=>{
       throw Error(JSON.stringify({error:e.message,errors,state:await page.locator('#state').innerText()}));

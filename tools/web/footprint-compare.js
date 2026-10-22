@@ -186,7 +186,7 @@ window.chooseLibraryFootprint = function chooseLibraryFootprint(preview) {
   });
 };
 
-window.chooseFootprint = function chooseFootprint(preview) {
+window.chooseFootprint = function chooseFootprint(preview, options = {}) {
   return new Promise(resolve => {
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
     const originals = new Set(preview.original_ids || preview.current?.original_ids || []);
@@ -197,7 +197,7 @@ window.chooseFootprint = function chooseFootprint(preview) {
     overlay.innerHTML = `<section class="fp-dialog" role="dialog" aria-modal="true" aria-label="封装对比与目标库">
       <header class="fp-title"><strong>封装对比与目标库</strong><span>${escape(preview.c_code)}</span>
       <button type="button" data-fp-close title="取消并关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
-      <div class="fp-body"><div class="fp-baseline"><label>对齐基准<select data-fp-existing aria-label="工程现有封装">${preview.existing.map(e => `<option value="${escape(e.id)}">${escape(e.source === 'pcb' ? `PCB 已保存 · ${e.placement.ref} · ${e.placement.footprint}` : e.id)}</option>`).join('')}</select></label><span>mm</span></div>
+      <div class="fp-body">${options.manage ? `<div class="fp-management"><button type="button" data-fp-pick-library>替换库封装…</button><button type="button" data-fp-rename>仅改名保留原几何…</button><span data-fp-background role="status">${preview.c_code ? '立创封装正在后台读取…' : '无唯一 C 编码，仅提供本地封装操作'}</span></div><div class="fp-context">当前绑定：${escape(preview.original_ids.join(' / ') || '未指定')}</div>` : ''}<div class="fp-baseline"><label>对齐基准<select data-fp-existing aria-label="工程现有封装">${preview.existing.map(e => `<option value="${escape(e.id)}">${escape(e.source === 'pcb' ? `PCB 已保存 · ${e.placement.ref} · ${e.placement.footprint}` : e.id)}</option>`).join('')}</select></label><span>mm</span></div>
       <div class="fp-reference-context" data-fp-reference-context></div>
       <div class="fp-comparison">
         <div class="fp-compare-toolbar">
@@ -215,9 +215,9 @@ window.chooseFootprint = function chooseFootprint(preview) {
         <div class="fp-alignment" data-fp-alignment role="status"></div>
       </div>
       <div class="fp-sources" role="group" aria-label="采用的封装">
-        <label><input type="radio" name="fp-source" value="existing">复用现有封装</label>
-        <label><input type="radio" name="fp-source" value="rename">仅改名，保留原几何</label>
-        <label><input type="radio" name="fp-source" value="converted" checked>采用转换几何</label>
+        <label ${options.manage ? 'hidden' : ''}><input type="radio" name="fp-source" value="existing">复用现有封装</label>
+        <label ${options.manage ? 'hidden' : ''}><input type="radio" name="fp-source" value="rename">仅改名，保留原几何</label>
+        <label><input type="radio" name="fp-source" value="converted" checked>替换立创封装</label>
       </div>
       <div class="fp-destination"><legend>目标封装库</legend><div class="fp-modes">
         <label><input type="radio" name="fp-mode" value="existing" checked>合并到现有库</label>
@@ -238,6 +238,7 @@ window.chooseFootprint = function chooseFootprint(preview) {
     const previousFocus = document.activeElement;
     const cache = new Map(), layerState = new Map(), urls = new Set();
     let closed = false, sequence = 0, controller = null, detail = null;
+    let localOnly = options.manage === true;
     const selectedEntry = () => preview.existing.find(e => e.id === q('[data-fp-existing]').value);
     const source = () => q('[name=fp-source]:checked').value;
     const mode = () => q('[name=fp-mode]:checked').value;
@@ -246,11 +247,11 @@ window.chooseFootprint = function chooseFootprint(preview) {
       const reference = !!entry && references.has(entry.id);
       q('[name=fp-source][value=existing]').disabled = !entry || entry.source === 'pcb';
       q('[name=fp-source][value=rename]').disabled = !entry || !renameIds.has(entry.id);
-      q('[name=fp-source][value=converted]').disabled = !reference;
+      q('[name=fp-source][value=converted]').disabled = localOnly || !reference;
       q('[data-fp-reference-context]').textContent = entry?.source === 'pcb'
         ? `PCB 放置：${entry.placement.position_mm.join(', ')} mm · ${entry.placement.rotation_deg}° · ${entry.placement.back ? '背面' : '正面'}`
         : reference && !original ? '手动库基准：用于恢复旧封装位置，请确认来源正确' : '';
-      q('.fp-destination').hidden = source() === 'existing';
+      q('.fp-destination').hidden = localOnly || source() === 'existing';
       q('[data-fp-library-label]').hidden = mode() !== 'existing';
       q('[data-fp-new-label]').hidden = mode() !== 'new';
       q('[data-fp-folder-label]').hidden = mode() !== 'new';
@@ -260,7 +261,7 @@ window.chooseFootprint = function chooseFootprint(preview) {
       const acknowledged = q('[data-fp-ack]').checked && !!name && !!lib;
       q('.fp-apply').disabled = source() === 'existing' ? !entry || entry.source === 'pcb'
         : !acknowledged || (source() === 'rename' ? !entry || !renameIds.has(entry.id)
-          : !reference || !preview.compatible || detail?.alignment?.ok !== true);
+          : localOnly || !reference || !preview.compatible || detail?.alignment?.ok !== true);
     }
     function clearImages() {
       overlay.querySelectorAll('[data-fp-source-layers], [data-fp-marker-source]').forEach(e => e.replaceChildren());
@@ -326,10 +327,11 @@ window.chooseFootprint = function chooseFootprint(preview) {
       const alignment = value.alignment || {};
       const format = (number, digits = 3) => Number.isFinite(number) ? String(Number(number.toFixed(digits))) : '—';
       q('[data-fp-alignment]').dataset.ok = String(alignment.ok === true);
-      q('[data-fp-alignment]').textContent = alignment.ok === true
+      q('[data-fp-alignment]').textContent = value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
         ? `中心已对齐 · 校正 ${format(alignment.rotation_deg)}° · 焊盘中心最大偏差 ${format(alignment.max_error_mm, 4)} mm${alignment.requires_review ? ' · 间距有差异，请核对' : ''}`
         : '无法对齐，请检查焊盘编号与原封装';
       q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);
+      if (value.local_only) q('[data-fp-alignment]').removeAttribute('data-ok');
       q('.fp-scene').hidden = false;
       q('[data-fp-canvas-status]').hidden = true;
       updateDisplay();
@@ -401,6 +403,10 @@ window.chooseFootprint = function chooseFootprint(preview) {
     });
     overlay.addEventListener('input', () => { updateDisplay(); refresh(); });
     q('[data-fp-close]').onclick = q('[data-fp-cancel]').onclick = () => close(null);
+    if (options.manage) {
+      q('[data-fp-pick-library]').onclick = () => close({operation:'library'});
+      q('[data-fp-rename]').onclick = () => close({operation:'rename'});
+    }
     q('.fp-apply').onclick = () => {
       if (q('.fp-apply').disabled) return;
       close({preview_id: preview.preview_id, source: source(), existing_id: q('[data-fp-existing]').value,
@@ -413,7 +419,81 @@ window.chooseFootprint = function chooseFootprint(preview) {
     const original = preview.existing.find(entry => entry.id === preview.default_reference_id)
       || preview.existing.find(entry => originals.has(entry.id));
     if (original) q('[data-fp-existing]').value = original.id;
-    void loadComparison();
+    const initialLocal = loadComparison();
+    if (options.loadConverted && preview.c_code) {
+      void (async () => {
+        try {
+          const converted = await options.loadConverted();
+          await initialLocal;
+          if (closed) return;
+          preview = converted;
+          localOnly = false;
+          originals.clear(); references.clear(); renameIds.clear(); cache.clear();
+          preview.original_ids.forEach(id => originals.add(id));
+          preview.alignment_ids.forEach(id => references.add(id));
+          (preview.rename_ids || []).forEach(id => renameIds.add(id));
+          q('[data-fp-existing]').innerHTML = preview.existing.map(e => `<option value="${escape(e.id)}">${escape(e.source === 'pcb' ? `PCB 已保存 · ${e.placement.ref} · ${e.placement.footprint}` : e.id)}</option>`).join('');
+          q('[data-fp-existing]').value = preview.default_reference_id;
+          q('[data-fp-name]').value = preview.suggested_name;
+          q('[data-fp-library]').value = preview.default_library;
+          q('[data-fp-background]').textContent = '立创封装已就绪；原位替换按下方基准配准';
+          q('[data-fp-ack]').checked = false;
+          void loadComparison();
+        } catch (error) {
+          if (!closed) q('[data-fp-background]').textContent = '立创预览不可用：' + error.message + '；本地操作仍可使用';
+        }
+      })();
+    }
     q('[data-fp-close]').focus();
   });
+};
+
+window.manageRowFootprint = async function manageRowFootprint(tr) {
+  if (window.rowFootprintBusy) return;
+  window.rowFootprintBusy = true;
+  let saving = false;
+  const anchor = rowAnchor(tr), expectedBom = loadedRowsBom;
+  const request = async (url, payload) => {
+    const response = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || '封装操作失败');
+    return data;
+  };
+  try {
+    await flushRowEdits();
+    const current = [...rowsEl.querySelectorAll('tr[data-refs]')].find(row => row.dataset.refs === anchor.refs);
+    if (!current || expectedBom !== loadedRowsBom) throw new Error('行分组或数据源已变化，请重新打开封装管理');
+    const initial = await request('/api/row_footprint', {refs:current.dataset.refs, bom:expectedBom, mode:'library'});
+    const parent = initial.preview.preview_id;
+    const converted = async () => {
+      let data = await request('/api/start_row_footprint', {parent_preview:parent, mode:'convert'});
+      const id = data.job_id;
+      while (!data.done) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const response = await fetch('/api/selection_job?id=' + encodeURIComponent(id));
+        data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || '封装转换失败');
+      }
+      return data.result.preview;
+    };
+    let choice = await window.chooseFootprint(initial.preview, {manage:true, loadConverted:converted});
+    if (choice?.operation) {
+      const data = await request('/api/row_footprint', {parent_preview:parent, mode:choice.operation});
+      choice = await window.chooseLibraryFootprint(data.preview);
+    }
+    if (!choice) return;
+    saving = true;
+    while (choice) {
+      const data = await request('/api/row_footprint', {footprint_choice:choice});
+      if (data.footprint_conflict) {
+        choice = await window.resolveFootprintConflict(data.footprint_conflict, choice);
+        continue;
+      }
+      await loadRows(anchor);
+      setState('封装修改已保存，请同步原理图；C 编码、Value、Comment 和物料参数未改动', 'saved');
+      break;
+    }
+  } catch (error) {
+    setState((saving ? '封装保存失败：' : '封装预览失败：') + error.message, 'error');
+  } finally { window.rowFootprintBusy = false; }
 };

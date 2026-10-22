@@ -203,8 +203,10 @@ def test_rendered_workbench_adds_local_inventory_column_and_import_menu(scratch_
     config.write_text(json.dumps({"project_root": "../..", "source_bom": "__schematic__"}), encoding="utf-8")
     html = render_index(PartSelectionApp(config))
 
-    assert '["local_inventory", "本地库存"]' in html
-    assert 'data-col="local_inventory"' in html
+    assert '["local_inventory", "本地库存"]' not in html
+    assert '["stock", "选料 / 库存"]' in html
+    assert 'data-col="local_inventory"' not in html
+    assert 'data-local-inventory' in html
     assert 'data-command="importLocalInventory"' in html
     assert '/api/local_inventory/preview' in html
 
@@ -416,21 +418,16 @@ def test_inventory_messages_use_available_supply_and_never_claim_unknown_stock_s
 const assert=require('node:assert/strict');
 const {localInventoryComparison:compare,localInventoryPresentation:present}=require(process.argv[1]);
 const sufficient=compare({quantity:20,status:'ready'},2,4,3);
-assert.equal(present(sufficient,{},true).label,'现货充足');
+assert.equal(present(sufficient,{},true).label,'本地库存 20');
 const zero=compare({quantity:0,status:'ready'},2,4,3);
-assert.equal(present(zero,{ok:true,stock:'12'},true).label,'现货充足');
-assert.equal(present(zero,{ok:true,stock:'11'},true).label,'现货不足');
-assert.equal(present(zero,{ok:false,stock:'999'},true).label,'商城现货待查询');
-assert.equal(present(zero,{ok:true,stock:''},true).label,'商城现货待查询');
-assert.equal(present(zero,{ok:true,stock:'26K'},true).label,'现货充足');
-assert.equal(present(zero,{ok:true,stock:'0'},true).label,'现货不足');
-assert.equal(present(zero,{ok:true,stock:'999',c_code:'C100'},true,'C200').label,'商城现货待查询');
-assert.equal(present(zero,{ok:true,stock:'12'},true).local,'本地库存为零（现存 0）');
+for(const market of [{ok:true,stock:'12'},{ok:false,stock:'999'},{ok:true,stock:''}])
+ assert.equal(present(zero,market,true).local,'本地库存 0');
 const absent=compare(null,2,4,3);
-assert.equal(present(absent,{ok:true,stock:'12'},true).label,'现货充足');
-assert.equal(present(absent,{},false).label,'待选料');
-assert.equal(present(compare({quantity:10,status:'unresolved'},2,4,3),{ok:true,stock:'99'},true).label,'本地库存待核实');
-assert.equal(present(compare(null,2,4,3,{nc:true}),{},false).label,'NC，不计需求');
-assert.equal(present(compare({quantity:8},2,4,3),{ok:true,stock:'4'},true).label,'现货充足');
+assert.equal(present(absent,{},true).label,'本地库存 0');
+assert.equal(present(absent,{},false).label,'本地库存 —');
+assert.equal(present(compare({quantity:10,status:'unresolved'},2,4,3),{},true).label,'本地库存 待核实');
+assert.equal(present(compare(null,2,4,3,{issue:'读取失败'}),{},true).label,'本地库存 待核实');
+assert.equal(present(compare(null,2,4,3,{mixed:true}),{},false).label,'本地库存 待核实');
+assert.equal(present(compare({quantity:8,status:'ready'},2,4,3,{nc:true}),{},true).local,'本地库存 8');
 ''', str(source)], capture_output=True, text=True, encoding='utf-8', timeout=10)
     assert result.returncode == 0, result.stderr

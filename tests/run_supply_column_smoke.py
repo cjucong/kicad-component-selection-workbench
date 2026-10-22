@@ -24,10 +24,14 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   const code=row.getByRole('textbox',{name:'主料 C 编码'});
   await row.waitFor();
   assert.equal(await page.locator('th[data-col="c_code"]').count(),0);
-  assert.equal(await page.locator('th[data-col="stock"]').innerText(),'选用物料 / 供货');
+  assert.equal(await page.locator('th[data-col="stock"]').innerText(),'选料 / 库存');
   assert.equal(await row.locator('select[data-field="status"]').count(),0);
   assert.equal(await code.inputValue(),'C100');
-  assert.equal(await row.locator('[data-col="local_inventory"]').count(),1);
+  assert.equal(await row.locator('[data-col="local_inventory"]').count(),0);
+  assert.equal(await row.locator('[data-local-inventory]').innerText(),'本地库存 0');
+  assert.equal(await row.locator('[data-action="clear-primary"]').count(),0);
+  assert.equal(await row.locator('[data-stock-cell] > button').count(),0);
+  assert.doesNotMatch(await row.locator('[data-stock-cell]').innerText(),/4小时|本地还需|本地缺口/);
   const details=row.locator('.stock-details');
   assert.equal(await details.getAttribute('open'),null);
   await details.locator('summary').click();
@@ -43,13 +47,14 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await code.inputValue(),'C101');
   await code.fill('C102');
   await page.waitForFunction(()=>currentRows[0].effective_c_code==='C102');
+  await page.waitForFunction(()=>currentRows[0].stock?.stock==='102');
   await page.waitForFunction(()=>!document.querySelector('#rows tr').classList.contains('changed'));
   assert.equal(await row.locator('[data-field="review_status"]').inputValue(),'Pending');
   assert.match(await row.locator('[data-primary-code-link]').getAttribute('href'),/C102/);
   await page.reload();
   await row.waitFor();
   assert.equal(await code.inputValue(),'C102');
-  await row.getByRole('button',{name:'清空主料 C 编码'}).click();
+  await code.fill('');
   await page.waitForFunction(()=>!currentRows[0].effective_c_code);
   await page.reload();
   await row.waitFor();
@@ -60,6 +65,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
    currentRows[0].procurement_choice={supplier:'Mouser',order_url:'https://example.com/order?sku=123&qty=1'};
    renderRows(currentRows);
   });
+  await row.locator('.stock-details summary').click();
   assert.match(await row.locator('[data-col="stock"] .supply-order').innerText(),/Mouser.*订货链接/);
   assert.equal(await row.locator('[data-col="stock"] .supply-order a').getAttribute('href'),
     'https://example.com/order?sku=123&qty=1');
@@ -119,8 +125,7 @@ def main():
         save_stock_cache(app.stock_cache_path, {'C100': stock})
 
         def fake_stock(code):
-            assert code == 'C100'
-            return stock
+            return {**stock, 'c_code': code, 'stock': code[1:]}
 
         app.stock = fake_stock
         server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(app))
