@@ -238,6 +238,9 @@ def _unknown_message(field, source, fields, stock, kind):
     if field == 'footprint':
         value = _text(fields.get('footprint') if source == 'schematic' else stock.get('package'))
         origin = '\u5df2\u4fdd\u5b58\u539f\u7406\u56fe Footprint' if source == 'schematic' else '\u5546\u54c1\u5c01\u88c5'
+        if source != 'schematic' and re.search(r'插件|直插|D\s*\d+(?:\.\d+)?\s*[xX×]\s*[L]?\s*\d+(?:\.\d+)?', value, re.I):
+            return (origin + '\u300c' + value + '\u300d仅提供本体外形尺寸；\n'
+                    '焊盘间距、钻孔直径和引脚方向未提供，需核对数据手册或封装预览')
         return (origin + ' \u672a\u586b\u5199' if not value else
                 origin + '\u300c' + value + '\u300d\u4e0d\u662f\u53ef\u81ea\u52a8\u6838\u5bf9\u7684\u6807\u51c6\u5c3a\u5bf8\u522b\u540d\uff0c\u9700\u4eba\u5de5\u6838\u5bf9\u5c01\u88c5\u51e0\u4f55')
     label = {'C': '\u5bb9\u503c', 'R': '\u963b\u503c', 'L': '\u611f\u503c'}[kind]

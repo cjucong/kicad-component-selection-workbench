@@ -217,14 +217,14 @@ assert.ok(candidateRows.innerHTML.includes('A; B: C'));
         self.run_js(r'''
 for (const item of [{category:'贴片电阻',model:'synthetic'}, {category:'Chip Resistors - Surface Mount'}]) {
   renderCandidateRows([item]);
-  assert.match(candidateRows.innerHTML, /温度系数<\/span><span[^>]*>详情尚未读取/);
-  assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>详情尚未读取/);
+  assert.match(candidateRows.innerHTML, /温度系数:<\/span><span[^>]*>详情尚未读取/);
+  assert.match(candidateRows.innerHTML, /工作电压:<\/span><span[^>]*>详情尚未读取/);
   assert.ok(!candidateRows.innerHTML.includes('直流电阻(DCR)'));
 }
 targetRow = {kind:'inductor',refs:'U1'};
 renderCandidateRows([{param_detail:'感值: 10uH'}]);
-assert.match(candidateRows.innerHTML, /直流电阻\(DCR\)<\/span><span[^>]*>详情尚未读取/);
-assert.match(candidateRows.innerHTML, /电感类型<\/span><span[^>]*>详情尚未读取/);
+assert.match(candidateRows.innerHTML, /直流电阻\(DCR\):<\/span><span[^>]*>详情尚未读取/);
+assert.match(candidateRows.innerHTML, /电感类型:<\/span><span[^>]*>详情尚未读取/);
 targetRow = {refs:'U1'};
 renderCandidateRows([{category:'Microcontrollers',param_detail:'频率: 48MHz'}]);
 assert.ok(!candidateRows.innerHTML.includes('未提供'));
@@ -242,7 +242,7 @@ for (const entry of entries) assert.ok(!candidateEntryFields(entry).has('param:�
 assert.ok(!buildCandidateFacets(entries,new Map(),false).has('param:工作电压'));
 assert.equal(filterCandidateEntries(entries,new Map([['param:工作电压',new Set(['未提供'])]]),false).length,0);
 renderCandidateRows([{category:'Resistors',param_detail:'Working Voltage: N/A'}]);
-assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>详情尚未读取/);
+assert.match(candidateRows.innerHTML, /工作电压:<\/span><span[^>]*>详情尚未读取/);
 ''')
 
     def test_inductor_aliases_preserve_units_and_type_without_guessing(self):
@@ -279,7 +279,7 @@ const html = renderCandidatePartnerRows([item]);
 assert.ok(!html.includes('75V'));
 assert.ok(!html.includes('100ppm'));
 assert.ok(html.includes('100V'));
-assert.match(html, /温度系数<\/span><span[^>]*>渠道未返回/);
+assert.match(html, /温度系数:<\/span><span[^>]*>渠道未返回/);
 ''')
 
     def test_category_scoped_type_alias_and_dcr_unit_labels(self):
@@ -296,7 +296,7 @@ assert.deepEqual([...icFields.get('param:Type')], ['MCU']);
 assert.ok(!icFields.has('param:电感类型'));
 targetRow = {comment:'inductor',refs:'U1'};
 renderCandidateRows([{param_detail:'Inductance: 10uH; Type: Wirewound'}]);
-assert.match(candidateRows.innerHTML, /电感类型<\/span><span[^>]*>Wirewound/);
+assert.match(candidateRows.innerHTML, /电感类型:<\/span><span[^>]*>Wirewound/);
 ''')
 
     def test_structured_empty_values_override_summary_and_preserve_vendor_labels(self):
@@ -306,7 +306,7 @@ assert.match(candidateRows.innerHTML, /电感类型<\/span><span[^>]*>Wirewound/
         ], "productKeyAttributes": "Working Voltage: 75V"})
         self.run_js("const item = " + json.dumps(item) + r''';
 renderCandidateRows([item]);
-assert.match(candidateRows.innerHTML, /工作电压<\/span><span[^>]*>详情尚未读取/);
+assert.match(candidateRows.innerHTML, /工作电压:<\/span><span[^>]*>详情尚未读取/);
 assert.ok(candidateRows.innerHTML.includes('&lt;safe&gt;; Alpha: Beta'));
 assert.ok(!candidateRows.innerHTML.includes('75V'));
 assert.ok(!candidateEntryFields({item}).has('param:工作电压'));
@@ -325,8 +325,8 @@ assert.ok(!facets.get('param:工作电压')?.has('未提供'));
         self.assertNotIn("0.031", item["param_detail"])
         self.run_js("const item = " + json.dumps(item) + r''';
 renderCandidateRows([item]);
-assert.match(candidateRows.innerHTML, /直流电阻\(DCR\)<\/span><span[^>]*>31mΩ/);
-assert.match(candidateRows.innerHTML, /电感类型<\/span><span[^>]*>Molded Inductor/);
+assert.match(candidateRows.innerHTML, /直流电阻\(DCR\):<\/span><span[^>]*>31mΩ/);
+assert.match(candidateRows.innerHTML, /电感类型:<\/span><span[^>]*>Molded Inductor/);
 assert.ok(!candidateRows.innerHTML.includes('未提供'));
 ''')
 

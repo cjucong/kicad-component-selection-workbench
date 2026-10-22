@@ -270,6 +270,10 @@ def stock_param_text(stock: object) -> str:
     primary = str(stock.get("param") or "")
     detail = str(stock.get("param_detail") or "")
     pieces: list[str] = []
+    model = str(stock.get("model") or "").strip()
+    model_already_shown = bool(re.search(r"(?:型号|model)\s*[:：]", f"{primary} {detail}", re.I))
+    if model and not model_already_shown:
+        pieces.append(f"型号: {model}")
     if primary:
         pieces.append(primary)
     if detail and detail != primary:
@@ -279,8 +283,8 @@ def stock_param_text(stock: object) -> str:
     if package and not re.search(r"(?:封装|package)\s*[:：]", existing_text, re.I):
         pieces.append(f"封装: {package}")
     brand = str(stock.get("brand") or "").strip()
-    normalized_text = re.sub(r"\s+", "", existing_text).casefold()
-    if brand and re.sub(r"\s+", "", brand).casefold() not in normalized_text:
+    brand_already_shown = bool(re.search(r"(?:品牌|brand)\s*[:：]", existing_text, re.I))
+    if brand and not brand_already_shown:
         pieces.append(f"品牌: {brand}")
     return "\n".join(pieces)
 
@@ -5247,14 +5251,17 @@ function stockParamText(stock) {{
   const primary = stock.param || "";
   const detail = stock.param_detail || "";
   const pieces = [];
+  const model = String(stock.model || "").trim();
+  const modelAlreadyShown = /(?:型号|model)\s*[:：]/i.test(String(primary) + " " + String(detail));
+  if (model && !modelAlreadyShown) pieces.push(`型号: ${{model}}`);
   if (primary) pieces.push(primary);
   if (detail && detail !== primary) pieces.push(detail);
   const existingText = pieces.join("\\n");
   const packageName = String(stock.package || "").trim();
   if (packageName && !/(?:封装|package)\\s*[:：]/i.test(existingText)) pieces.push(`封装: ${{packageName}}`);
   const brand = String(stock.brand || "").trim();
-  const normalizedText = existingText.replace(/\\s+/g, "").toLocaleLowerCase();
-  if (brand && !normalizedText.includes(brand.replace(/\\s+/g, "").toLocaleLowerCase())) pieces.push(`品牌: ${{brand}}`);
+  const brandAlreadyShown = /(?:品牌|brand)\\s*[:：]/i.test(existingText);
+  if (brand && !brandAlreadyShown) pieces.push(`品牌: ${{brand}}`);
   return pieces.join("\\n");
 }}
 
@@ -6734,7 +6741,11 @@ function uniqueCandidateParamSegments(...values) {{
     const blockKey = normalizedCandidateParam(text);
     if (!text || !blockKey || seenBlocks.has(blockKey)) continue;
     seenBlocks.add(blockKey);
-    const parts = /[:：]/.test(text) ? text.split(/\s*[;；、]\s*/).filter(Boolean) : [text];
+    const parts = text.split(/\s*[;；、]\s*/)
+      .flatMap(part => part.split(String.fromCharCode(13)))
+      .flatMap(part => part.split(String.fromCharCode(10)))
+      .map(part => part.trim())
+      .filter(Boolean);
     for (const part of parts) {{
       const segment = part.trim();
       const segmentKey = normalizedCandidateParam(segment);
@@ -6753,7 +6764,9 @@ function renderCandidateParam(...values) {{
     const match = typeof line === "object" ? [null, line.name, line.value]
       : line.match(/^([^:：]{{1,64}})\s*[:：]\s*(.+)$/);
     if (!match) return `<div class="candidate-param-value">${{esc(line)}}</div>`;
-    return `<div class="candidate-param-line"><span class="candidate-param-key">${{esc(match[1])}}</span><span class="candidate-param-value">${{esc(match[2])}}</span></div>`;
+    const key = String(match[1] || "").replace(/[：:]\s*$/, "").trim();
+    if (!key) return `<div class="candidate-param-value">${{esc(match[2])}}</div>`;
+    return `<div class="candidate-param-line"><span class="candidate-param-key">${{esc(key)}}:</span><span class="candidate-param-value">${{esc(match[2])}}</span></div>`;
   }});
   return lines.length
     ? `<div class="candidate-param-lines">${{lines.join("")}}</div>`

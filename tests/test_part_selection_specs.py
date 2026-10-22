@@ -51,6 +51,16 @@ def test_unrecognized_stock_and_complex_package_explain_separate_causes(validate
     assert any(d['source']=='stock' and 'SMD,D5xL5.4mm' in d['message'] for d in result['unknown_details'])
 
 
+def test_through_hole_product_size_explains_missing_footprint_geometry(validate):
+    result = validate(row(ref='R618', value='MMFR2568B500KV9'),
+                      stock('Resistance: 5kΩ', package='插件,D2.5xL6.8mm'), explain=True)
+    messages = [d['message'] for d in result['unknown_details']
+                if d['source'] == 'stock' and d['field'] == 'footprint']
+    assert messages
+    assert '仅提供本体外形尺寸' in messages[0]
+    assert '焊盘间距、钻孔直径和引脚方向未提供' in messages[0]
+
+
 def test_explicit_dielectric_mismatch_and_np0_equivalence(validate):
     assert validate(row(value='1nF, C0G'), stock('Capacitance: 1nF; 温度系数: NP0'))['status'] == 'matched'
     result = validate(row(value='1nF, C0G'), stock('Capacitance: 1nF; 温度系数: X7R'))
