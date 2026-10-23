@@ -47,6 +47,15 @@ def make_footprint_change(*, operation: str, before: str, after: str,
             'source': deepcopy(source), 'target': deepcopy(target)}
 
 
+def footprint_intent_hint(record, target):
+    """Display recorded intent only; actual PCB geometry is verified at PCB preflight."""
+    evidence = record.get('footprint_change') or {}
+    if (evidence.get('schema') == 1 and evidence.get('after') == target
+            and evidence.get('operation') in ('rename', 'replace')):
+        return evidence['operation']
+    return 'unknown'
+
+
 def classify_footprint_change(record: dict, live: dict) -> dict:
     current = str(live.get('footprint') or '')
     target = str(record.get('field_overrides', {}).get('footprint', current))

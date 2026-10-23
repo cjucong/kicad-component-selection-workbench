@@ -20,6 +20,8 @@ def test_explicit_rename_has_bound_evidence(footprint_app):
     assert evidence['source']['geometry_hash']
     assert evidence['target']['hash']
     assert record['review_status'] == 'Confirmed'
+    row = app.rows(selected_bom='__schematic__', include_stock=False)[0]
+    assert row['footprint_intent_by_ref']['R1'] == 'rename'
 
 
 def test_explicit_library_replace_retains_intent(footprint_app):

@@ -27,6 +27,7 @@ else:
     from updater import VERSION, REPOSITORY
 CORE_FILES = (
     "part_selection_design_sync.py",
+    "web/design-sync.js", "web/design-sync.css",
     "part_selection_design_source.py",
     "part_selection_pcb_connection.py",
     "part_selection_tool_windows.py", "web/tool-desktop.js",

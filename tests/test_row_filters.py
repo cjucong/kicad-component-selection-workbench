@@ -178,8 +178,8 @@ assert.notEqual(filterViewKey(),beforeKey);
 
 def test_assets_initialize_before_async_load_and_reset_and_empty_state_are_integrated():
     html = rendered()
-    assert html.index('window.workbenchRowFilters = window.RowFilters?.createRowFilters') < html.index('if (!candidateOnly) initializeWorkbenchRows();')
-    assert 'if (!candidateOnly) window.workbenchRowFilters' in html
+    assert html.index('window.workbenchRowFilters = window.RowFilters?.createRowFilters') < html.index('if (!candidateOnly && !toolOnly) initializeWorkbenchRows();')
+    assert 'if (!candidateOnly && !toolOnly) window.workbenchRowFilters' in html
     assert 'window.workbenchRowFilters?.reset();' in html
     assert 'window.workbenchRowFilters?.active()' in function(html, 'updateRowsEmptyState')
     source = MODULE.read_text(encoding='utf-8')

@@ -8,6 +8,7 @@ import time
 from uuid import uuid4
 
 from part_selection_design_source import DesignSource
+from part_selection_footprint_changes import footprint_intent_hint
 
 
 class DesignSync:
@@ -48,6 +49,10 @@ class DesignSync:
             changes = [{'ref':ref,'name':name,'before':source['fields'][ref].get(name,''),'after':value}
                        for ref, fields in desired.items() for name, value in fields.items()
                        if source['fields'][ref].get(name) != value]
+            for change in changes:
+                if change['name'] == 'footprint':
+                    change.update(kind=footprint_intent_hint(source['records'].get(change['ref'], {}),
+                                  change['after']), requires_pcb_verification=True)
         result = {'ok':True,'preview_id':uuid4().hex, **payload, 'schematic_changes':changes,
                   'blocked':False,'pcb_preview':None,'saved':False}
         if payload['destination'] == 'pcb':

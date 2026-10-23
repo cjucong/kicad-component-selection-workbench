@@ -79,6 +79,23 @@ def test_pcb_only_unsynced_fields_offer_both_without_writes():
     finally:service.close()
 
 
+def test_schematic_diff_separates_recorded_rename_from_unclassified_name_edit():
+    service, app, sources = coordinator()
+    app.design_sync_fields.return_value = {'R1':{'value':'100k','footprint':'Local:Renamed'}}
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'schematic'})
+        assert preview['schematic_changes'][0]['kind'] == 'unknown'
+        snapshot = sources.capture(['R1'])
+        snapshot['records']['R1'] = {'footprint_change':{'schema':1,'operation':'rename',
+            'before':'Local:New','after':'Local:Renamed'}}
+        sources.capture.side_effect = lambda refs:deepcopy(snapshot)
+        preview = service.preview({'refs':['R1'],'destination':'schematic'})
+        assert preview['schematic_changes'][0]['kind'] == 'rename'
+        assert preview['schematic_changes'][0]['requires_pcb_verification'] is True
+        app.pcb_updates.preview.assert_not_called()
+    finally:service.close()
+
+
 def test_stale_preview_cannot_start_and_double_click_does_not_replay():
     service, app, sources=coordinator()
     try:

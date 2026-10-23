@@ -19,6 +19,7 @@
     return data;
   }
   window.previewSelectedPcbUpdate = async () => {
+    if (window.openDesignSync) return window.openDesignSync({refs:selectedSyncRefs(),destination:'pcb',bom:loadedRowsBom});
     if (window.pcbUpdateBusy) return;
     if (bulkSyncRunning || window.rowFootprintBusy || document.querySelector('[data-candidate-saving="1"]')) {
       setState('请先完成当前同步或封装操作', 'error'); return;

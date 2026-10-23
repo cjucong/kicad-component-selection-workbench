@@ -35,6 +35,7 @@ from part_selection_search import CandidateSearchJobs
 from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings, open_settings_directory, preview_field_mapping
 from part_selection_library import SelectionJobs
 from part_selection_footprints import FootprintChoices
+from part_selection_footprint_changes import footprint_intent_hint
 from part_selection_inventory import (calculate_inventory_status, load_inventory,
                                       merge_inventory_records, parse_inventory_workbook, save_inventory,
                                       inventory_import_time, apply_inventory_matches, inventory_source_owners)
@@ -1291,6 +1292,7 @@ def group_parts_for_review(parts, overrides: dict[str, dict[str, object]]) -> li
                 "notes_by_ref": {},
                 "per_ref_selection": {},
                 "per_ref_sync_fields": {},
+                "footprint_intent_by_ref": {},
                 "original_comment_values": [],
                 "original_value_values": [],
                 "original_footprint_values": [],
@@ -1337,6 +1339,7 @@ def group_parts_for_review(parts, overrides: dict[str, dict[str, object]]) -> li
             "alternate_parts": alternate_parts, "procurement_choice": procurement_choice,
         }
         group["per_ref_sync_fields"][part.ref] = row_schematic_sync_fields(per_ref_row)
+        group["footprint_intent_by_ref"][part.ref] = footprint_intent_hint(override, fields['footprint'])
         if override.get("note"):
             group["notes_by_ref"][part.ref] = str(override["note"])
         if description and description not in group["description_values"]:
@@ -1454,6 +1457,7 @@ def group_parts_for_review(parts, overrides: dict[str, dict[str, object]]) -> li
             "review_status_mixed": review_status_mixed,
             "per_ref_selection": dict(group["per_ref_selection"]),
             "per_ref_sync_fields": dict(group["per_ref_sync_fields"]),
+            "footprint_intent_by_ref": dict(group["footprint_intent_by_ref"]),
             "selection_mixed": len(selection_signatures) > 1 or review_status_mixed,
             "selection_codes_mixed": codes_disagree or has_partial_code,
             "selection_codes": list(dict.fromkeys(code for code in effective_codes if code)),
@@ -3850,6 +3854,8 @@ def render_index(app: PartSelectionApp) -> str:
     plugin_updates_js = (Path(__file__).resolve().parent / "web" / "plugin-updates.js").read_text(encoding="utf-8")
     candidate_desktop_js = (Path(__file__).resolve().parent / "web" / "candidate-desktop.js").read_text(encoding="utf-8")
     tool_desktop_js = (Path(__file__).resolve().parent / "web" / "tool-desktop.js").read_text(encoding="utf-8")
+    design_sync_js = (Path(__file__).resolve().parent / 'web' / 'design-sync.js').read_text(encoding='utf-8')
+    design_sync_css = (Path(__file__).resolve().parent / 'web' / 'design-sync.css').read_text(encoding='utf-8')
     inventory_js = (Path(__file__).resolve().parent / "web" / "local-inventory.js").read_text(encoding="utf-8")
     pcb_js = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.js').read_text(encoding='utf-8')
     pcb_css = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.css').read_text(encoding='utf-8')
@@ -3871,8 +3877,11 @@ def render_index(app: PartSelectionApp) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BOM 器件选型工作台</title>
 <script>const candidateOnly = new URLSearchParams(location.search).get('view') === 'candidate';
+const toolOnly = new URLSearchParams(location.search).get('view') === 'tool';
+if (toolOnly) document.documentElement.classList.add('tool-only');
 if (candidateOnly) document.documentElement.classList.add('candidate-only');</script>
 <style>
+{design_sync_css}
 html.candidate-only body > header, html.candidate-only body > main,
 html.candidate-only .workbench-statusbar {{ display: none !important; }}
 html.candidate-only body {{ padding: 0; }}
@@ -4232,9 +4241,7 @@ tr.hidden-row {{ display: none; }}
       <button type="button" data-command="importLocalInventory">导入本地库存…</button>
       <button type="button" data-command="queryMissingStock">查询未查库存</button>
       <button type="button" data-command="queryAllStock">刷新全部库存</button>
-      <button type="button" data-command="syncSelectedSchematic">同步所选行</button>
-      <button type="button" data-command="syncAllSchematic">同步全部原理图</button>
-      <button type="button" data-command="updateSelectedPcb">更新 PCB（所选器件）…</button>
+      <button type="button" data-command="designSyncMenu">同步设计…</button>
     </div>
   </div>
   <div class="app-menu">
@@ -4267,10 +4274,11 @@ tr.hidden-row {{ display: none; }}
   </div>
 </section>
 <section class="toolbar-section action-section" aria-label="同步设计">
-  <span class="section-title">同步设计</span><div class="section-actions">
-  <button type="button" id="syncSelectedSchematic" class="tool-button action-sync selected-sync" disabled aria-label="同步所选行（0）" data-tooltip="工作台 → 原理图：仅同步当前可见且已勾选的行，执行前确认。">{toolbar_content('list-checks', '同步所选', True)}</button>
-  <button type="button" id="syncAllSchematic" class="tool-button action-sync" disabled aria-label="同步全部原理图" data-tooltip="工作台 → 原理图：处理整个 BOM，不受筛选或勾选限制，执行前确认。">{toolbar_content('layers', '同步全部')}</button>
-  <button type="button" id="updateSelectedPcb" class="tool-button" aria-label="更新 PCB（所选器件）" data-tooltip="仅原位替换勾选器件的 PCB 封装，执行前预检；不自动保存 PCB。">{toolbar_content('layers', 'PCB')}</button>
+  <span class="section-title">设计</span><div class="section-actions">
+  <label class="design-sync-scope">范围<select id="designSyncScope" aria-label="同步范围"><option value="selected">所选行</option><option value="filtered">当前筛选</option><option value="all">全部行</option></select></label>
+  <div class="app-menu"><button type="button" id="designSyncMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="同步设计" data-tooltip="先选择范围，再选择同步目标。全部同步表示原理图和 PCB，不改变范围。">{toolbar_content('layers', '同步设计')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
+  <div class="menu-popup"><button type="button" data-design-destination="schematic">同步原理图</button><button type="button" data-design-destination="pcb">同步 PCB</button><button type="button" data-design-destination="both">全部同步</button></div></div>
+  <span hidden><button type="button" id="syncSelectedSchematic" disabled aria-label="同步所选行（0）">{toolbar_content('list-checks','同步所选',True)}</button><button type="button" id="syncAllSchematic" disabled>同步全部原理图</button><button type="button" id="updateSelectedPcb">更新 PCB（所选器件）</button></span>
   </div>
 </section>
 <section class="toolbar-section export-section" aria-label="表格导出">
@@ -5945,8 +5953,8 @@ const SYNC_FIELD_LABELS = {{
 function schematicSyncMarker(row, syncNeeded) {{
   if (!syncNeeded) return "";
   const changes = new Map();
-  const perRef = Object.values(row.field_diffs_by_ref || {{}});
-  for (const fields of perRef.length ? perRef : [row.field_diffs || {{}}]) {{
+  const perRef = Object.entries(row.field_diffs_by_ref || {{}});
+  for (const [ref, fields] of perRef.length ? perRef : [["",row.field_diffs || {{}}]]) {{
     for (const [field, values] of Object.entries(fields || {{}})) {{
       if (field === "lcsc_url" || field === "procurement_url") continue;
       if (String(values.old || "") === String(values.new || "")) continue;
@@ -5955,7 +5963,9 @@ function schematicSyncMarker(row, syncNeeded) {{
         continue;
       }}
       const key = JSON.stringify([field, values.old, values.new]);
-      changes.set(key, `${{SYNC_FIELD_LABELS[field] || field}}: ${{values.old || "(空)"}} → ${{values.new || "(空)"}}`);
+      const kind = row.footprint_intent_by_ref?.[ref];
+      const label = field === "footprint" ? (kind === "rename" ? "封装仅改名" : kind === "replace" ? "更换封装" : "封装类型待核对") + "（待 PCB 核验）" : SYNC_FIELD_LABELS[field] || field;
+      changes.set(key + (field === "footprint" ? label : ""), `${{label}}: ${{values.old || "(空)"}} → ${{values.new || "(空)"}}`);
     }}
   }}
   const details = [...changes.values()].map(change => `<div>${{esc(change)}}</div>`);
@@ -6039,7 +6049,7 @@ function markRowNeedsSchematicSync(tr, refsText = "") {{
   tr.querySelector("[data-sync-marker]")?.remove();
   if (needed) {{
     const marker = schematicSyncMarker(row || {{field_changed_refs: refsText || tr.dataset.refs || tr.dataset.ref}}, true);
-    if (button) button.insertAdjacentHTML("afterend", marker);
+    if (button) tr.querySelector("[data-col='review']")?.insertAdjacentHTML("beforeend", marker);
   }}
   for (const field of ["comment", "value", "footprint"]) {{
     const cell = tr.querySelector(`[data-col='${{field}}']`);
@@ -6507,7 +6517,7 @@ function renderRows(rows) {{
     const missingRef = rowHasMissingRef(row);
     const filterKeys = rowFilterKeys(row, selectedStatus, syncNeeded, stock, reviewStatus).join(" ");
     const syncButtonClass = syncNeeded ? "action-sync-needed" : "action-muted";
-    const syncButton = `<button type="button" class="small ${{syncButtonClass}}" data-action="sync-schematic" title="${{syncNeeded ? "把当前行各位号的待同步字段写回 KiCad 原理图" : "当前字段和原理图一致；仍可手动写回"}}">同步原理图</button>`;
+    const syncButton = `<details class="row-sync-menu"><summary title="仅处理当前行的全部位号">同步设计</summary><div class="row-sync-actions"><button type="button" class="small ${{syncButtonClass}}" data-action="sync-schematic">同步原理图</button><button type="button" class="small" data-action="sync-pcb">同步 PCB</button><button type="button" class="small" data-action="sync-both">全部同步</button></div></details>`;
     const syncSummary = schematicSyncSummary(row);
     const syncMarker = schematicSyncMarker(row, syncNeeded);
     const fieldReconcileNotice = schematicFieldReconcileNotice(row);
@@ -8050,7 +8060,11 @@ rowsEl.addEventListener("click", async event => {{
     if (action === "adopt-schematic-alternates") await updateAlternateParts(tr, "adopt_schematic");
     if (action === "clear-procurement") await updateProcurementChoice(tr, "clear");
     if (action === "adopt-schematic-procurement") await updateProcurementChoice(tr, "adopt_schematic");
-    if (action === "sync-schematic") await syncSchematic(tr);
+    if (["sync-schematic","sync-pcb","sync-both"].includes(action)) {{
+      tr.querySelector(".row-sync-menu")?.removeAttribute("open");
+      await window.openDesignSync({{refs:syncRowRefs(tr),bom:loadedRowsBom,
+        destination:{{"sync-schematic":"schematic","sync-pcb":"pcb","sync-both":"both"}}[action]}});
+    }}
     if (action === "undo-workbench") await undoWorkbenchChanges(tr, button);
     if (action === "adopt-schematic-fields") await adoptSchematicFields(tr, button);
     if (action === "save-fields") await saveFieldEdits(tr);
@@ -8308,7 +8322,7 @@ document.getElementById("queryAllStock").addEventListener("click", () => startSt
 syncAllButton.addEventListener("click", async () => {{
   try {{
     await flushRowEdits();
-    await syncAllSchematic();
+    await openScopedDesignSync("schematic", "all");
   }} catch (err) {{
     setState(err.message, "error");
     syncAllButton.disabled = false;
@@ -8317,7 +8331,7 @@ syncAllButton.addEventListener("click", async () => {{
 syncSelectedButton.addEventListener("click", async () => {{
   try {{
     await flushRowEdits();
-    await syncAllSchematicWithProgress(true);
+    await openScopedDesignSync("schematic", "selected");
   }} catch (err) {{
     setState(err.message, "error");
   }}
@@ -8631,11 +8645,42 @@ applyCandidateColumnOrder();
 applyCandidateSavedWidths();
 renderColumnPanel();
 applyColumnVisibility();
-if (!candidateOnly) window.workbenchRowFilters = window.RowFilters?.createRowFilters({{
+if (!candidateOnly && !toolOnly) window.workbenchRowFilters = window.RowFilters?.createRowFilters({{
   document, project: document.querySelector(".project-path-link").textContent,
   getSettings: loadUiSettings, saveSettings: updateUiSettings, onChange: applyActiveFilter
 }});
-if (!candidateOnly) initializeWorkbenchRows();
+if (!candidateOnly && !toolOnly) initializeWorkbenchRows();
+async function openScopedDesignSync(destination, scope = document.getElementById("designSyncScope").value) {{
+  if (rowsLoading || loadedRowsBom === null || loadedRowsBom !== (bomSelect.value || "")) throw new Error("请先加载当前数据");
+  await flushRowEdits();
+  const refs = scope === "selected" ? selectedSyncRefs() : scope === "filtered" ? [...new Set(visibleSyncRows().flatMap(syncRowRefs))] : [...new Set(currentRows.flatMap(row => row.refs_list || [row.ref]))];
+  if (!refs.length) throw new Error("请先选择需要同步的器件行");
+  closeToolbarMenus();
+  return window.openDesignSync({{refs,destination,bom:loadedRowsBom}});
+}}
+document.querySelectorAll("[data-design-destination]").forEach(button => button.addEventListener("click", () => {{
+  openScopedDesignSync(button.dataset.designDestination).catch(error => setState(error.message,"error"));
+}}));
+async function refreshDesignSyncRows() {{
+  await flushRowEdits();
+  const response = await fetch("/api/rows?bom="+encodeURIComponent(loadedRowsBom || "__schematic__")+"&stock=0");
+  if (!response.ok) throw new Error("同步已完成，列表状态读取失败，请重新读取");
+  const fresh = (await response.json()).rows;
+  for (const tr of rowsEl.querySelectorAll("tr[data-ref]")) {{
+    const previous = rowDataForElement(tr), next = fresh.find(row => row.refs === previous?.refs);
+    if (!previous || !next) continue;
+    for (const key of ["schematic_fields_by_ref","schematic_sync_summary","schematic_synced_at","missing_schematic_refs"]) previous[key] = next[key];
+    updateSavedFieldDiffs(previous,Object.keys(SYNC_FIELD_LABELS));
+    markRowNeedsSchematicSync(tr);
+    const review = tr.querySelector("[data-col='review']");
+    review?.querySelector(".sync-summary")?.remove();
+    review?.insertAdjacentHTML("beforeend",schematicSyncSummary(previous));
+  }}
+}}
+window.addEventListener("workbench-design-synced", () => refreshDesignSyncRows().catch(error => setState(error.message,"error")));
+window.addEventListener("workbench-tool-changed", event => {{
+  if (event.detail?.kind === "design-sync") refreshDesignSyncRows().catch(error => setState(error.message,"error"));
+}});
 </script>
 <script>{candidate_desktop_js}</script>
 <script>{tool_desktop_js}</script>
@@ -8644,6 +8689,7 @@ if (!candidateOnly) initializeWorkbenchRows();
 <script>{value_parameters_js}</script>
 <script>{footprint_js}</script>
 <script>{pcb_js}</script>
+<script>{design_sync_js}</script>
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>
 <script>{plugin_updates_js}</script>

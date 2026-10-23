@@ -45,7 +45,7 @@ class WorkbenchToolbarTest(unittest.TestCase):
         expected = {
             "原理图数据": ["bomSelect", "refreshSchematicRows"],
             "库存查询": ["queryMissingStock", "queryAllStock", "importLocalInventory", "localInventorySetCount"],
-            "同步设计": ["syncSelectedSchematic", "syncAllSchematic", "updateSelectedPcb"],
+            "同步设计": ["designSyncScope", "designSyncMenu", "syncSelectedSchematic", "syncAllSchematic", "updateSelectedPcb"],
             "表格导出": ["exportPumpMenu", "pumpExportMode", "exportPumpTable", "exportChanges"],
             "列表视图": ["toggleColumns", "columnPanel", "autoSizeColumns", "columnList", "defaultViewMenu", "saveDefaultView", "loadDefaultView"],
         }
@@ -53,7 +53,7 @@ class WorkbenchToolbarTest(unittest.TestCase):
 
     def test_toolbar_has_local_icons_text_labels_and_accessible_tooltips(self):
         for command in ("refreshSchematicRows", "queryMissingStock", "queryAllStock",
-                        "syncSelectedSchematic", "syncAllSchematic", "exportPumpMenu",
+                        "designSyncMenu", "exportPumpMenu",
                         "exportChanges", "toggleColumns", "defaultViewMenu"):
             button = re.search(r'<button\b[^>]*id="' + command + r'"[^>]*>.*?</button>', self.html, re.S)
             self.assertIsNotNone(button, command)
