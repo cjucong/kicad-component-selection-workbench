@@ -571,6 +571,14 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertEqual(result['visual_differences'], ['DSMU:Other'])
 
     def test_grouped_paths_accept_single_pad_nanometer_history(self):
+        from part_selection_footprint_geometry import estimate_alignment
+        def align(converted, reference, output, *, method):
+            result = estimate_alignment(converted.read_text(), reference.read_text(), method=method)
+            output.write_bytes(converted.read_bytes())
+            return result
+        self.addCleanup(patch.stopall)
+        patch('part_selection_footprint_geometry.align_module', side_effect=align).start()
+        patch('part_selection_footprint_geometry.render_comparison', return_value={'ok':True}).start()
         self.old.write_text(module('0603'), encoding='utf-8')
         other = self.pretty / 'Other.kicad_mod'
         other.write_text(module('Other').replace('(at 0.75 0)', '(at 0.75001 0)'), encoding='utf-8')

@@ -26,7 +26,9 @@ function Write-Log { param($Message) }
         result = subprocess.run(
             [POWERSHELL, '-NoProfile', '-NonInteractive', '-Command', setup + body],
             env={**os.environ, 'TEST_SEARCH_SCRIPT': str(SCRIPT)},
-            capture_output=True, text=True, timeout=15,
+            # Cold PowerShell/Add-Type startup can be slow on hosted runners;
+            # the actual 250 ms/3000 ms worker bounds are asserted below.
+            capture_output=True, text=True, timeout=60,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
