@@ -34,18 +34,17 @@ class TestArtifactLifecycleTests(unittest.TestCase):
         from _scratch import temporary_project
         scratch = temporary_project()
         self.addCleanup(scratch.cleanup)
-        cleanup = scratch._container.cleanup
-        with patch.object(scratch._container, 'cleanup', side_effect=[PermissionError('locked'), None]) as attempt:
+        with patch('_scratch.shutil.rmtree', side_effect=[PermissionError('locked'), None]) as attempt:
             with patch('_scratch.time.sleep') as wait:
                 scratch.cleanup()
                 self.assertEqual(attempt.call_count, 2)
                 wait.assert_called_once_with(0.25)
-        with patch.object(scratch._container, 'cleanup', side_effect=PermissionError('locked')) as attempt:
+        with patch('_scratch.shutil.rmtree', side_effect=PermissionError('locked')) as attempt:
             with patch('_scratch.time.sleep'):
                 with self.assertRaises(PermissionError):
                     scratch.cleanup()
                 self.assertEqual(attempt.call_count, 21)
-        cleanup()
+        scratch.cleanup()
 
     def test_scratch_removes_sibling_runtime_cache(self):
         from _scratch import temporary_project, runtime_directory

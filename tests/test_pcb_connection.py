@@ -24,6 +24,23 @@ def test_open_editor_is_reused_without_process_scan_or_launch(scratch_project):
     inspect.assert_not_called()
 
 
+def test_unresolved_pcb_lock_prevents_automatic_open(scratch_project):
+    service, launch, _ = connection(scratch_project, [{'state':'unknown'}])
+    (scratch_project/'~Test.kicad_pcb.lck').write_text('{"username":"other","hostname":"remote"}')
+    assert service.ensure(open_if_closed=True)['state'] == 'unknown'
+    launch.assert_not_called()
+
+
+def test_lock_appearing_after_inventory_prevents_launch(scratch_project):
+    service, launch, _ = connection(scratch_project, [])
+    def classified():
+        (scratch_project/'~Test.kicad_pcb.lck').write_text('locked')
+        return {'state':'closed'}
+    service.inspect = classified
+    assert service.ensure(open_if_closed=True)['state'] == 'unknown'
+    launch.assert_not_called()
+
+
 def test_confirmed_closed_opens_once_and_reports_real_stages(scratch_project):
     service, launch, _ = connection(scratch_project, [{'state':'unknown'}, {'state':'unknown'}, {'state':'connected'}])
     progress = Mock()
@@ -83,3 +100,25 @@ def test_multiple_project_boards_cannot_choose_by_filename_guess(scratch_project
     (scratch_project / 'Other.kicad_pcb').write_text('(kicad_pcb)')
     assert service.ensure(open_if_closed=True)['state'] == 'ambiguous'
     launch.assert_not_called()
+
+
+def test_exited_owned_editor_can_be_opened_again_after_verified_absence(scratch_project):
+    service, launch, _ = connection(scratch_project, [
+        {'state':'unknown'}, {'state':'connected'}, {'state':'unknown'}, {'state':'connected'}])
+    handle = Mock()
+    handle.poll.return_value = None
+    launch.return_value = handle
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    handle.poll.return_value = 0
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    assert launch.call_count == 2
+
+
+def test_manager_hosted_pcb_is_included_in_process_inventory(monkeypatch):
+    import part_selection_pcb_connection as module
+    monkeypatch.setattr(module, 'process_arguments', lambda command: ['kicad.exe', 'E:/Test/Test.kicad_pro'])
+    monkeypatch.setattr(module.subprocess, 'run', lambda command, **kwargs: SimpleNamespace(returncode=0,
+        stdout='[{"Name":"kicad.exe","ProcessId":7,"CreationDate":"now","CommandLine":"manager"}]'))
+    monkeypatch.setattr(module, 'manager_has_pcb', lambda pid: True, raising=False)
+    scan = module.inspect_processes()
+    assert scan['processes'][0]['files'] == [str(__import__('pathlib').Path('E:/Test/Test.kicad_pcb').resolve())]

@@ -117,6 +117,37 @@
     },true);
   }
   if(!child && !candidateOnly) {
+    let editEpoch=0, refreshVersion=0;
+    rowsEl.addEventListener('input',()=>editEpoch++);
+    rowsEl.addEventListener('change',()=>editEpoch++);
+    async function refreshUtilityRows(kind) {
+      const request=++refreshVersion;
+      await flushRowEdits();
+      if(['settings','field-mapping'].includes(kind)) await loadBomOptions(true);
+      const bom=bomSelect.value, version=rowsLoadVersion, epoch=editEpoch;
+      if(loadedRowsBom!==bom) {await loadRows();return;}
+      const response=await fetch('/api/rows?refs='+encodeURIComponent(refsInput.value.trim())+
+        '&bom='+encodeURIComponent(bom)+'&stock=0');
+      const data=await response.json();
+      if(!response.ok) throw new Error(data.error || '修改已保存，列表状态读取失败');
+      if(request!==refreshVersion || version!==rowsLoadVersion || bom!==bomSelect.value) return;
+      if(epoch!==editEpoch || rowEditQueue.pending) {
+        setTimeout(()=>refreshUtilityRows(kind).catch(error=>setState(error.message,'error')),300);
+        return;
+      }
+      const active=document.activeElement, tr=active?.closest('tr[data-refs]') ||
+        [...rowsEl.querySelectorAll('tr[data-refs]')].find(row=>row.getBoundingClientRect().bottom>120);
+      const anchor=rowAnchor(tr), field=active?.dataset.field;
+      const selection=field && active.setSelectionRange ? [active.selectionStart,active.selectionEnd] : null;
+      renderRows(data.rows,{patch:true});
+      restoreRowAnchor(anchor);
+      if(field && tr && document.activeElement===document.body) {
+        const next=[...rowsEl.querySelectorAll('tr[data-refs]')].find(row=>row.dataset.refs===tr.dataset.refs);
+        const input=[...next?.querySelectorAll('[data-field]') || []].find(input=>input.dataset.field===field);
+        input?.focus({preventScroll:true});
+        if(selection?.every(Number.isInteger) && input?.setSelectionRange) input.setSelectionRange(...selection);
+      }
+    }
     const menus={openPathConfig:'settings',openFieldMapping:'field-mapping',importLocalInventory:'inventory',
       toggleColumns:'list-view',openPluginUpdates:'plugin-update'};
     const rows={'manage-footprint':'footprint','value-parameters':'value-parameters','undo-workbench':'undo'};
@@ -136,20 +167,7 @@
     });
     window.addEventListener('workbench-tool-changed',event=>{
       if(['footprint','value-parameters','undo','settings','field-mapping'].includes(event.detail?.kind)) {
-        void (async()=>{
-          await flushRowEdits();
-          const active=document.activeElement, tr=active?.closest('tr[data-refs]') ||
-            [...rowsEl.querySelectorAll('tr[data-refs]')].find(row=>row.getBoundingClientRect().bottom>120);
-          const anchor=rowAnchor(tr), field=active?.dataset.field;
-          const selection=field ? [active.selectionStart,active.selectionEnd] : null;
-          await loadBomOptions();await loadRows(anchor);
-          if(field && tr && document.activeElement===document.body) {
-            const next=[...rowsEl.querySelectorAll('tr[data-refs]')].find(row=>row.dataset.refs===tr.dataset.refs);
-            const input=[...next?.querySelectorAll('[data-field]') || []].find(input=>input.dataset.field===field);
-            input?.focus({preventScroll:true});
-            if(selection?.every(Number.isInteger) && input?.setSelectionRange) input.setSelectionRange(...selection);
-          }
-        })().catch(error=>setState(error.message,'error'));
+        void refreshUtilityRows(event.detail.kind).catch(error=>setState(error.message,'error'));
       }
       if(event.detail?.kind==='inventory') void window.reloadLocalInventory?.();
     });

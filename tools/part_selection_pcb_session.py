@@ -53,6 +53,58 @@ def decode(value):
     return FootprintInstance(proto)
 
 
+def geometry_data(original):
+    """Full native geometry in board coordinates, without mutable field/ID data."""
+    from google.protobuf.json_format import MessageToDict
+    from kipy.board_types import Field
+    fp = decode(original['proto'])
+    def clean(value):
+        if isinstance(value, dict):
+            return {key:clean(item) for key,item in value.items()
+                    if key not in ('id','parent','net','symbol_pin')}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+    items = sorted(([type(item).__name__, clean(MessageToDict(item.proto, preserving_proto_field_name=True))]
+                    for item in fp.definition.items if not isinstance(item, Field)), key=lambda item:json.dumps(item, sort_keys=True))
+    definition = deepcopy(fp.proto.definition)
+    definition.ClearField('items')
+    return [clean(MessageToDict(definition, preserving_proto_field_name=True)), items,
+            MessageToDict(fp.proto.position, preserving_proto_field_name=True),
+            MessageToDict(fp.proto.orientation, preserving_proto_field_name=True), fp.proto.layer]
+
+
+def geometry_signature(original):
+    return fingerprint(geometry_data(original))
+
+
+def geometry_matches(original, proposed):
+    # Completion recognition only: native nm/angle round-trips can vary slightly.
+    # The transaction's complete staged/readback equality remains exact.
+    def same(a, b, key=''):
+        if key.endswith('_nm'):
+            return abs(int(a)-int(b)) <= 5
+        if key == 'value_degrees':
+            return abs(math.remainder(float(a)-float(b), 360)) <= .0001
+        if isinstance(a, dict) and isinstance(b, dict):
+            keys = set(a) | set(b)
+            for k in keys:
+                if k.endswith('_nm') or k == 'value_degrees':
+                    if not same(a.get(k,0), b.get(k,0), k): return False
+                elif k in a and k in b:
+                    if not same(a[k], b[k], k): return False
+                else:
+                    value = a.get(k,b.get(k))
+                    if not (isinstance(value, dict) and value and set(value) <= {
+                            'x_nm','y_nm','z_nm','value_nm','value_degrees'} and same({}, value)):
+                        return False
+            return True
+        if isinstance(a, list) and isinstance(b, list):
+            return len(a) == len(b) and all(same(x,y) for x,y in zip(a,b))
+        return type(a) is type(b) and a == b
+    return same(geometry_data(original), geometry_data(proposed))
+
+
 def describe(fp):
     from kipy.proto.board.board_types_pb2 import BoardLayer
     from google.protobuf.json_format import MessageToDict
@@ -215,6 +267,13 @@ def validate_item_ids(snapshot, prepared):
             existing.add(identifier)
 
 
+def require_safe_commit_route(schematic_close_verified):
+    # This KiCad build has no GetOpenDocuments(SCHEMATIC) handler. The UI
+    # adapter must first save/close only an existing, verified project schematic.
+    if schematic_close_verified is not True:
+        raise ValueError('PCB 未写入：尚未确认同工程原理图已安全暂关，请从工作台重新预检后重试')
+
+
 def pcb_socket_candidates(inherited):
     """Discover local KiCad transports only; a transport is never proof of identity."""
     candidates = [inherited] if inherited.startswith('ipc://') else []
@@ -255,6 +314,7 @@ class PcbSession:
         from kipy import KiCad
         from kipy.proto.common.types import DocumentType
         matches, errors = {}, []
+        busy = False
         for socket in pcb_socket_candidates(self.socket):
             try:
                 # A token inherited from the schematic belongs to that server,
@@ -265,6 +325,9 @@ class PcbSession:
                              if doc.project.path and Path(doc.project.path).resolve() == self.root]
             except Exception as exc:
                 errors.append({'socket':socket,'type':type(exc).__name__,'reason':str(exc)[:400]})
+                if getattr(exc, 'code', None) is not None:
+                    from kipy.proto.common.envelope_pb2 import AS_BUSY
+                    busy = busy or exc.code == AS_BUSY
                 continue
             if not documents:
                 continue
@@ -279,6 +342,9 @@ class PcbSession:
             identity = (token, str((self.root / doc.board_filename).resolve()))
             matches.setdefault(identity, (socket, client, doc))
         if not matches:
+            if busy:
+                return {'state':'busy','errors':errors,
+                        'reason':'KiCad 正在交互操作或有阻塞对话框；请完成操作后重试，不会重复打开 PCB'}
             return {'state':'unknown','errors':errors,
                     'reason':'未找到当前工程可连接的 PCB 编辑器。请打开当前工程的 PCB 并启用 KiCad IPC，再点击重试；无需关闭或更换工作台入口'}
         if len(matches) != 1:
@@ -300,6 +366,9 @@ class PcbSession:
             raise ValueError('KiCad 未返回可核验的会话身份，禁止写入 PCB')
         self.socket = result['socket']
         client._client._timeout_ms = 4000
+        transport = getattr(client._client, '_conn', None)
+        if transport is not None:
+            transport.send_timeout = transport.recv_timeout = 4000
         return client, Board(client._client, doc), doc
 
     def snapshot(self, project_root: Path, refs: list[str]) -> dict:
@@ -379,7 +448,7 @@ class PcbSession:
                 raise ValueError(ref + ' 完整封装定义回读不一致，可能有图形、模型或属性未保留')
         return {'ok': True}
 
-    def apply(self, snapshot: dict, replacements: list[dict], backup_dir: Path) -> dict:
+    def apply(self, snapshot: dict, replacements: list[dict], backup_dir: Path, *, schematic_close_verified=False) -> dict:
         with self.lock:
             refs = list(snapshot['parts'])
             if not refs or len(replacements) != len(refs) or {item.get('ref') for item in replacements} != set(refs):
@@ -400,10 +469,11 @@ class PcbSession:
                 if fp.id.value != original['uuid'] or fp.reference_field.text.value != item['ref']:
                     raise ValueError('待写入封装身份与选中器件不符，未修改 PCB')
             validate_item_ids(snapshot, prepared)
-            _, board, _ = self._board()
+            client, board, _ = self._board()
             # Finish every source check before the first mutation.
             if self.snapshot(self.root, refs) != snapshot:
                 raise ValueError('备份期间 PCB 已改变，请重新预览')
+            require_safe_commit_route(schematic_close_verified)
             commit = board.begin_commit()
             try:
                 staged = board.update_items(prepared)

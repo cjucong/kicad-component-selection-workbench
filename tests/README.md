@@ -125,6 +125,12 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 ## 标准库原位更新 PCB
 
+`test_design_sync.py`、`test_design_source.py`、`test_footprint_change_types.py` 覆盖分阶段目标/范围、源版本、仅改名证据、字段更新、失败及 PCB 单独重试；`run_design_sync_smoke.py` 检查 B 菜单及确认流程。`run_tool_windows_smoke.py` 检查固定工具页、草稿保护及父表局部刷新；`run_native_tool_windows_probe.py --report-dir <工程外目录>` 用真实 WebView2 检查工具窗口和受限桥接，不是 KiCad 写入测试。
+
+`run_native_design_sync_probe.py --report-dir <工程外目录>` 在真实 KiCad 合成工程验证字段/改名完整实例、单步撤销、原生阻塞弹窗后的分阶段重试，再运行正背面库替换、中心/严格对齐、网络/走线及保存重开。使用桌面 Python/kipy 和 Node Playwright，报告工程外保存；不会接受生产工程路径。失败即记录，不得把部分通过当作整套通过。
+
+2026-10-23 验证记录：1,169 项 pytest 通过；B 菜单 Chromium 检查覆盖 1440/768/390 像素，工具窗口检查覆盖草稿保护及未改行 DOM/焦点保持。真实 WebView2 覆盖 10 类窗口、移出主窗口及受限桥接。真实 KiCad `10.0.0-19-g65df3ab11c` 完整探测通过字段、仅改名、原生弹窗受阻后的 PCB 单独重试、正背面严格/中心对齐、重复预检不重复换封装、网络/走线、单步撤销、自动打开、保存重开，以及进程和目录清理。该记录不代表真实联网转换、生产工程更新或其他 KiCad 版本验证。
+
 `test_pcb_native_types.py` 的对象顺序回归覆盖字段、焊盘、图形混排，以及字段值/几何/网络/UUID/位置/元数据/重复对象数量变化。只允许顶层封装对象顺序变化，不能以此放宽完整内容校验。真实探测夹具包含 `LCSC` 和 `Comment` 自定义 PCB 字段，覆盖原生暂存类型重排和回读。
 
 中心对齐另由 `test_pcb_in_place_geometry.py` 覆盖 L9 同型间距差（3.6068 / 3.048 mm）、中心不动、逐焊盘移动 0.2794 mm、正背面及编号拒绝；`run_pcb_updates_smoke.py` 覆盖默认中心模式、严格模式失败、切换清除确认和迟到响应隔离。真实探测在严格流程后运行不同间距标准库的正背面中心更新，独立核验中心、实际移动量、目标几何、网络、走线不动、单步撤销与保存重开。两种模式的“位置保持”含义不同，不能把中心对齐写成每颗焊盘原位。
@@ -135,4 +141,4 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `test_pcb_in_place_geometry.py`、`test_pcb_session.py`、`test_pcb_transaction.py`、`test_pcb_update.py` 与 `test_pcb_updates_ui.py` 覆盖严格编号配准、工程身份、批次边界、备份失败、暂存/回读失败、未知结果不重放、源变化及确认状态隔离。`run_pcb_updates_smoke.py` 为可复用离线 Chromium 交互检查；设置 `PCB_SCREENSHOT` 为工程外绝对文件名前缀可保留截图。
 
-`run_native_pcb_in_place_probe.py --report-dir <工程外绝对目录>` 是明确选择运行的真实 KiCad 验证，使用已安装桌面 Python 环境的 `kipy`、KiCad 捆绑 Python 和 Node Playwright（需配置 `NODE_PATH`）。创建并自动清理合成工程，不接受生产工程路径；验证正面任意角度、背面、偏移原点、真实标准库几何替换、网络与走线不变、此前未保存修改、一个撤销步骤，以及显式保存重开。包含真实工作台选库、原理图同步服务与新 PCB 按钮流程；同步服务验证不发起编辑器通知，避免打开多余原理图窗口。报告和截图在指定工程外目录，不能把离线浏览器模拟或接口存在误称为真实流程通过。
+`run_native_pcb_in_place_probe.py --report-dir <工程外绝对目录>` 是明确选择运行的真实 KiCad 验证，使用已安装桌面 Python 环境的 `kipy`、KiCad 捆绑 Python 和 Node Playwright（需配置 `NODE_PATH`）。创建并自动清理合成工程，不接受生产工程路径；验证正面任意角度、背面、偏移原点、真实标准库几何替换、网络与走线不变、此前未保存修改、一个撤销步骤，以及显式保存重开。包含真实工作台选库、原理图保存关闭/恢复、分阶段同步及 PCB 更新流程。报告和截图在指定工程外目录，不能把离线浏览器模拟或接口存在误称为真实流程通过。

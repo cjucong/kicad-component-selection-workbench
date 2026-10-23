@@ -2,10 +2,98 @@
 from copy import deepcopy
 import threading
 import time
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+
+
+@pytest.mark.parametrize('closed', [False, True])
+def test_legacy_native_commit_closes_only_existing_schematic_then_revalidates(monkeypatch, closed):
+    from part_selection_server import PartSelectionApp
+    command = SimpleNamespace(DESCRIPTOR=SimpleNamespace(fields_by_name={}))
+    monkeypatch.setitem(sys.modules, 'kipy.proto.common.commands.editor_commands_pb2', SimpleNamespace(BeginCommit=command))
+    app = PartSelectionApp.__new__(PartSelectionApp)
+    app.selection_save_lock = threading.RLock()
+    events = []
+    app.kicad_url_for_refs = Mock(return_value='verified-project-url')
+    app.run_kicad_script = Mock(side_effect=lambda *args: events.append('close') or
+        {'ok':True,'message':'SchematicClosed=' + str(int(closed))})
+    app.notify_kicad_schematic_changed = Mock(side_effect=lambda *args:events.append('restore') or {'ok':True})
+    app.pcb_updates = SimpleNamespace(previews={'token':{'refs':['R1']}},
+        apply=Mock(side_effect=lambda *args, **kwargs:events.append('validated apply') or {'ok':True,'saved':False}))
+    assert app.apply_design_pcb('token')['ok']
+    assert events == ['close','validated apply'] + (['restore'] if closed else [])
+    assert '-ExistingOnly' in app.run_kicad_script.call_args.args[1]
+    app.pcb_updates.apply.assert_called_once_with('token', True, schematic_close_verified=True)
+
+
+def test_failed_legacy_editor_close_never_begins_pcb_commit(monkeypatch):
+    from part_selection_server import PartSelectionApp
+    monkeypatch.setitem(sys.modules, 'kipy.proto.common.commands.editor_commands_pb2',
+        SimpleNamespace(BeginCommit=SimpleNamespace(DESCRIPTOR=SimpleNamespace(fields_by_name={}))))
+    app = PartSelectionApp.__new__(PartSelectionApp)
+    app.selection_save_lock = threading.RLock()
+    app.kicad_url_for_refs = Mock(return_value='verified-project-url')
+    app.run_kicad_script = Mock(return_value={'ok':False,'message':'save blocked'})
+    app.pcb_updates = SimpleNamespace(previews={'token':{'refs':['R1']}},apply=Mock())
+    with pytest.raises(ValueError,match='save blocked'):
+        app.apply_design_pcb('token')
+    app.pcb_updates.apply.assert_not_called()
+
+
+def test_jump_cannot_reopen_schematic_during_pcb_transaction(monkeypatch):
+    import part_selection_server as module
+    app = module.PartSelectionApp.__new__(module.PartSelectionApp)
+    app.project_root = '.'
+    acquired = threading.Event()
+    app._run_kicad_script = Mock(side_effect=lambda *args:acquired.set() or {'ok':True})
+    with module.SCHEMATIC_SYNC_TRANSACTION_LOCK:
+        worker = threading.Thread(target=lambda:app.run_kicad_script('url', []))
+        worker.start()
+        assert not acquired.wait(.1)
+    worker.join(2)
+    assert acquired.is_set()
+
+
+def test_pcb_no_changes_does_not_close_schematic():
+    from part_selection_server import PartSelectionApp
+    app = PartSelectionApp.__new__(PartSelectionApp)
+    app.selection_save_lock = threading.RLock()
+    app.run_kicad_script = Mock(side_effect=AssertionError('Unnecessary editor close'))
+    app.pcb_updates = SimpleNamespace(previews={'token':{'refs':['R1'],'items':[{'kind':'none'}]}},
+        apply=Mock(return_value={'ok':True,'no_changes':True}))
+    assert app.apply_design_pcb('token')['no_changes']
+    app.run_kicad_script.assert_not_called()
+
+
+def test_missing_close_verification_marker_never_authorizes_pcb():
+    from part_selection_server import PartSelectionApp
+    app = PartSelectionApp.__new__(PartSelectionApp)
+    app.selection_save_lock = threading.RLock()
+    app.kicad_url_for_refs = Mock(return_value='url')
+    app.run_kicad_script = Mock(return_value={'ok':True,'message':'unverified'})
+    app.pcb_updates = SimpleNamespace(previews={'token':{'refs':['R1']}},apply=Mock())
+    with pytest.raises(ValueError,match='核验'):
+        app.apply_design_pcb('token')
+    app.pcb_updates.apply.assert_not_called()
+
+
+def test_pcb_stale_preview_after_editor_save_restores_editor_without_writing(monkeypatch):
+    from part_selection_server import PartSelectionApp
+    monkeypatch.setitem(sys.modules, 'kipy.proto.common.commands.editor_commands_pb2',
+        SimpleNamespace(BeginCommit=SimpleNamespace(DESCRIPTOR=SimpleNamespace(fields_by_name={}))))
+    app = PartSelectionApp.__new__(PartSelectionApp)
+    app.selection_save_lock = threading.RLock()
+    app.kicad_url_for_refs = Mock(return_value='verified-project-url')
+    app.run_kicad_script = Mock(return_value={'ok':True,'message':'SchematicClosed=1'})
+    app.notify_kicad_schematic_changed = Mock(return_value={'ok':True})
+    app.pcb_updates = SimpleNamespace(previews={'token':{'refs':['R1']}},
+        apply=Mock(side_effect=ValueError('source changed; re-preview')))
+    with pytest.raises(ValueError,match='source changed'):
+        app.apply_design_pcb('token')
+    app.notify_kicad_schematic_changed.assert_called_once_with({'updated_refs':['R1']})
 
 
 def coordinator():

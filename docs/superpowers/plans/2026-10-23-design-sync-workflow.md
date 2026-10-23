@@ -12,7 +12,18 @@
 
 **Prototype:** 本地独立分支 `prototype/design-sync-workflow-20261023`，提交 `44fb32b08347be760f043c194e8138fd2b29eafa`，源文件在 `prototype/design-sync/`；只是交互参考，不进入 main 或安装包。用户选择 B 单一同步菜单，范围独立于目的地。
 
-## Global Constraints
+## Execution Status
+
+| Task | Status | Evidence |
+| --- | --- | --- |
+| 1–7 | Complete | Commits `9e1c2a8` through `f8cd862`; focused regressions, Chromium and native WebView2 checks |
+| 8: Validation | Complete | 1,169 pytest cases; actual KiCad typed metadata, geometry, staged retry, undo, automatic open and save/reopen passed |
+| 8: Review | Complete | One independent overall review; all findings fixed and incrementally rechecked |
+| 8: Delivery | Pending | Commit, push, installation and byte/converter verification follow validation |
+
+The checklists below retain the original implementation instructions; the status table records execution. The final native run used only a synthetic disposable project and KiCad `10.0.0-19-g65df3ab11c`. No production CAD was written. Existing unknown editor ownership correctly blocked automatic opening in earlier runs; the final run passed once ownership could be verified. No cross-version compatibility or public Release is implied.
+
+## Safety Constraints
 
 - 全部同步指原理图与 PCB 两个目标，不代表全部行；范围单独选择。
 - 只处理现有器件，不添加/删除器件，不改变网络或走线；PCB 不自动保存。

@@ -64,7 +64,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.getByText('已撤回工作台修改；原理图和 PCB 未改动',{exact:true}).waitFor();
   await open('footprint',{refs:'R1',bom:'__schematic__'});
   await page.locator('.fp-workflow').waitFor({state:'visible'});
-  await page.locator('[data-fp-close]').last().click();
+  await page.locator('[data-fp-close]:visible').last().click();
   await open('plugin-update');
   await page.getByText('当前版本：test',{exact:true}).waitFor();
   assert.deepEqual(await page.evaluate(()=>Object.keys(window.pywebview.api)),['tool_window']);
@@ -78,6 +78,20 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await page.evaluate(()=>opened[0].kind),'footprint');
   assert.equal(await page.evaluate(()=>opened[0].payload.refs),'R1');
   assert.equal(await page.locator('.fp-overlay').count(),0);
+  await page.evaluate(async()=>{
+    window.retainedRow=document.querySelector('#rows tr[data-refs="R2"]');
+    window.retainedInput=retainedRow.querySelector('[data-field="note"]');
+    retainedInput.focus();
+    const result=await fetch('/api/field_override',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({refs:'R1',bom:'__schematic__',field_overrides:{value:'47k'}})});
+    if(!result.ok) throw Error('Fixture update failed');
+    await window.nativeToolChanged({kind:'value-parameters',payload:{refs:'R1',bom:'__schematic__'}});
+  });
+  await page.waitForFunction(()=>document.querySelector('#rows tr[data-refs="R1"] [data-field="value"]').value==='47k');
+  assert.equal(await page.evaluate(()=>document.querySelector('#rows tr[data-refs="R2"]')===retainedRow),true,
+    'Utility save replaced an unrelated row');
+  assert.equal(await page.evaluate(()=>document.activeElement===retainedInput),true,
+    'Utility save lost the focused editor');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({ok:true,settings:true,dirty_protection:true,inventory:true,mapping:true,list:true,update:true}));
  } finally {await browser.close();}
@@ -90,7 +104,9 @@ def run_checks():
         root = Path(root)
         (root/'example.kicad_sch').write_text('(kicad_sch (symbol (property "Reference" "R1") '
             '(property "Value" "10k") (property "Comment" "resistor") '
-            '(property "LCSC" "C101") (property "Footprint" "Local:R")))',encoding='utf-8')
+            '(property "LCSC" "C101") (property "Footprint" "Local:R")) '
+            '(symbol (property "Reference" "R2") (property "Value" "33k") '
+            '(property "Comment" "resistor") (property "Footprint" "Local:R")))',encoding='utf-8')
         config = root/'settings.json'
         config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
         app = PartSelectionApp(config)

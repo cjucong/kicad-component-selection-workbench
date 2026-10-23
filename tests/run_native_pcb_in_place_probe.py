@@ -54,6 +54,7 @@ def native_build(root):
         old.SetReference(ref)
         old.SetValue('fixture value')
         old.SetField('LCSC', 'C12345')
+        old.SetField('LCSC_URL', 'https://so.szlcsc.com/global.html?k=C12345')
         old.SetField('Comment', 'fixture comment ' + ref)
         symbol_id = str(uuid4())
         old.SetPath(p.KIID_PATH('/' + top_sheet + '/' + out_sheet + '/' + symbol_id))
@@ -72,7 +73,9 @@ def native_build(root):
             f'(property "Reference" "{ref}" (at 50 50 0) (effects (font (size 1.27 1.27)))) '
             '(property "Value" "fixture value" (at 50 52 0) (effects (font (size 1.27 1.27)))) '
             f'(property "Footprint" "Local:Original_{ref}" (at 50 54 0) (effects (font (size 1.27 1.27)) (hide yes))) '
-            f'(property "Comment" "{ref}" (at 50 56 0) (effects (font (size 1.27 1.27)) (hide yes))) '
+            f'(property "Comment" "fixture comment {ref}" (at 50 56 0) (effects (font (size 1.27 1.27)) (hide yes))) '
+            '(property "LCSC" "C12345" (at 50 58 0) (effects (font (size 1.27 1.27)) (hide yes))) '
+            '(property "LCSC_URL" "https://so.szlcsc.com/global.html?k=C12345" (at 50 60 0) (effects (font (size 1.27 1.27)) (hide yes))) '
             f'(instances (project "Probe" (path "/{sheet}/{top_sheet}/{out_sheet}" (reference "{ref}") (unit 1)))))')
         if back:
             old.Flip(origin, False)
@@ -154,6 +157,17 @@ def close_fixture(process):
     sent = set()
     for _ in range(60):
         if process.poll() is not None:
+            # This KiCad distribution can leave its Copilot helper orphaned.
+            # Only verified children born after this owned fixture may be ended.
+            since = getattr(process, 'probe_started', None)
+            if since is not None:
+                command = (f"$since=[DateTimeOffset]::FromUnixTimeSeconds({int(since)}).UtcDateTime; "
+                    f"Get-CimInstance Win32_Process -Filter \"ParentProcessId={process.pid}\" | "
+                    "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*kicad-mcp-client*' "
+                    "-and $_.CreationDate.ToUniversalTime() -ge $since } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction Stop }")
+                subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',command],
+                    check=True,capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
             return
         owned = windows(process.pid)
         dialogs = [(h, t) for h, t in owned if t in ('保存变更?', '文件打开警告') or '错误' in t]
@@ -178,6 +192,17 @@ def close_fixture(process):
 
 def footprint_map(board):
     return {fp.reference_field.text.value: fp for fp in board.get_footprints()}
+
+
+def close_owned_schematic(pid):
+    for handle,title in windows(pid):
+        if 'Probe' in title and '原理图编辑器' in title:
+            ctypes.windll.user32.PostMessageW(handle,0x0010,0,0)
+    for _ in range(40):
+        if not any('原理图编辑器' in title for _,title in windows(pid)):
+            return
+        time.sleep(.25)
+    raise AssertionError('Owned fixture schematic did not close normally')
 
 
 def replace_proto(original, target):
@@ -249,37 +274,37 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
    await library.locator('[data-fp-ack]').check();await library.locator('.fp-apply').click();
    await page.waitForFunction(({ref,target,prefix})=>currentRows.find(row=>row.ref===ref)?.footprint==='Local:'+prefix+target,{ref,target,prefix});
   }
-  const synced=await page.request.post(process.env.PCB_WORKBENCH_URL+'api/bulk_sync_schematic',{
-   data:{bom:'__schematic__',notify:false,selected_refs:refs},timeout:180000});
-  const sync=await synced.json();assert(synced.ok()&&sync.ok,JSON.stringify(sync));
-  assert(sync.schematic_verify?.ok,JSON.stringify(sync));
-  await page.evaluate(async()=>{await loadRows();});
   for(const ref of refs)await page.locator(`#rows tr[data-refs="${ref}"] [data-select-row]`).check();
-  await page.getByRole('button',{name:'更新 PCB（所选器件）',exact:true}).click();
-  await page.getByText(`已预检 ${refs.length} 个器件`,{exact:true}).waitFor();
+  await page.locator('#designSyncMenu').click();
+  await page.locator('[data-design-destination="both"]').click();
+  await page.getByText('已完成预检，请核对改动',{exact:true}).waitFor();
+  await page.locator('[data-design-apply]').click();
+  await page.getByRole('button',{name:'继续同步 PCB',exact:true}).waitFor();
+  await page.getByText('原理图：已完成',{exact:true}).waitFor();
   if(!center) {
-   await page.locator('[data-pcb-alignment]').selectOption('rigid');
-   await page.getByText(`已预检 ${refs.length} 个器件`,{exact:true}).waitFor();
+   await page.locator('[data-design-alignment]').selectOption('rigid');
+   await page.getByText('已完成预检，请核对改动',{exact:true}).waitFor();
   } else {
-   assert.equal(await page.locator('[data-pcb-alignment]').inputValue(),'center');
-   await page.getByText(/焊盘允许移动/).waitFor();
+   assert.equal(await page.locator('[data-design-alignment]').inputValue(),'center');
+   assert(await page.locator('[data-design-movement]').isVisible());
   }
-  await page.locator('[data-pcb-compare="R1"]').click();
+  await page.locator('[data-design-compare="R1"]').click();
   await page.getByText(center?'当前 PCB / 目标库封装 · 铜焊盘中心对齐，允许焊盘偏移 · mm':'当前 PCB / 目标库封装 · 按编号原位对齐 · mm',{exact:true}).waitFor();
-  assert((await page.locator('.pcb-comparison-page [data-fp-layer-image]').count())>=2);
+  assert((await page.locator('.design-sync-comparison [data-fp-layer-image]').count())>=2);
   await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/pcb-comparison.png'});
-  await page.getByRole('button',{name:'返回预检',exact:true}).click();
+  await page.locator('.design-sync-comparison [data-fp-cancel]').click();
   for(const width of [1440,800,390]) {
    await page.setViewportSize({width,height:980});
    await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/workbench-'+width+'.png'});
   }
   await page.setViewportSize({width:1440,height:980});
-  await page.locator('.pcb-dialog [data-pcb-ack]').check();
-  await page.locator('.pcb-dialog [data-pcb-apply]').click();
-  await page.getByText('已更新到 PCB 编辑器，尚未保存。',{exact:true}).waitFor();
+  await page.locator('[data-design-geometry]').check();
+  if(center) await page.locator('[data-design-movement]').check();
+  await page.locator('[data-design-apply]').click();
+  await page.getByText('设计同步完成；PCB 改动尚未保存',{exact:true}).waitFor();
   await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/workbench-complete.png'});
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,schematic_sync:sync.schematic_verify.ok,refs,alignment:center?'center':'rigid'}));
+  console.log(JSON.stringify({ok:true,schematic_sync:true,staged_both:true,refs,alignment:center?'center':'rigid'}));
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
@@ -316,9 +341,10 @@ def workbench_flow(root, report, session, *, center=False):
         thread.join(timeout=5)
         app.selection_jobs.close()
         app.search_jobs.close()
+        app.design_sync.close()
 
 
-def run_probe(report):
+def run_probe(report, extra_checks=None):
     from _scratch import temporary_project
     from part_selection_footprint_geometry import _find_kicad_python
     from kipy import KiCad
@@ -328,7 +354,8 @@ def run_probe(report):
     flags = {'creationflags': subprocess.CREATE_NO_WINDOW}
     results = {'passed': False, 'checks': {}, 'stage': 'build'}
     process = None
-    with ExitStack() as stack:
+    stack = ExitStack()
+    try:
         root = Path(stack.enter_context(temporary_project(prefix='pcb-probe-', short_paths=True)))
         cache = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='pcb-ipc-', dir=root.anchor)))
         results['fixture'] = str(root)
@@ -363,6 +390,7 @@ def run_probe(report):
             socket_dir.mkdir()
             env = dict(os.environ, KICAD_CONFIG_HOME=str(settings.parent), TEMP=str(socket_dir), TMP=str(socket_dir))
             process = subprocess.Popen([str(native.parent / 'kicad.exe'), str(root / 'Probe.kicad_pro')], env=env)
+            process.probe_started = time.time() - 1
             results.update(pid=process.pid, stage='connect')
             socket = 'ipc://' + str(socket_dir / 'kicad' / 'api.sock')
             client = KiCad(socket_path=socket, client_name='workbench-capability-probe', timeout_ms=1000)
@@ -450,13 +478,17 @@ def run_probe(report):
                 assert placement['ok'], placement
                 updated = replacement(original, target, placement)
                 changes.append({'ref': ref, 'proto': encode(updated)})
-            result = session.apply(snapshot, changes, report / ('transaction-' + str(uuid4())))
+            result = session.apply(snapshot, changes, report / ('transaction-' + str(uuid4())),
+                                   schematic_close_verified=True)
             assert result['ok'] and result['saved'] is False
             assert disk == (root / 'Probe.kicad_pcb').read_bytes(), 'Adapter auto-saved PCB'
             client.run_action('common.Interactive.undo')
             time.sleep(.25)
             assert session.snapshot(root, ['R1', 'R2', 'U1']) == snapshot, 'Adapter single undo failed'
             results['checks']['production_library_reader_and_transaction'] = True
+            if extra_checks is not None:
+                results['stage'] = 'design_sync_metadata'
+                extra_checks(root, report, session, client, board, results)
             results['stage'] = 'workbench_flow'
             # Exercise the existing save/close sync guard on an actually open
             # schematic in the same verified manager, not an absent-window shortcut.
@@ -474,6 +506,30 @@ def run_probe(report):
             for ref in ('R1', 'R2', 'U1'):
                 check_replacement(before[ref], live[ref], before['T_' + ref])
             assert disk == (root / 'Probe.kicad_pcb').read_bytes(), 'Workbench auto-saved PCB'
+            from part_selection_paths import resolve_config
+            from part_selection_server import PartSelectionApp
+            completed_app = PartSelectionApp(resolve_config(root))
+            completed_app.pcb_updates.session = session
+            reads = session.read_library
+            library_calls = []
+            def counted_library(*args, **kwargs):
+                library_calls.append(args)
+                return reads(*args, **kwargs)
+            session.read_library = counted_library
+            try:
+                completed = completed_app.pcb_updates.preview(['R1','R2','U1'], '__schematic__', alignment='rigid')
+                assert all(item['kind'] == 'none' and not item['needs_ack'] for item in completed['items']), completed
+                count = len(library_calls)
+                repeated = completed_app.pcb_updates.preview(['R1','R2','U1'], '__schematic__', alignment='rigid')
+                assert all(item['kind'] == 'none' for item in repeated['items'])
+                assert len(library_calls) == count, 'Completed replacements reloaded library geometry'
+                assert completed_app.pcb_updates.apply(repeated['preview_id'], True)['no_changes']
+                results['checks']['completed_replacement_no_repeat_or_library_reload'] = True
+            finally:
+                session.read_library = reads
+                completed_app.selection_jobs.close()
+                completed_app.search_jobs.close()
+                completed_app.design_sync.close()
             results['stage'] = 'center_workbench_flow'
             center_before = session.snapshot(root, ['R1', 'U1'])
             center_changes = []
@@ -514,7 +570,9 @@ def run_probe(report):
             client.run_action('common.Interactive.undo')
             time.sleep(.25)
             assert session.snapshot(root, ['R1', 'U1']) == center_before, 'Center update was not one undo step'
-            session.apply(center_before, center_changes, report / ('center-reapply-' + str(uuid4())))
+            close_owned_schematic(process.pid)
+            session.apply(center_before, center_changes, report / ('center-reapply-' + str(uuid4())),
+                          schematic_close_verified=True)
             live = footprint_map(board)
             results['checks']['center_world_coordinates_tracks_and_undo'] = True
             results['stage'] = 'save_and_reopen'
@@ -524,8 +582,17 @@ def run_probe(report):
             results['checks']['fixture_save'] = True
             close_fixture(process)
             process = None
-            process = subprocess.Popen([str(native.parent / 'pcbnew.exe'), str(root / 'Probe.kicad_pcb')], env=env)
             results['stage'] = 'reopen'
+            def launch_owned(target):
+                nonlocal process
+                assert Path(target).resolve() == (root/'Probe.kicad_pcb').resolve()
+                process = subprocess.Popen([str(native.parent/'pcbnew.exe'),str(target)],env=env)
+                process.probe_started = time.time()-1
+                return process
+            session.connection.launch = launch_owned
+            connection = session.connection.ensure(open_if_closed=True)
+            assert connection['state']=='connected', connection
+            results['checks']['absent_only_native_auto_open'] = True
             reopened = None
             for _ in range(25):
                 try:
@@ -538,21 +605,44 @@ def run_probe(report):
             for ref in ('R1', 'R2', 'U1'):
                 check_replacement(live[ref], decode(reopened['parts'][ref]['proto']), live[ref], persisted=True)
             results['checks']['saved_and_reopened'] = True
-            results['passed'] = True
+            results['functional_passed'] = True
             results['stage'] = 'complete'
         except Exception as exc:
             results['error'] = repr(exc)
+            if process is not None:
+                results['failure_windows'] = windows(process.pid)
             import traceback
             (report / 'error.log').write_text(traceback.format_exc(), encoding='utf-8')
         finally:
-            (report / 'capabilities.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
             if process is not None:
                 # Discard only probe edits by undoing its batches before normal close.
                 try:
                     board.save()  # Fixture cleanup only; never a production save path.
                 except Exception:
                     pass
-                close_fixture(process)
+                try:
+                    close_fixture(process)
+                    process.wait(timeout=10)
+                    time.sleep(1)
+                    results['process_cleanup'] = True
+                except Exception as exc:
+                    results['process_cleanup'] = False
+                    results['cleanup_error'] = repr(exc)
+            else:
+                results['process_cleanup'] = True
+            results['cleanup_cwd'] = os.getcwd()
+            os.chdir(ROOT)
+            import gc
+            gc.collect()
+    finally:
+        try:
+            stack.close()
+            results['directory_cleanup'] = True
+        except OSError as exc:
+            results['directory_cleanup'] = False
+            results['directory_cleanup_error'] = repr(exc)
+        results['passed'] = bool(results.get('functional_passed') and results.get('process_cleanup') and results['directory_cleanup'])
+        (report / 'capabilities.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
     print(json.dumps(results, indent=2))
     return 0 if results['passed'] else 1
 

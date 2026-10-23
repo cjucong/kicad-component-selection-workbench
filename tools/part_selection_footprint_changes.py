@@ -5,7 +5,7 @@ import hashlib
 import json
 
 
-def board_copper_hashes(text, refs):
+def board_copper_hashes(text, refs, *, include_instance=False):
     """Pose and complete pad definitions from the PCB's own saved/live serialization."""
     from kicad_sexpr import parse_sexpr
     ignored = {'uuid','tstamp','net','pinfunction','pintype'}
@@ -31,8 +31,13 @@ def board_copper_hashes(text, refs):
             continue
         if ref in result:
             raise ValueError('PCB 存在重复位号：' + ref)
-        values = sorted(json.dumps(data(n), ensure_ascii=True) for n in fp.children
-                        if n.head in ('pad','at','layer'))
+        heads = {'pad','at','layer'}
+        if include_instance:
+            heads.update(('fp_line','fp_arc','fp_circle','fp_rect','fp_poly','zone','model','path'))
+        values = sorted(json.dumps(data(n), ensure_ascii=True) for n in fp.children if n.head in heads)
+        if include_instance:
+            identity = fp.child('uuid') or fp.child('tstamp')
+            values.append('instance:' + (identity.arg() if identity else ''))
         result[ref] = hashlib.sha256(json.dumps(values).encode()).hexdigest()
     return result
 
@@ -70,7 +75,10 @@ def classify_footprint_change(record: dict, live: dict) -> dict:
     if evidence['operation'] == 'replace':
         return {'kind': 'replace', 'reason': '明确选择使用目标封装几何'}
     source = evidence.get('source', {})
-    key = 'instance_geometry_hash' if source.get('instance_geometry_hash') else 'geometry_hash'
+    if source.get('board') and not source.get('instance_source_hash'):
+        return {'kind':'unknown', 'reason':'旧改名记录缺少原实例身份，请重新预览并确认改名'}
+    key = ('instance_source_hash' if source.get('instance_source_hash') else
+           'instance_geometry_hash' if source.get('instance_geometry_hash') else 'geometry_hash')
     source_hash = source.get(key)
     if not source_hash or live.get(key) != source_hash:
         return {'kind': 'unknown', 'reason': '原封装几何与改名来源不一致，请重新预检'}

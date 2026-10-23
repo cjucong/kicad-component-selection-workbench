@@ -12,7 +12,7 @@ from uuid import uuid4
 from part_selection_design_source import DesignSource
 from part_selection_footprint_changes import classify_footprint_change, board_copper_hashes
 from part_selection_pcb_geometry import solve_placement
-from part_selection_pcb_session import PcbSession, replacement, encode, metadata_replacement, metadata_values
+from part_selection_pcb_session import PcbSession, replacement, encode, metadata_replacement, metadata_values, geometry_signature, geometry_matches
 from part_selection_runtime import runtime_directory
 
 
@@ -122,6 +122,7 @@ class PcbUpdates:
         self.build = build or (lambda original, target, placement: encode(replacement(original, target, placement)))
         self.lock = threading.RLock()
         self.previews = OrderedDict()
+        self.completed_geometry = {}
 
     def _source(self, refs, source=None):
         source = source or self.sources.capture(refs)
@@ -157,6 +158,10 @@ class PcbUpdates:
             fields[name] = value
         return fields
 
+    def _completion_key(self, ref, original, record, source):
+        table_hash = source['design']['versions']['hashes'].get(str(Path(self.app.project_root)/'fp-lib-table'))
+        return (ref, original['uuid'], table_hash, json.dumps(record.get('footprint_change'), sort_keys=True))
+
     def preview(self, refs: list[str], bom: str, *, alignment='rigid', source=None) -> dict:
         if alignment not in ('rigid', 'center'):
             raise ValueError('未知的封装对齐方式')
@@ -168,6 +173,10 @@ class PcbUpdates:
         copper_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
             'source', {}).get('instance_geometry_hash')]
         copper = board_copper_hashes(snapshot['text'], copper_refs) if copper_refs else {}
+        instance_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
+            'source', {}).get('instance_source_hash')]
+        instance_hashes = board_copper_hashes(snapshot['text'], instance_refs,
+                                             include_instance=True) if instance_refs else {}
         replacements, targets, items = [], [], []
         libraries = {}
         for ref in refs:
@@ -184,8 +193,16 @@ class PcbUpdates:
             fields = {item['name']:item['after'] for item in field_changes}
             record = deepcopy(source['records'][ref])
             record.setdefault('field_overrides', {})['footprint'] = source['targets'][ref]
-            change = classify_footprint_change(record, {**original, 'instance_geometry_hash':copper.get(ref)})
+            change = classify_footprint_change(record, {**original, 'instance_geometry_hash':copper.get(ref),
+                                                        'instance_source_hash':instance_hashes.get(ref)})
             kind = change['kind']
+            completion_key = self._completion_key(ref, original, record, source)
+            completion = self.completed_geometry.get(completion_key)
+            if kind == 'replace' and original['footprint'] == source['targets'][ref] and completion:
+                if (all(hashlib.sha256(Path(item['path']).read_bytes()).hexdigest() == item['hash']
+                        for item in completion['targets']) and geometry_signature(original) == completion['geometry']):
+                    kind = 'none'
+                    targets.extend(completion['targets'])
             common = {'ref':ref, 'kind':kind if kind != 'none' else 'fields' if fields else 'none',
                       'before':original['footprint'], 'after':source['targets'][ref],
                       'reason':change['reason'], 'field_changes':field_changes, 'needs_ack':kind == 'replace'}
@@ -214,9 +231,15 @@ class PcbUpdates:
             if not placement['ok']:
                 raise ValueError(ref + ' 不能原位替换：' + placement['reason'])
             prototype = self.build(original, target, placement)
+            if original['footprint'] == source['targets'][ref] and geometry_matches(original, {'proto':prototype}):
+                kind = 'none'
+                common.update(kind='fields' if fields else 'none', needs_ack=False, reason='目标封装几何已在当前 PCB 生效')
+                self.completed_geometry[completion_key] = {'geometry':geometry_signature(original),
+                    'targets':[{'ref':ref,'path':target['source_path'],'hash':target['source_hash']}]}
+                prototype = metadata_replacement(original, fields=fields) if fields else original['proto']
             if fields:
                 prototype = metadata_replacement({'proto':prototype}, fields=fields)
-            replacements.append({'ref': ref, 'proto': prototype, 'fields':fields, 'kind':'replace'})
+            replacements.append({'ref': ref, 'proto': prototype, 'fields':fields, 'kind':common['kind']})
             targets.append({'ref': ref, 'path': target['source_path'], 'hash': target['source_hash']})
             items.append({**common,
                 'old_position_mm': original['position_mm'], 'old_rotation_deg': original['rotation_deg'],
@@ -241,7 +264,7 @@ class PcbUpdates:
                 'alignment': alignment,
                 'basis': '当前 PCB 焊盘位置，不是历史位置恢复', 'saved': False}
 
-    def apply(self, preview_id: str, acknowledged: bool) -> dict:
+    def apply(self, preview_id: str, acknowledged: bool, *, schematic_close_verified=False) -> dict:
         with self.lock, self.app.selection_save_lock:
             state = self.previews.get(preview_id)
             if not state or time.monotonic() - state['time'] > 600:
@@ -267,7 +290,15 @@ class PcbUpdates:
                 state['result'] = {'ok':True, 'saved':False, 'refs':state['refs'], 'no_changes':True}
                 return deepcopy(state['result'])
             directory = runtime_directory(self.app.project_root) / ('pcb-update-' + preview_id)
-            result = self.session.apply(state['snapshot'], state['replacements'], directory)
+            result = self.session.apply(state['snapshot'], state['replacements'], directory,
+                                        schematic_close_verified=schematic_close_verified)
+            for ref, part in result.get('snapshot', {}).get('parts', {}).items():
+                if part['footprint'] == state['source']['targets'][ref]:
+                    record = state['source']['records'][ref]
+                    if record.get('footprint_change', {}).get('operation') == 'replace':
+                        key = self._completion_key(ref, part, record, state['source'])
+                        self.completed_geometry[key] = {'geometry':geometry_signature(part),
+                            'targets':[item for item in state['targets'] if item['ref'] == ref]}
             state['result'] = {key: value for key, value in result.items() if key != 'snapshot'}
             # Evidence is not a durable "synced" flag: undo/reopen is checked live on every preflight.
             try:

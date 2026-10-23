@@ -1074,7 +1074,7 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertIn("-SaveActiveFrame", calls[0][1])
             self.assertIn("-SaveOnly", calls[0][1])
             self.assertIn("-CloseAfterSave", calls[0][1])
-            self.assertNotIn("-NotifyOnly", calls[1][1])
+            self.assertIn("-NotifyOnly", calls[1][1])
             self.assertNotIn("FindDialog", calls[1][1])
             self.assertNotIn("-ReloadFromDisk", calls[1][1])
 
@@ -2080,7 +2080,7 @@ class PartSelectionOverridesTest(unittest.TestCase):
 
     def test_render_index_places_row_sync_in_review_and_model_search_in_stock(self):
         html = self.render_minimal_index()
-        match = re.search(r'function renderRows\(rows\).*?(?=function updateRowsForStock)', html, re.S)
+        match = re.search(r'function renderRows\(rows(?:,[^\n]*)?\).*?(?=function updateRowsForStock)', html, re.S)
         self.assertIsNotNone(match)
         row_template = match.group()
         self.assertNotIn('data-col="search"', html)

@@ -144,12 +144,32 @@ def test_redirected_library_nickname_invalidates_preview(updates):
     session.apply.assert_not_called()
 
 
+def test_completed_geometry_cache_is_invalidated_by_library_remapping(updates, monkeypatch):
+    import part_selection_pcb as module
+    service, app, session, library = updates
+    session.snapshot.return_value['parts']['R1']['footprint'] = 'Local:New'
+    monkeypatch.setattr(module, 'geometry_signature', lambda part:'geometry')
+    monkeypatch.setattr(module, 'geometry_matches', lambda *args:True)
+    assert service.preview(['R1'], '')['items'][0]['kind'] == 'none'
+    session.read_library.reset_mock()
+    assert service.preview(['R1'], '')['items'][0]['kind'] == 'none'
+    session.read_library.assert_not_called()
+    table = app.project_root/'fp-lib-table'
+    table.write_text(table.read_text().replace('Local.pretty','Remapped.pretty'))
+    monkeypatch.setattr(module, 'geometry_matches', lambda *args:False)
+    assert service.preview(['R1'], '')['items'][0]['kind'] == 'replace'
+    session.read_library.assert_called_once()
+
+
 def test_pcb_execution_obeys_selection_then_override_lock_order():
     import ast
     import inspect
     import textwrap
     from part_selection_server import PartSelectionApp
-    tree = ast.parse(textwrap.dedent(inspect.getsource(PartSelectionApp.run_selection_job)))
+    entry = ast.parse(textwrap.dedent(inspect.getsource(PartSelectionApp.run_selection_job)))
+    assert any(isinstance(node, ast.Call) and ast.unparse(node.func) == 'self.apply_design_pcb'
+               for node in ast.walk(entry))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(PartSelectionApp.apply_design_pcb)))
     block = next(node for node in ast.walk(tree) if isinstance(node, ast.With))
     locks = [ast.unparse(item.context_expr) for item in block.items]
     assert locks.index('self.selection_save_lock') < locks.index('OVERRIDES_UPDATE_LOCK')

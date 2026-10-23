@@ -135,6 +135,8 @@ class FootprintChoices:
         operation = 'rename' if result.get('renamed') else 'replace'
         board_hashes = (board_copper_hashes(Path(state['board']['path']).read_text(encoding='utf-8-sig'), refs)
                         if state.get('board') else {})
+        source_hashes = (board_copper_hashes(Path(state['board']['path']).read_text(encoding='utf-8-sig'),
+                                           refs, include_instance=True) if state.get('board') else {})
         entries = state['existing']
         originals = state.get('baseline_ids', state['original_ids'])
         evidence = {}
@@ -152,6 +154,7 @@ class FootprintChoices:
                 source['board'] = {k: str(v) for k, v in state['board'].items()}
                 if ref in board_hashes:
                     source['instance_geometry_hash'] = board_hashes[ref]
+                    source['instance_source_hash'] = source_hashes[ref]
             original_id = entry.get('placement', {}).get('footprint', before[ref]) if entry else before[ref]
             evidence[ref] = make_footprint_change(operation=operation, before=original_id,
                 after=result['footprint'], source=source, target=target_info)

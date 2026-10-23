@@ -1,6 +1,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock
+import sys
 
 import pytest
 
@@ -16,14 +17,27 @@ def transaction(scratch_project, monkeypatch):
                             push_commit=Mock(), drop_commit=Mock(), save=Mock(), revert=Mock())
     session.snapshot = Mock(return_value=deepcopy(snapshot))
     board.push_commit.side_effect = lambda *args: session.snapshot.return_value.update(revision='after')
-    session._board = Mock(return_value=(Mock(), board, None))
+    client = SimpleNamespace(get_open_documents=Mock(side_effect=RuntimeError('unsupported request')))
+    session._board = Mock(return_value=(client, board, None))
+    monkeypatch.setitem(sys.modules, 'kipy.proto.common.types',
+        SimpleNamespace(DocumentType=SimpleNamespace(DOCTYPE_SCHEMATIC=1)))
     session.verify = Mock(return_value={'ok': True})
     monkeypatch.setattr(module, 'decode', lambda value: SimpleNamespace(
         id=SimpleNamespace(value='a'), reference_field=SimpleNamespace(text=SimpleNamespace(value='R1'))))
     monkeypatch.setattr(module, 'encode', lambda value: value)
     monkeypatch.setattr(module, 'footprint_bytes', lambda value: value if isinstance(value, str) else 'new')
     monkeypatch.setattr(module, 'validate_item_ids', lambda snapshot, prepared: None)
+    session._unverified_apply = session.apply
+    session.apply = lambda *args, **kwargs: session._unverified_apply(
+        *args, schematic_close_verified=True, **kwargs)
     return session, snapshot, board
+
+
+def test_unverified_close_never_begins_documentless_pcb_commit(transaction, tmp_path):
+    session, snapshot, board = transaction
+    with pytest.raises(ValueError,match='尚未确认'):
+        session._unverified_apply(snapshot,[{'ref':'R1','proto':'new'}],tmp_path/'backup')
+    board.begin_commit.assert_not_called()
 
 
 @pytest.mark.parametrize('changes', [[], [{'ref': 'R2', 'proto': 'new'}],
@@ -40,6 +54,7 @@ def test_success_is_one_commit_without_save(transaction, tmp_path):
     result = session.apply(snapshot, [{'ref': 'R1', 'proto': 'new'}], tmp_path / 'backup')
     assert result['ok'] and result['saved'] is False
     board.begin_commit.assert_called_once()
+    session._board.return_value[0].get_open_documents.assert_not_called()
     board.push_commit.assert_called_once()
     board.save.assert_not_called()
     board.revert.assert_not_called()

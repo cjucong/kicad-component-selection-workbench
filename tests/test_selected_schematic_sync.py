@@ -114,6 +114,14 @@ class SelectedSchematicSyncTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertGreaterEqual(run.call_args.kwargs["timeout"], 60)
 
+    def test_sync_notification_reopens_without_automatic_find(self):
+        with mock.patch.object(self.app, 'run_kicad_script', return_value={'ok': True}) as run:
+            self.app.notify_kicad_schematic_changed({'updated_refs':['R1'],'pages':{'R1':'test'}})
+        self.assertIn('-NotifyOnly',run.call_args.args[1])
+        with mock.patch.object(self.app, 'run_kicad_script', return_value={'ok': True}) as run:
+            self.app.jump_to_schematic('kicad-sch-search://R1?page=test')
+        self.assertNotIn('-NotifyOnly',run.call_args.args[1])
+
     @unittest.skipUnless(shutil.which("node"), "Node is required for UI behavior checks")
     def test_selection_uses_visible_rows_and_keeps_partial_group_scope(self):
         html = render_index(self.app)

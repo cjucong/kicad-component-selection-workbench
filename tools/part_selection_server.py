@@ -104,7 +104,7 @@ GENERATED_REVIEW_BOM_PREFIXES = ("part_selection_change_log_", "part_selection_r
 SCHEMATIC_SYNC_LOG = SYNC_LOG_NAME
 SCHEMATIC_SYNC_RUNTIME_LOG = RUNTIME_LOG_NAME
 SCHEMATIC_SYNC_RUNTIME_LOG_LOCK = threading.Lock()
-SCHEMATIC_SYNC_TRANSACTION_LOCK = threading.Lock()
+SCHEMATIC_SYNC_TRANSACTION_LOCK = threading.RLock()
 SCHEMATIC_NOTIFY_SETTLE_SECONDS = 0.25
 SCHEMATIC_SOURCE_BOM = "__schematic__"
 DEFAULT_BULK_SYNC_REF_MAP = {}
@@ -2043,15 +2043,45 @@ class PartSelectionApp:
 
     def run_selection_job(self, payload, progress=None):
         if payload.get('operation') == 'pcb-update':
-            with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
-                return self.pcb_updates.apply(str(payload.get('preview_id') or ''), payload.get('acknowledged'))
+            if payload.get('acknowledged') is not True:
+                raise ValueError('请确认 PCB 更新')
+            return self.apply_design_pcb(str(payload.get('preview_id') or ''))
         if payload.get("operation") == "row-footprint":
             return self.row_footprint(payload, progress=progress)
         return self.select_candidate(payload, progress=progress)
 
     def apply_design_pcb(self, preview_id):
         with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
-            return self.pcb_updates.apply(preview_id, True)
+            # KiCad 10.0.0 dispatches document-less BeginCommit to an unordered
+            # editor handler. A cohosted schematic can crash the entire manager.
+            # Close only this verified project's schematic, then revalidate the
+            # existing preview inside apply before any PCB transaction begins.
+            state = self.pcb_updates.previews.get(preview_id)
+            if not state:
+                raise ValueError('预检已失效，请重新预检')
+            if state.get('result'):
+                return deepcopy(state['result'])
+            if state.get('items') and all(item['kind'] == 'none' for item in state['items']):
+                return self.pcb_updates.apply(preview_id, True)
+            closed = False
+            prepared = self.run_kicad_script(self.kicad_url_for_refs(state['refs']),
+                ['-Mode','FindDialog','-SaveActiveFrame','-CloseAfterSave','-SaveOnly','-ExistingOnly'])
+            if not prepared.get('ok'):
+                raise ValueError('PCB 未写入：无法安全暂关同工程原理图。' + str(prepared.get('message','')))
+            markers = [line.strip() for line in str(prepared.get('message','')).splitlines()
+                       if line.strip().startswith('SchematicClosed=')]
+            if markers not in (['SchematicClosed=0'], ['SchematicClosed=1']):
+                raise ValueError('PCB 未写入：未收到原理图安全暂关核验结果，请重新预检')
+            closed = 'SchematicClosed=1' in str(prepared.get('message',''))
+            result = None
+            try:
+                result = self.pcb_updates.apply(preview_id, True, schematic_close_verified=True)
+                return result
+            finally:
+                if closed:
+                    restored = self.notify_kicad_schematic_changed({'updated_refs':state['refs']})
+                    if result is not None and not restored.get('ok'):
+                        result['warning'] = 'PCB 已更新；原理图重新打开失败，请从工程管理器打开：' + str(restored.get('message',''))
 
     def design_sync_fields(self, source, selected_bom):
         """Build desired fields without normalizing records or writing during preview."""
@@ -2223,16 +2253,19 @@ class PartSelectionApp:
                 library = self.footprint_choices.commit(choice)
                 if 'conflict' in library:
                     return {"ok": True, "footprint_conflict": library['conflict']}
-                library['footprint_changes'] = self.footprint_choices.change_evidence(choice, refs,
-                    {ref: str(current.get(ref, {}).get('field_overrides', {}).get('footprint',
-                        actual[ref].get('footprint', ''))) for ref in refs}, library)
             try:
+                if choice is not None:
+                    library['footprint_changes'] = self.footprint_choices.change_evidence(choice, refs,
+                        {ref: str(current.get(ref, {}).get('field_overrides', {}).get('footprint',
+                            actual[ref].get('footprint', ''))) for ref in refs}, library)
                 return self._save_candidate(refs, code, item, fields, library, mode, revisions)
-            except OSError as exc:
-                detail = ''
-                if library:
-                    detail = ('封装库已保存但选料记录未保存；库备份：' + library['backup'] + '。') if library.get('backup') else '选料记录未保存，所选现有库封装未修改。'
-                raise RuntimeError(detail + '本地保存失败（不是网络转换失败），请检查目录权限或文件占用：' + str(exc)) from exc
+            except Exception as exc:
+                if choice is not None:
+                    self.footprint_choices.rollback(choice['preview_id'])
+                if isinstance(exc, OSError):
+                    detail = '封装库修改已回滚；' if choice is not None else ''
+                    raise RuntimeError(detail + '本地保存失败（不是网络转换失败），请检查目录权限或文件占用：' + str(exc)) from exc
+                raise
 
     def _save_candidate(self, refs, code, item, fields, library, mode, revisions):
         current = load_overrides(self.overrides_path)
@@ -2642,6 +2675,10 @@ class PartSelectionApp:
         return kicad_jump_url(first_ref, page)
 
     def run_kicad_script(self, url: str, switches: list[str]) -> dict[str, object]:
+        with SCHEMATIC_SYNC_TRANSACTION_LOCK:
+            return self._run_kicad_script(url, switches)
+
+    def _run_kicad_script(self, url: str, switches: list[str]) -> dict[str, object]:
         script = Path(__file__).resolve().parent / "kicad_schematic_search.ps1"
         if not url:
             return {"ok": False, "message": "no KiCad ref URL"}
@@ -2714,7 +2751,9 @@ class PartSelectionApp:
         if not updated_refs:
             return {"ok": False, "message": "no changed ref to show"}
         url = self.kicad_url_for_refs([str(updated_refs[0])], pages if isinstance(pages, dict) else {})
-        return self.run_kicad_script(url, ["-Mode", "SearchPanel"])
+        # Reopen the saved design only. Searching is an explicit reference-link
+        # action; dispatching Find into a just-created editor can race its load.
+        return self.run_kicad_script(url, ["-Mode", "SearchPanel", "-NotifyOnly"])
 
     @staticmethod
     def require_kicad_prepare_success(result: dict[str, object]) -> None:
@@ -6489,12 +6528,18 @@ async function applyStatus(tr) {{
   await loadRows(rowAnchor(tr));
 }}
 
-function renderRows(rows) {{
+function renderRows(rows, {{patch = false}} = {{}}) {{
+  const previous = currentRows;
+  const existing = [...rowsEl.querySelectorAll("tr[data-refs]")];
+  const existingByRefs = new Map(existing.map(tr => [tr.dataset.refs, tr]));
+  const previousByRefs = new Map(previous.map(row => [row.refs, row]));
+  const patchInPlace = patch && existing.length === rows.length &&
+    rows.every(row => previousByRefs.has(row.refs) && existingByRefs.has(row.refs));
   currentRows = rows;
   const availableRefs = new Set(rows.flatMap(row => row.refs_list || [row.ref]));
   for (const ref of selectedRowRefs) if (!availableRefs.has(ref)) selectedRowRefs.delete(ref);
   refsInput.value = rows.flatMap(row => row.refs_list || [row.ref]).join(",");
-  rowsEl.innerHTML = rows.map((row, index) => {{
+  const markup = rows.map((row, index) => {{
     const ov = row.override || {{}};
     const effective = row.effective_c_code || "";
     const replacement = effective;
@@ -6557,13 +6602,48 @@ function renderRows(rows) {{
       <td data-col="note"><textarea class="edit note" data-field="note">${{esc(note)}}</textarea></td>
     </tr>`;
   }}).join("");
-  rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
+  if (patchInPlace) {{
+    const template = document.createElement("template");
+    template.innerHTML = markup;
+    const focused = document.activeElement;
+    [...template.content.children].forEach((next, index) => {{
+      const tr = existingByRefs.get(next.dataset.refs);
+      if (tr !== rowsEl.children[index]) rowsEl.insertBefore(tr, rowsEl.children[index] || null);
+      if (JSON.stringify(previousByRefs.get(next.dataset.refs)) === JSON.stringify(rows[index])) return;
+      const active = focused;
+      const field = tr.contains(active) ? active.dataset.field : null;
+      const selection = field && active.setSelectionRange ? [active.selectionStart, active.selectionEnd] : null;
+      for (const attribute of [...tr.attributes]) tr.removeAttribute(attribute.name);
+      for (const attribute of [...next.attributes]) tr.setAttribute(attribute.name, attribute.value);
+      [...next.children].forEach(cell => {{
+        const old = [...tr.children].find(item => item.dataset.col === cell.dataset.col);
+        if (old?.innerHTML === cell.innerHTML) return;
+        const replacement = field ? [...cell.querySelectorAll("[data-field]")].find(item => item.dataset.field === field) : null;
+        if (replacement) {{
+          active.value = replacement.value;
+          for (const attribute of [...active.attributes]) active.removeAttribute(attribute.name);
+          for (const attribute of [...replacement.attributes]) active.setAttribute(attribute.name, attribute.value);
+          replacement.replaceWith(active);
+        }}
+        old?.replaceWith(cell);
+      }});
+      tr.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
+      if (field) {{
+        active.focus({{preventScroll:true}});
+        if (selection?.every(Number.isInteger)) active.setSelectionRange(...selection);
+      }}
+    }});
+    if (focused?.isConnected && document.activeElement !== focused) focused.focus({{preventScroll:true}});
+  }} else {{
+    rowsEl.innerHTML = markup;
+    rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
+  }}
   refreshFootprintLibraries();
   updateSplitPageChecks();
   applyColumnOrder();
   applyColumnVisibility();
   applyActiveFilter();
-  fitDefaultColumnWidths();
+  if (!patch) fitDefaultColumnWidths();
   window.refreshLocalInventory?.();
   window.refreshSpecificationWarnings?.(rows.some(row => row.spec_check_needs_refresh));
 }}
@@ -7812,7 +7892,8 @@ async function loadRows(anchor = null) {{
   }}
 }}
 
-async function loadBomOptions() {{
+async function loadBomOptions(preserveCurrent = false) {{
+  const current = bomSelect.value;
   const res = await fetch("/api/boms");
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "读取数据源失败");
@@ -7823,6 +7904,7 @@ async function loadBomOptions() {{
     sessionStorage.removeItem("partSelectionSourceOnce");
     if (intent?.project === data.project_root && data.boms.some(item => item.path === intent.source)) selectedBom = intent.source;
   }} catch (error) {{ /* A stale or unavailable session store must not change the startup source. */ }}
+  if (preserveCurrent && data.boms.some(item => item.path === current)) selectedBom = current;
   bomSelect.innerHTML = data.boms.map(item => `<option value="${{esc(item.path)}}" ${{item.path === selectedBom ? "selected" : ""}}>${{esc(item.name)}}</option>`).join("");
   updateUiSettings({{selectedBom}});
 }}

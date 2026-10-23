@@ -136,12 +136,22 @@ def test_injected_connection_is_used_and_rechecks_each_board_access(monkeypatch,
     from unittest.mock import Mock
     target = doc(scratch_project)
     fake_api(monkeypatch, {})
-    client = Obj(_client=Obj(_kicad_token='verified'))
+    transport = Obj(send_timeout=600, recv_timeout=600)
+    client = Obj(_client=Obj(_kicad_token='verified', _conn=transport))
     connection = Obj(ensure=Mock(side_effect=[
         {'state':'connected','socket':'ipc://target','client':client,'document':target},
         {'state':'disconnected','reason':'session exited'}]))
     session = sessions.PcbSession(scratch_project, connection=connection)
     assert session._board()[1] is target
+    assert transport.send_timeout == transport.recv_timeout == 4000
     with pytest.raises(ValueError, match='session exited'):
         session._board()
     assert connection.ensure.call_count == 2
+
+
+def test_explicit_native_busy_response_never_becomes_closed(monkeypatch, scratch_project):
+    class NativeBusy(Exception):
+        code = 7
+    fake_api(monkeypatch, {'ipc://busy':(NativeBusy('native modal'), '')})
+    monkeypatch.setitem(sys.modules, 'kipy.proto.common.envelope_pb2', Obj(AS_BUSY=7))
+    assert sessions.PcbSession(scratch_project).discover()['state'] == 'busy'

@@ -1,5 +1,17 @@
 # 开发接手说明
 
+## 分阶段设计同步
+
+`part_selection_design_sync.py` 管理 preview/start/status/continue，有效范围与源文件字节版本绑定；先原理图、后新 PCB 预检和明确确认。`part_selection_design_source.py` 单次解析层级并记录真实字段存在性、映射名及实例路径。仅改名须有服务端生成的 `footprint_change` 证据，不按名字猜几何。PCB 字段更新保留完整 protobuf，仅规范化顶层 definition.items 顺序。
+
+所有 UI PCB 应用入口统一经过 `apply_design_pcb`。当前 kipy 的 BeginCommit/EndCommit 无文档路由；KiCad 10.0.0 同宿主原理图可误接事务并崩溃。写入前用 ExistingOnly 安全暂关本工程原理图，之后 apply 重新核验源与 PCB，结束恢复原理图；不得仅凭升级了客户端 proto 就认为服务端支持路由。通知重新打开使用 NotifyOnly，显式位号跳转仍搜索。
+
+底层 `PcbSession.apply` 默认拒绝未验证的事务，`schematic_close_verified=True` 只能由安全暂关检查成功的调用传入。本机 GetOpenDocuments(SCHEMATIC) 没有处理器，不能用它判断原理图是否打开，也不能吞掉该错误后直接写板。
+
+所有 PowerShell 原理图打开/跳转与 PCB 写入共用可重入事务锁。改名源校验包含实例 UUID/关联路径、铜焊盘及非文字几何，排除可编辑标签；旧 PCB 改名证据缺少身份时要求重新预览。替换完成缓存绑定实例、意图、库表哈希及目标文件哈希，始终重读实时 PCB；重开首次预检通过完整原生几何比较识别完成，仅允许 5 nm/0.0001 度数值舍入，不放宽事务暂存和发布后的完整回读校验。
+
+`part_selection_tool_windows.py` 注册固定工具种类，`web/tool-pages.js` 装载已有工具。子桥接最小权限，任务/草稿阻止退出；保存通知按原位号组局部补丁，未改行保留 DOM、输入焦点、列宽和来源。刷新期间输入或来源变化须失效重试，不能让旧响应覆盖草稿。
+
 ## 规格警告与主表筛选
 
 `part_selection_specs.py` 是只读标称值/尺寸/显式介质核对器。`row_spec_check` 校验当前主料与缓存的 C 编码一致后，传入 `schematic_fields_by_ref`，不能用未同步的行编辑替代原理图基线。`POST /api/spec_check` 批量只读缓存和已保存原理图；`web/spec-warnings.js` 在库存/主料变化后合并请求、拒绝过期响应，行号显示警告或待核对。缺失数据和复杂封装保持 unknown，不能宣称安全替代；`unknown_details` 必须写明原理图/商品来源、原始字段和具体原因，旧数据无该字段时才使用通用兼容文案。C0G/NP0 等效，型号前缀只有在精确匹配已验证主料型号且有明确分隔符时才剥离。

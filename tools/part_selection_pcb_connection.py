@@ -26,12 +26,33 @@ def process_arguments(command):
         kernel.LocalFree(pointer)
 
 
+def manager_has_pcb(pid):
+    """Manager-hosted editors have no separate pcbnew.exe process on Windows."""
+    from ctypes import wintypes
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    titles = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        owner = wintypes.DWORD()
+        user.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid:
+            title = ctypes.create_unicode_buffer(1024)
+            user.GetWindowTextW(hwnd, title, len(title))
+            titles.append(title.value)
+        return True
+    if not user.EnumWindows(callback_type(visit), 0):
+        return None
+    if any('pcb' in title.casefold() for title in titles):
+        return True
+    return False if any('kicad' in title.casefold() for title in titles) else None
+
+
 def inspect_processes():
     if os.name != 'nt':
         return {'complete':False,'processes':[]}
     command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
-               "@(Get-CimInstance Win32_Process -Filter \"Name='pcbnew.exe'\" | "
-               "Select-Object ProcessId,CreationDate,CommandLine) | ConvertTo-Json -Compress")
+               "@(Get-CimInstance Win32_Process -Filter \"Name='pcbnew.exe' OR Name='kicad.exe'\" | "
+               "Select-Object Name,ProcessId,CreationDate,CommandLine) | ConvertTo-Json -Compress")
     result = subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',command],
                             capture_output=True,text=True,encoding='utf-8-sig',timeout=8,
                             creationflags=subprocess.CREATE_NO_WINDOW)
@@ -44,6 +65,14 @@ def inspect_processes():
     for row in rows:
         args = process_arguments(row.get('CommandLine'))
         paths = [arg for arg in args or [] if arg.lower().endswith('.kicad_pcb')]
+        if str(row.get('Name','')).casefold() == 'kicad.exe':
+            hosted = manager_has_pcb(row['ProcessId'])
+            if hosted is False:
+                continue
+            paths += [str(Path(arg).with_suffix('.kicad_pcb')) for arg in args or []
+                      if arg.lower().endswith('.kicad_pro')]
+            if hosted is None:
+                paths = []
         files = [str(Path(path).resolve()) for path in paths] if all(Path(path).is_absolute() for path in paths) else None
         processes.append({'pid':row['ProcessId'],'started':row.get('CreationDate'), 'files':files})
     enabled = None
@@ -90,6 +119,12 @@ class PcbConnection:
             raise ValueError('无法唯一确定当前工程主 PCB；请核对工程和文件')
         return boards[0].resolve()
 
+    @staticmethod
+    def locked(target):
+        return any(path.exists() for path in (
+            target.with_name('~' + target.name + '.lck'),
+            target.with_name(target.name + '.lck')))
+
     def inspect(self):
         try:
             discovery = self.discover()
@@ -120,6 +155,8 @@ class PcbConnection:
                         'reason':'当前工程 PCB 已打开，但 IPC 未响应；请启用 IPC 或关闭阻塞对话框后重试'}
         if unknown:
             return {'state':'unknown','reason':'有 PCB 进程无法核实文档；请打开当前工程 PCB 并重试，不会重复打开'}
+        if self.locked(target):
+            return {'state':'unknown','reason':'PCB 存在未解除的文档锁；请核实锁的所属编辑器后重试，不会重复打开'}
         return {'state':'closed','file':str(target),'reason':'已核实当前工程 PCB 未打开'}
 
     def ensure(self, *, open_if_closed, progress=None):
@@ -129,8 +166,14 @@ class PcbConnection:
             if result['state'] != 'closed' or not open_if_closed:
                 return result
             if self.opened is not None:
-                return {'state':'disconnected','reason':'此前已请求打开 PCB，但尚未连接；请检查已打开窗口后重试，不会重复启动'}
+                poll = getattr(self.opened, 'poll', None)
+                exit_code = poll() if callable(poll) else None
+                if type(exit_code) is not int:
+                    return {'state':'disconnected','reason':'此前已请求打开 PCB，但尚未连接；请检查已打开窗口后重试，不会重复启动'}
+                self.opened = None
             target = self.target()
+            if self.locked(target):
+                return {'state':'unknown','reason':'PCB 文档锁尚未解除，已停止自动打开，请核实编辑器状态'}
             notify('opening','正在打开当前工程 PCB')
             try:
                 self.opened = self.launch(target)

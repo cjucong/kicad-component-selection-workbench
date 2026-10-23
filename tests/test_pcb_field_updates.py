@@ -70,6 +70,27 @@ def test_metadata_replacement_native_proto(mode):
     assert result.returncode == 0, result.stderr
 
 
+def test_completed_geometry_ignores_identity_and_fields_but_not_shapes_or_pads():
+    script = r'''
+from part_selection_pcb_session import geometry_signature, geometry_matches
+a=describe(fp)
+b=decode(a['proto']);b.value_field.text.value='changed'
+b.proto.id.value=str(uuid4());b.definition.pads[0].proto.id.value=str(uuid4())
+assert geometry_signature(a)==geometry_signature(describe(b))
+b.definition.pads[0].position=Vector2.from_xy(2,0)
+assert geometry_matches(a,describe(b))
+b.definition.pads[0].position=Vector2.from_xy(10,0)
+assert not geometry_matches(a,describe(b))
+b.definition.pads[0].position=Vector2.from_xy(1000000,0)
+assert geometry_signature(a)!=geometry_signature(describe(b))
+'''
+    python=runtime()
+    if python is None: pytest.skip('Native kipy required')
+    setup=SCRIPT.split("if MODE=='rename':")[0]
+    result=subprocess.run([str(python),'-B','-c',setup+script],capture_output=True,text=True,encoding='utf-8',timeout=20)
+    assert result.returncode==0, result.stderr
+
+
 @pytest.mark.parametrize('operation', ['rename','fields','noop','unknown'])
 def test_metadata_preflight_skips_library_reads_and_blocks_unknown_intent(scratch_project, operation):
     script = r'''

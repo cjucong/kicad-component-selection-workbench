@@ -25,6 +25,20 @@ from part_stock_lookup import parse_lcsc_product
 
 
 class CandidateSelectionTest(unittest.TestCase):
+    def test_library_publication_rolls_back_when_candidate_persistence_fails(self):
+        from unittest.mock import Mock
+        service = Mock()
+        service.prepare_rename.return_value = {'preview_id':'rollback', 'kind':'rename'}
+        service.commit.return_value = {'footprint':'DSMU:Renamed'}
+        service.change_evidence.return_value = {}
+        self.app.footprint_choices = service
+        self.app.select_candidate({'refs':'R85','candidate':self.item,'footprint_mode':'rename','phase':'preview'})
+        service.context.return_value = service.bind.call_args.args[1]
+        with patch.object(self.app,'_save_candidate',side_effect=OSError('records locked')):
+            with self.assertRaisesRegex(RuntimeError,'records locked'):
+                self.app.select_candidate({'footprint_choice':{'preview_id':'rollback'}})
+        service.rollback.assert_called_once_with('rollback')
+
     def test_footprint_conflict_does_not_save_selection_until_resolved(self):
         from unittest.mock import Mock
         service = Mock()

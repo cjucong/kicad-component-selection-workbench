@@ -1,6 +1,7 @@
 """Disposable test projects, isolated from KiCad's project backup tree."""
 from pathlib import Path
 import sys
+import shutil
 import tempfile
 import time
 
@@ -15,20 +16,21 @@ class _TemporaryProject:
         if short_paths:
             directory = Path(directory.anchor)
         directory.mkdir(parents=True, exist_ok=True)
-        self._container = tempfile.TemporaryDirectory(prefix=prefix, dir=directory)
+        self._container = Path(tempfile.mkdtemp(prefix=prefix, dir=directory))
         # Runtime caches are siblings of the project, so contain both together.
-        self.name = str(Path(self._container.name) / "project")
+        self.name = str(self._container / "project")
         try:
             Path(self.name).mkdir()
         except BaseException:
-            self._container.cleanup()
+            self.cleanup()
             raise
 
     def cleanup(self):
         # WebView2 can release its metrics mapping just after its host exits.
         for attempt in range(21):
             try:
-                self._container.cleanup()
+                if self._container.exists():
+                    shutil.rmtree(self._container)
                 return
             except OSError:
                 if attempt == 20:

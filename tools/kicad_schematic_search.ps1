@@ -32,6 +32,8 @@
 
     [switch]$SaveOnly,
 
+    [switch]$ExistingOnly,
+
     [switch]$ReloadFromDisk,
 
     [switch]$NotifyOnly,
@@ -1775,6 +1777,10 @@ try {
             $windows = $pageWindows
         }
     }
+    if ($ExistingOnly -and $windows.Count -eq 0) {
+        Write-Output 'SchematicClosed=0'
+        exit 0
+    }
     if ($page -and $windows.Count -eq 0 -and -not $DryRun) {
         Write-Log "OPEN_PAGE no_schematic_window"
         Open-SchematicPage -Page $page
@@ -1819,6 +1825,7 @@ try {
         }
         if ($SaveOnly) {
             Write-Log "DONE action=save_only"
+            if ($CloseAfterSave) { Write-Output 'SchematicClosed=1' }
             exit 0
         }
     }
