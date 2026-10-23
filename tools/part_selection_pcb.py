@@ -160,8 +160,8 @@ class PcbUpdates:
     def preview(self, refs: list[str], bom: str, *, alignment='rigid', source=None) -> dict:
         if alignment not in ('rigid', 'center'):
             raise ValueError('未知的封装对齐方式')
-        if not refs or len(refs) > 300 or len(set(refs)) != len(refs):
-            raise ValueError('请选择 1 至 300 个不重复的位号')
+        if not refs or len(refs) > 10000 or len(set(refs)) != len(refs):
+            raise ValueError('请选择 1 至 10000 个不重复的位号')
         with self.app.selection_save_lock:
             source = self._source(refs, source)
         snapshot = self.session.snapshot(self.app.project_root, refs)

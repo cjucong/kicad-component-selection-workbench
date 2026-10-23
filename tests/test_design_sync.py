@@ -1,0 +1,276 @@
+"""Destination and stage state machine; writes are scoped and never replayed."""
+from copy import deepcopy
+import threading
+import time
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+
+def coordinator():
+    from part_selection_design_sync import DesignSync
+    snapshot = {'refs':['R1'], 'fields':{'R1':{'value':'100k','footprint':'Local:New'}},
+                'records':{'R1':{}}, 'identity':{}, 'mapping':{}, 'versions':{}}
+    sources = SimpleNamespace(capture=Mock(side_effect=lambda refs:deepcopy(snapshot)),validate=Mock(return_value=True))
+    pcb = SimpleNamespace(preview=Mock(return_value={'ok':True,'preview_id':'pcb-one',
+        'blocked':False,'items':[{'ref':'R1','kind':'fields','needs_ack':False,'field_changes':[]}]}),
+        apply=Mock(return_value={'ok':True,'saved':False}))
+    app = SimpleNamespace(project_root='synthetic',selection_save_lock=threading.RLock(),
+        design_sync_fields=Mock(return_value={'R1':{'value':'22k','footprint':'Local:New'}}),
+        bulk_sync_bom_state_to_schematic=Mock(return_value={'ok':True,'schematic_verify':{'ok':True}}),
+        pcb_updates=pcb)
+    app.apply_design_pcb = lambda token:pcb.apply(token,True)
+    return DesignSync(app,sources=sources), app, sources
+
+
+def await_job(service, job_id):
+    deadline = time.monotonic()+3
+    while time.monotonic()<deadline:
+        state = service.status(job_id)
+        if state['done']:
+            return state
+        time.sleep(.005)
+    raise AssertionError('Synthetic sync task did not finish')
+
+
+def test_both_stages_require_post_schematic_preview_and_never_repeat_schematic():
+    service, app, sources = coordinator()
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'both'})
+        app.pcb_updates.preview.assert_not_called()
+        job = service.start(preview['preview_id'],{})
+        state = await_job(service,job['job_id'])
+        assert state['stage']=='awaiting_pcb_confirmation'
+        assert state['phase_results']['schematic']['ok'] is True
+        assert state['needs_confirmation'] is True
+        app.pcb_updates.apply.assert_not_called()
+        token = state['pcb_preview']['preview_id']
+        resumed = service.continue_pcb(job['job_id'],token,{})
+        final = await_job(service,resumed['job_id'])
+        assert final['stage']=='complete' and final['phase_results']['pcb']['ok']
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+        app.pcb_updates.apply.assert_called_once_with(token,True)
+        assert service.start(preview['preview_id'],{})['job_id'] == job['job_id']
+    finally:
+        service.close()
+
+
+def test_schematic_failure_stops_before_pcb():
+    service, app, _ = coordinator()
+    app.bulk_sync_bom_state_to_schematic.side_effect=ValueError('save blocked')
+    try:
+        preview=service.preview({'refs':['R1'],'destination':'both'})
+        state=await_job(service,service.start(preview['preview_id'],{})['job_id'])
+        assert state['stage']=='failed' and state['phase_results']['schematic']['ok'] is False
+        app.pcb_updates.preview.assert_not_called()
+        app.pcb_updates.apply.assert_not_called()
+    finally:service.close()
+
+
+def test_pcb_only_unsynced_fields_offer_both_without_writes():
+    service, app, _ = coordinator()
+    try:
+        preview=service.preview({'refs':['R1'],'destination':'pcb'})
+        assert preview['blocked'] and preview['suggested_destination']=='both'
+        with pytest.raises(ValueError):service.start(preview['preview_id'],{})
+        app.bulk_sync_bom_state_to_schematic.assert_not_called()
+        app.pcb_updates.preview.assert_not_called()
+    finally:service.close()
+
+
+def test_stale_preview_cannot_start_and_double_click_does_not_replay():
+    service, app, sources=coordinator()
+    try:
+        preview=service.preview({'refs':['R1'],'destination':'schematic'})
+        sources.validate.return_value=False
+        with pytest.raises(ValueError):service.start(preview['preview_id'],{})
+        app.bulk_sync_bom_state_to_schematic.assert_not_called()
+        sources.validate.return_value=True
+        job=service.start(preview['preview_id'],{})
+        assert service.start(preview['preview_id'],{})['job_id']==job['job_id']
+        await_job(service,job['job_id'])
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+    finally:service.close()
+
+
+def test_pcb_disconnect_keeps_successful_stage_and_requires_fresh_preview():
+    service, app, _=coordinator()
+    app.pcb_updates.preview.side_effect=ValueError('IPC disconnected')
+    try:
+        preview=service.preview({'refs':['R1'],'destination':'both'})
+        job=service.start(preview['preview_id'],{})
+        state=await_job(service,job['job_id'])
+        assert state['stage']=='partial' and state['phase_results']['schematic']['ok']
+        assert state['result']['retry_stage']=='pcb'
+        app.pcb_updates.preview.side_effect=None
+        app.design_sync_fields.return_value={'R1':{'value':'100k','footprint':'Local:New'}}
+        retry=service.preview({'refs':['R1'],'destination':'pcb'})
+        resumed=service.continue_pcb(job['job_id'],retry['preview_id'],{})
+        assert await_job(service,resumed['job_id'])['stage']=='complete'
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+    finally:service.close()
+
+
+def test_uncertain_pcb_publish_is_not_automatically_repeated():
+    service, app, _=coordinator()
+    app.design_sync_fields.return_value={'R1':{'value':'100k','footprint':'Local:New'}}
+    app.pcb_updates.apply.side_effect=RuntimeError('publish not verified')
+    try:
+        preview=service.preview({'refs':['R1'],'destination':'pcb'})
+        job=service.start(preview['preview_id'],{})
+        state=await_job(service,job['job_id'])
+        assert state['stage']=='uncertain'
+        assert service.start(preview['preview_id'],{})['job_id']==job['job_id']
+        with pytest.raises(ValueError):service.continue_pcb(job['job_id'],preview['preview_id'],{})
+        app.pcb_updates.apply.assert_called_once()
+    finally:service.close()
+
+
+def test_real_app_desired_fields_are_read_only_and_missing_is_not_empty(scratch_project):
+    import json
+    from part_selection_server import PartSelectionApp
+    from part_selection_overrides import save_overrides
+    config = scratch_project / 'settings.json'
+    config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
+    app = PartSelectionApp(config)
+    try:
+        save_overrides(app.overrides_path, {'R1':{'field_overrides':{'value':'22k'},
+            'accepted_c_code':'C123', 'manual_c_code':'C123', 'decision':'AcceptManual',
+            'candidate_model':'TEST', 'review_status':'Confirmed'}})
+        records = app.overrides_path.read_bytes()
+        from part_selection_overrides import load_overrides
+        source = {'refs':['R1'],'fields':{'R1':{'value':'100k','footprint':'Local:R'}},
+                  'records':load_overrides(app.overrides_path)}
+        app.rows = Mock(side_effect=AssertionError('Preview must not normalize or save rows'))
+        result = app.design_sync_fields(source,'__schematic__')
+        assert result['R1']['value'] == '22k'
+        assert result['R1']['footprint'] == 'Local:R'
+        assert result['R1']['lcsc_c_code'] == 'C123'
+        assert 'comment' not in result['R1'] and 'description' not in result['R1']
+        assert 'lcsc_alt' not in result['R1'] and 'procurement_info' not in result['R1']
+        assert app.overrides_path.read_bytes() == records
+    finally:
+        app.search_jobs.close(); app.selection_jobs.close()
+        if hasattr(app,'design_sync'): app.design_sync.close()
+
+
+def test_prepared_schematic_sync_revalidates_after_editor_save(scratch_project):
+    import json
+    from part_selection_server import PartSelectionApp
+    config = scratch_project / 'settings.json'
+    config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
+    path = scratch_project / 'test.kicad_sch'
+    path.write_text('(kicad_sch (symbol (property "Reference" "R1") (property "Value" "100k")))')
+    app = PartSelectionApp(config)
+    try:
+        app.rows = Mock(side_effect=AssertionError('Do not rebuild rows from a new source'))
+        app.prepare_kicad_for_external_schematic_write = Mock(return_value={'ok':True})
+        events = []
+        with pytest.raises(ValueError, match='改变'):
+            app.bulk_sync_bom_state_to_schematic('__schematic__',selected_refs=['R1'],
+                prepared_fields={'R1':{'value':'22k'}},notify=False,
+                validate_source=Mock(side_effect=[True,False]),
+                progress=lambda stage,message:events.append(stage))
+        assert '100k' in path.read_text() and '22k' not in path.read_text()
+        assert 'bulk_prepare_started' in events
+    finally:
+        app.search_jobs.close(); app.selection_jobs.close()
+        if hasattr(app,'design_sync'): app.design_sync.close()
+
+
+def test_prepared_sync_writes_only_confirmed_fields_with_real_transaction(scratch_project):
+    import json
+    from part_selection_server import PartSelectionApp
+    config = scratch_project / 'settings.json'
+    config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
+    path = scratch_project / 'test.kicad_sch'
+    path.write_text('(kicad_sch (symbol (property "Reference" "R1") (property "Value" "100k")) '
+                    '(symbol (property "Reference" "R2") (property "Value" "10k")))')
+    app = PartSelectionApp(config)
+    try:
+        app.rows = Mock(side_effect=AssertionError('Must use the approved snapshot'))
+        result = app.bulk_sync_bom_state_to_schematic('__schematic__',selected_refs=['R1'],
+            prepared_fields={'R1':{'value':'22k'}},prepare=False,notify=False,validate_source=lambda:True)
+        assert result['updated_refs'] == ['R1'] and result['schematic_verify']['ok']
+        assert app.read_schematic_fields(scratch_project,['R1','R2'],['value']) == {
+            'R1':{'value':'22k'},'R2':{'value':'10k'}}
+        assert 'Comment' not in path.read_text()
+    finally:
+        app.design_sync.close(); app.search_jobs.close(); app.selection_jobs.close()
+
+
+def test_design_sync_http_routes_and_idle_shutdown_guard(scratch_project):
+    import json
+    from http.server import ThreadingHTTPServer
+    from urllib.request import Request, urlopen
+    from part_selection_server import PartSelectionApp, make_handler
+    from part_selection_lifecycle import ServiceLifecycle
+    config = scratch_project / 'settings.json'
+    config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
+    app = PartSelectionApp(config)
+    app.design_sync.close()
+    service, fake, _ = coordinator()
+    service.app.settings_gate = app.settings_gate
+    app.design_sync = service
+    server = ThreadingHTTPServer(('127.0.0.1',0), make_handler(app))
+    thread = threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+    try:
+        def request(route, payload=None):
+            req = Request('http://127.0.0.1:'+str(server.server_port)+route,
+                data=None if payload is None else json.dumps(payload).encode(),
+                headers={'Content-Type':'application/json'})
+            with urlopen(req,timeout=3) as response:return json.load(response)
+        preview = request('/api/design_sync_preview',{'refs':['R1'],'destination':'both'})
+        started, finish = threading.Event(), threading.Event()
+        def write(*args,**kwargs):
+            started.set(); assert finish.wait(3)
+            return {'ok':True,'schematic_verify':{'ok':True}}
+        fake.bulk_sync_bom_state_to_schematic.side_effect=write
+        job = request('/api/start_design_sync',{'preview_id':preview['preview_id']})
+        assert started.wait(3)
+        with pytest.raises(ValueError): ServiceLifecycle(app,server,'owner').shutdown('owner')
+        finish.set()
+        state = await_job(service,job['job_id'])
+        assert request('/api/design_sync_job?id='+job['job_id'])['stage']=='awaiting_pcb_confirmation'
+        continued = request('/api/continue_design_sync',{'job_id':job['job_id'],
+            'preview_id':state['pcb_preview']['preview_id']})
+        assert await_job(service,continued['job_id'])['stage']=='complete'
+    finally:
+        finish.set(); service.close(); server.shutdown(); thread.join(); server.server_close()
+        app.search_jobs.close(); app.selection_jobs.close()
+
+
+def test_post_schematic_confirmation_stays_bound_to_exact_source():
+    service, app, sources = coordinator()
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'both'})
+        job = service.start(preview['preview_id'],{})
+        state = await_job(service,job['job_id'])
+        sources.validate.return_value = False
+        with pytest.raises(ValueError,match='失效'):
+            service.continue_pcb(job['job_id'],state['pcb_preview']['preview_id'],{})
+        app.pcb_updates.apply.assert_not_called()
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+    finally:service.close()
+
+
+def test_geometry_and_moving_pads_require_separate_consent():
+    service, app, _ = coordinator()
+    app.design_sync_fields.return_value={'R1':{'value':'100k','footprint':'Local:New'}}
+    app.pcb_updates.preview.return_value['items']=[{
+        'ref':'R1','kind':'replace','needs_ack':True,'max_error_mm':.2}]
+    try:
+        preview=service.preview({'refs':['R1'],'destination':'pcb'})
+        with pytest.raises(ValueError):service.start(preview['preview_id'],{})
+        with pytest.raises(ValueError):service.start(preview['preview_id'],{'geometry':True})
+        job=service.start(preview['preview_id'],{'geometry':True,'pad_movement':True})
+        assert await_job(service,job['job_id'])['stage']=='complete'
+    finally:service.close()
+
+
+def test_all_row_scope_is_not_limited_to_300_designators():
+    from part_selection_design_sync import DesignSync
+    refs=['C'+str(n) for n in range(1,1256)]
+    assert DesignSync._payload({'refs':refs,'destination':'schematic'})['refs']==refs
+    with pytest.raises(ValueError):DesignSync._payload({'refs':[{}],'destination':'pcb'})

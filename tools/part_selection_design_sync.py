@@ -1,0 +1,226 @@
+"""Scoped, staged design synchronization with explicit post-schematic PCB consent."""
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+import re
+import threading
+import time
+from uuid import uuid4
+
+from part_selection_design_source import DesignSource
+
+
+class DesignSync:
+    def __init__(self, app, *, sources=None):
+        self.app = app
+        self.sources = sources or DesignSource(app)
+        self.previews, self.jobs = OrderedDict(), OrderedDict()
+        self.lock = threading.RLock()
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='design-sync')
+        self.closed = False
+
+    @staticmethod
+    def _payload(payload):
+        if not isinstance(payload, dict) or set(payload) - {'refs','destination','alignment','bom'}:
+            raise ValueError('同步设计请求无效')
+        refs = payload.get('refs')
+        if isinstance(refs, str):
+            refs = [ref.strip().upper() for ref in refs.split(',') if ref.strip()]
+        if not isinstance(refs, list) or not 1 <= len(refs) <= 10000 or any(
+                not isinstance(ref, str) or not re.fullmatch(r'[A-Z]+\d+[A-Z]?', ref) for ref in refs
+                ) or len(set(refs)) != len(refs):
+            raise ValueError('请选择 1 至 10000 个不重复的位号')
+        destination, alignment = payload.get('destination'), payload.get('alignment','center')
+        if destination not in ('schematic','pcb','both') or alignment not in ('rigid','center'):
+            raise ValueError('同步目标或对齐方式无效')
+        bom = payload.get('bom','__schematic__')
+        if not isinstance(bom, str) or len(bom) > 16000:
+            raise ValueError('数据来源无效')
+        return {'refs':list(refs),'destination':destination,'alignment':alignment,'bom':bom}
+
+    def preview(self, payload):
+        payload = self._payload(payload)
+        with self.app.selection_save_lock:
+            source = self.sources.capture(payload['refs'])
+            desired = self.app.design_sync_fields(source, payload['bom'])
+            if set(desired) != set(payload['refs']):
+                raise ValueError('部分器件缺少同步字段，未扩大处理范围')
+            changes = [{'ref':ref,'name':name,'before':source['fields'][ref].get(name,''),'after':value}
+                       for ref, fields in desired.items() for name, value in fields.items()
+                       if source['fields'][ref].get(name) != value]
+        result = {'ok':True,'preview_id':uuid4().hex, **payload, 'schematic_changes':changes,
+                  'blocked':False,'pcb_preview':None,'saved':False}
+        if payload['destination'] == 'pcb':
+            if changes:
+                result.update(blocked=True,suggested_destination='both',
+                              reason='所选器件尚有原理图字段未同步，请改为全部同步或先同步原理图')
+            else:
+                result['pcb_preview'] = self.app.pcb_updates.preview(payload['refs'],payload['bom'],
+                    alignment=payload['alignment'],source=source)
+                result['blocked'] = bool(result['pcb_preview'].get('blocked'))
+        if not self.sources.validate(source):
+            raise ValueError('预检期间数据已改变，请重新预检')
+        with self.lock:
+            self._prune()
+            self.previews[result['preview_id']] = {'result':deepcopy(result),'source':source,
+                'desired':desired,'time':time.monotonic()}
+        return result
+
+    def _prune(self):
+        for token, state in list(self.previews.items()):
+            if not state.get('job_id') and (time.monotonic()-state['time'] > 600 or len(self.previews) >= 32):
+                del self.previews[token]
+        for key, state in list(self.jobs.items()):
+            if state['done'] and state['stage'] not in ('awaiting_pcb_confirmation','partial','uncertain') and (
+                    time.monotonic()-state['_time'] > 1800 or len(self.jobs) >= 32):
+                del self.jobs[key]
+
+    def _preview(self, token):
+        state = self.previews.get(token)
+        if not state or time.monotonic()-state['time'] > 600:
+            raise ValueError('同步预检已过期，请重新预检')
+        return state
+
+    @staticmethod
+    def _ack(preview, acknowledgments):
+        if not isinstance(acknowledgments, dict) or any(type(value) is not bool for value in acknowledgments.values()):
+            raise ValueError('同步确认参数无效')
+        if preview.get('blocked'):
+            raise ValueError(preview.get('reason') or '封装改动类型待核对，请先完成核对')
+        items = (preview.get('pcb_preview') or {}).get('items', [])
+        if any(item.get('needs_ack') for item in items) and acknowledgments.get('geometry') is not True:
+            raise ValueError('请明确确认封装几何替换及引脚功能')
+        if any(item.get('max_error_mm',0) > .001 for item in items) and acknowledgments.get('pad_movement') is not True:
+            raise ValueError('请确认焊盘移动，并在更新后检查连接与 DRC')
+
+    def start(self, preview_id, acknowledgments):
+        with self.lock:
+            state = self.previews.get(preview_id) or {}
+            if state.get('job_id'):
+                return self.status(state['job_id'])
+            if self.closed:
+                raise ValueError('同步服务正在退出')
+            state = self._preview(preview_id)
+            self._ack(state['result'],acknowledgments)
+            if not self.sources.validate(state['source']):
+                raise ValueError('预检后原理图或工作台记录已改变，请重新预检')
+            if sum(not job['done'] for job in self.jobs.values()) >= 4:
+                raise ValueError('同步任务繁忙，请稍后重试')
+            key = uuid4().hex
+            self.jobs[key] = {'ok':True,'job_id':key,'refs':state['result']['refs'],
+                'destination':state['result']['destination'],'alignment':state['result']['alignment'],
+                'done':False,'stage':'queued','message':'等待同步设计','needs_confirmation':False,
+                'phase_results':{},'_time':time.monotonic(), '_preview':preview_id}
+            state['job_id'] = key
+            self.pool.submit(self._run,key,preview_id,False)
+            return self.status(key)
+
+    def status(self, key):
+        with self.lock:
+            state = self.jobs.get(key)
+            if state is None:
+                return {'ok':False,'done':True,'stage':'expired','error':'同步任务已过期，请只读核验当前设计后重新预检'}
+            return deepcopy({name:value for name,value in state.items() if not name.startswith('_')})
+
+    def job_id(self, preview_id):
+        with self.lock:
+            return self.previews.get(preview_id, {}).get('job_id', '')
+
+    def _update(self, key, **values):
+        with self.lock:
+            self.jobs[key].update(values)
+
+    def _run(self, key, preview_id, pcb_only):
+        state = self.previews[preview_id]
+        result = state['result']
+        phase = 'pcb' if pcb_only or result['destination'] == 'pcb' else 'schematic'
+        try:
+            if not self.sources.validate(state['source']):
+                raise ValueError('排队期间数据已改变，请重新预检')
+            if phase == 'schematic':
+                self._update(key,stage='schematic',message='正在同步原理图')
+                def progress(stage, message):
+                    self._update(key,stage='schematic:'+stage,message=message)
+                schematic = self.app.bulk_sync_bom_state_to_schematic(result['bom'],
+                    selected_refs=result['refs'], prepared_fields=state['desired'],progress=progress,
+                    validate_source=lambda:self.sources.validate(state['source']))
+                if not schematic.get('ok') or not schematic.get('schematic_verify',{}).get('ok') or schematic.get('missing_refs'):
+                    raise ValueError('原理图写入或回读未通过，未继续 PCB')
+                with self.lock:
+                    self.jobs[key]['phase_results']['schematic'] = deepcopy(schematic)
+                if result['destination'] == 'schematic':
+                    self._update(key,done=True,stage='complete',message='原理图同步完成',result={'ok':True})
+                    return
+                phase = 'pcb_preview'
+                self._update(key,stage=phase,message='原理图已完成，正在核验当前 PCB')
+                source = self.sources.capture(result['refs'])
+                pcb = self.app.pcb_updates.preview(result['refs'],result['bom'],alignment=result['alignment'],source=source)
+                with self.lock:
+                    self.jobs[key]['_pcb_source'] = source
+                self._update(key,done=True,stage='awaiting_pcb_confirmation',needs_confirmation=True,
+                    message='原理图已完成，请核对 PCB 更新后继续',pcb_preview=pcb)
+                return
+            self._update(key,stage='pcb',message='正在更新所选 PCB 器件；不会自动保存整板')
+            phase = 'pcb_apply'
+            pcb_token = result['pcb_preview']['preview_id']
+            pcb = self.app.apply_design_pcb(pcb_token)
+            if not pcb.get('ok'):
+                raise RuntimeError('PCB 发布结果未确认，请只读核验，不要重复执行')
+            with self.lock:
+                self.jobs[key]['phase_results']['pcb'] = deepcopy(pcb)
+            self._update(key,done=True,stage='complete',needs_confirmation=False,
+                message='设计同步完成；PCB 改动尚未保存',result={'ok':True,'saved':False})
+        except Exception as exc:
+            with self.lock:
+                job = self.jobs[key]
+                uncertain = phase == 'pcb_apply' and not isinstance(exc, ValueError)
+                partial = job['phase_results'].get('schematic',{}).get('ok') is True
+                if phase == 'schematic':
+                    job['phase_results']['schematic'] = {'ok':False,'error':str(exc)}
+                else:
+                    job['phase_results']['pcb'] = {'ok':False,'error':str(exc),'uncertain':uncertain}
+                job.update(done=True,ok=False,needs_confirmation=False,
+                    stage='uncertain' if uncertain else 'partial' if partial else 'failed',
+                    message=str(exc),error=str(exc),result={'ok':False,
+                        'retry_stage':None if uncertain else 'pcb' if phase != 'schematic' else 'schematic'})
+
+    def continue_pcb(self, job_id, preview_id, acknowledgments):
+        with self.lock:
+            if self.closed:
+                raise ValueError('同步服务正在退出')
+            job = self.jobs.get(job_id)
+            if not job or job['stage'] not in ('awaiting_pcb_confirmation','partial','pcb','queued'):
+                raise ValueError('此任务不能重放 PCB 写入，请只读核验当前 PCB')
+            if not job['done']:
+                return self.status(job_id)
+            if not job['phase_results'].get('schematic',{}).get('ok'):
+                raise ValueError('原理图阶段尚未完成')
+            if preview_id == (job.get('pcb_preview') or {}).get('preview_id'):
+                pcb = job['pcb_preview']
+                result = deepcopy(self.previews[job['_preview']]['result'])
+                result.update(destination='pcb',pcb_preview=pcb,blocked=bool(pcb.get('blocked')))
+                state = {'result':result,'source':job['_pcb_source'],
+                         'desired':{},'time':time.monotonic()}
+                token = uuid4().hex
+                self.previews[token] = state
+            else:
+                token = preview_id
+                state = self._preview(token)
+                if state['result']['destination'] != 'pcb' or state['result']['refs'] != job['refs'] or state.get('job_id'):
+                    raise ValueError('PCB 重试预检必须属于同一组器件且尚未使用')
+            self._ack(state['result'],acknowledgments)
+            if not self.sources.validate(state['source']):
+                raise ValueError('PCB 重试预检已失效')
+            state['job_id'] = job_id
+            job.update(done=False,ok=True,stage='queued',needs_confirmation=False,message='等待继续 PCB 同步')
+            self.pool.submit(self._run,job_id,token,True)
+            return self.status(job_id)
+
+    def busy(self):
+        with self.lock:
+            return any(not state['done'] for state in self.jobs.values())
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+        self.pool.shutdown(wait=True)

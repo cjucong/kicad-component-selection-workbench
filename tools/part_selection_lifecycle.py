@@ -28,7 +28,8 @@ class ServiceLifecycle:
         if not self.token or not hmac.compare_digest(self.token, str(token)):
             raise ValueError('后台身份不匹配，不能关闭其他窗口或工程的后台')
         with self.app.settings_gate.editing():
-            if self.app.search_jobs.busy() or self.app.selection_jobs.busy():
+            design_sync = getattr(self.app, 'design_sync', None)
+            if self.app.search_jobs.busy() or self.app.selection_jobs.busy() or (design_sync and design_sync.busy()):
                 raise ValueError('搜索或转换尚未完成，请稍后关闭或重启工作台')
             if not self.app.settings_gate.stopping:
                 self.app.settings_gate.stopping = True

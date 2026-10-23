@@ -41,6 +41,7 @@ from part_selection_inventory import (calculate_inventory_status, load_inventory
 from part_selection_specs import validate_passive_specs
 
 from part_selection_helper import (
+    PartInfo,
     find_latest_lcsc_csv,
     kicad_jump_url,
     lcsc_search_url,
@@ -1502,10 +1503,12 @@ class PartSelectionApp:
         self.inventory_previews = OrderedDict()
         from part_selection_pcb import PcbUpdates
         self.pcb_updates = PcbUpdates(self)
+        from part_selection_design_sync import DesignSync
+        self.design_sync = DesignSync(self)
 
     def save_path_settings(self, payload):
         with self.settings_gate.editing(), self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
-            if self.search_jobs.busy() or self.selection_jobs.busy():
+            if self.search_jobs.busy() or self.selection_jobs.busy() or self.design_sync.busy():
                 raise ValueError("搜索或转换尚未完成，请结束任务后保存路径配置")
             result = save_settings(self.config, payload)
             updated = result.pop('config')
@@ -2041,6 +2044,37 @@ class PartSelectionApp:
         if payload.get("operation") == "row-footprint":
             return self.row_footprint(payload, progress=progress)
         return self.select_candidate(payload, progress=progress)
+
+    def apply_design_pcb(self, preview_id):
+        with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
+            return self.pcb_updates.apply(preview_id, True)
+
+    def design_sync_fields(self, source, selected_bom):
+        """Build desired fields without normalizing records or writing during preview."""
+        if not self.is_schematic_source(selected_bom):
+            raise ValueError('设计同步请使用当前原理图数据；导入 BOM 请先保存到工作台')
+        result = {}
+        for ref in source['refs']:
+            actual, override = source['fields'][ref], source['records'].get(ref, {})
+            part = PartInfo(ref=ref, accepted_c_code=actual.get('lcsc_c_code', ''),
+                **{key:value for key,value in actual.items() if key in PartInfo.__dataclass_fields__})
+            code = selection_code(part, override)
+            row = {**effective_part_fields(part, override), 'effective_c_code':code,
+                'override':override, 'stock':{}, 'alternate_parts':part_alternate_parts(part, override),
+                'procurement_choice':part_procurement_choice(part, override)}
+            desired = row_schematic_sync_fields(row)
+            fields = override.get('field_overrides') or {}
+            for name in EDITABLE_FIELDS:
+                if name not in actual and name not in fields:
+                    desired.pop(name, None)
+            for option, names in (('alternate_parts', ('lcsc_alt','lcsc_alt_info')),
+                                  ('procurement_choice', ('procurement_url','procurement_info'))):
+                if option not in override:
+                    for name in names:
+                        if name not in actual:
+                            desired.pop(name, None)
+            result[ref] = desired
+        return result
 
     def row_footprint(self, payload, progress=None):
         """Standalone footprint edits never go through candidate selection or stock writes."""
@@ -3044,6 +3078,7 @@ class PartSelectionApp:
         notify: bool = True,
         prepare: bool = True,
         selected_refs: list[str] | None = None,
+        *, prepared_fields=None, progress=None, validate_source=None,
     ) -> dict[str, object]:
         attempt_id = f"{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
         started_at = time.perf_counter()
@@ -3051,20 +3086,26 @@ class PartSelectionApp:
 
         def log_event(event: str, **details: object) -> None:
             self.append_schematic_sync_runtime_log(attempt_id, event, selected_refs or [], started_at, details)
+            if progress:
+                messages = {'bulk_transaction_lock_acquired':'正在核验原理图源版本',
+                    'bulk_targets_ready':'已核验所选位号', 'bulk_prepare_started':'正在保存并关闭原理图编辑器',
+                    'bulk_prepare_complete':'原理图编辑器准备完成', 'bulk_write_complete':'已写入，正在回读原理图',
+                    'bulk_write_verified':'原理图回读完成', 'bulk_notify_complete':'原理图重新载入完成',
+                    'bulk_already_synced':'原理图已是最新数据', 'bulk_record_overrides_complete':'同步记录已保存'}
+                if event in messages:
+                    progress(event, messages[event])
 
         log_event("bulk_request_started", bom=selected_bom, dry_run=dry_run, notify=notify)
         try:
             with SCHEMATIC_SYNC_TRANSACTION_LOCK:
                 log_event("bulk_transaction_lock_acquired")
-                result = self._bulk_sync_bom_state_to_schematic(
-                    selected_bom,
-                    ref_map=ref_map,
-                    dry_run=dry_run,
-                    notify=notify,
-                    prepare=prepare,
-                    selected_refs=selected_refs,
-                    log_event=log_event,
-                )
+                with self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
+                    if validate_source and not validate_source():
+                        raise ValueError('预检后数据已改变，请重新预检')
+                    result = self._bulk_sync_bom_state_to_schematic(
+                        selected_bom, ref_map=ref_map, dry_run=dry_run, notify=notify,
+                        prepare=prepare, selected_refs=selected_refs, log_event=log_event,
+                        prepared_fields=prepared_fields, validate_source=validate_source)
         except Exception as exc:
             log_event("bulk_request_failed", error=type(exc).__name__, message=str(exc), traceback=traceback.format_exc())
             setattr(exc, "sync_attempt_id", attempt_id)
@@ -3085,9 +3126,20 @@ class PartSelectionApp:
         prepare: bool = True,
         selected_refs: list[str] | None = None,
         log_event=lambda *_args, **_kwargs: None,
+        prepared_fields=None, validate_source=None,
     ) -> dict[str, object]:
         ref_map = {str(key).upper(): str(value).upper() for key, value in (ref_map or {}).items()}
-        rows = self.rows("", selected_bom, include_stock=False)
+        if prepared_fields is not None:
+            if (not isinstance(prepared_fields, dict) or not selected_refs or ref_map or
+                    set(prepared_fields) != set(selected_refs) or not validate_source or
+                    any(not isinstance(fields, dict) or set(fields)-set(SCHEMATIC_SYNC_FIELDS) or
+                        any(not isinstance(value, str) for value in fields.values())
+                        for fields in prepared_fields.values())):
+                raise ValueError('已预检字段与所选位号不一致')
+            rows = [{'refs_list':[ref], 'per_ref_sync_fields':{ref:fields}}
+                    for ref,fields in prepared_fields.items()]
+        else:
+            rows = self.rows("", selected_bom, include_stock=False)
         selection = None
         if selected_refs is not None:
             if not isinstance(selected_refs, list) or not selected_refs or any(
@@ -3101,7 +3153,7 @@ class PartSelectionApp:
                 raise ValueError("Selected designators are no longer in this BOM; reload before syncing: "
                                  + ",".join(sorted(unknown, key=ref_sort_key)))
             rows = [row for row in rows if selection.intersection(row.get("refs_list", []))]
-        schematic_parts = self.schematic_parts()
+        schematic_parts = prepared_fields if prepared_fields is not None else self.schematic_parts()
         aggregate: dict[str, object] = {
             "ok": True,
             "rows": len(rows),
@@ -3147,7 +3199,7 @@ class PartSelectionApp:
                 continue
 
             source_fields = row.get("per_ref_sync_fields") or {}
-            common_fields = row_schematic_sync_fields(row)
+            common_fields = {} if prepared_fields is not None else row_schematic_sync_fields(row)
             for source_ref, target_ref in zip(source_refs, [ref_map.get(ref, ref) for ref in source_refs]):
                 if target_ref not in target_refs:
                     continue
@@ -3192,6 +3244,8 @@ class PartSelectionApp:
         log_event("bulk_prepare_complete", result=kicad_prepare)
         if prepare and first_existing_refs:
             self.require_kicad_prepare_success(kicad_prepare)
+        if validate_source and not validate_source():
+            raise ValueError('保存编辑器期间数据已改变，请重新预检；本次没有写入原理图')
         result = self.write_schematic_fields(self.config["schematic_dir"], ref_field_map)
         log_event("bulk_write_complete", updated_refs=result.get("updated_refs", []))
         verify, retry_results = self.ensure_schematic_fields_verified(
@@ -3537,6 +3591,11 @@ def make_handler(app: PartSelectionApp):
             if parsed.path == "/":
                 text_response(self, render_index(app))
                 return
+            if parsed.path == '/api/design_sync_job':
+                query = parse_qs(parsed.query)
+                key = query.get('id', [''])[0] or app.design_sync.job_id(query.get('preview_id', [''])[0])
+                json_response(self, app.design_sync.status(key))
+                return
             if parsed.path in ("/api/selection_job", "/api/pcb_update_job"):
                 query = parse_qs(parsed.query)
                 job_id = query.get('id', [''])[0]
@@ -3670,6 +3729,17 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/start_selection":
                     json_response(self, app.selection_jobs.start(payload))
+                    return
+                if parsed.path == '/api/design_sync_preview':
+                    json_response(self, app.design_sync.preview(payload))
+                    return
+                if parsed.path == '/api/start_design_sync':
+                    json_response(self, app.design_sync.start(str(payload.get('preview_id') or ''),
+                        payload.get('acknowledgments', {})))
+                    return
+                if parsed.path == '/api/continue_design_sync':
+                    json_response(self, app.design_sync.continue_pcb(str(payload.get('job_id') or ''),
+                        str(payload.get('preview_id') or ''), payload.get('acknowledgments', {})))
                     return
                 if parsed.path == '/api/pcb_update_preview':
                     refs = split_refs(payload.get('refs', ''))
@@ -8635,6 +8705,7 @@ def main() -> int:
         print("Stopping.")
     finally:
         server.server_close()
+        app.design_sync.close()
         app.selection_jobs.close()
         app.search_jobs.close()
     return 0
