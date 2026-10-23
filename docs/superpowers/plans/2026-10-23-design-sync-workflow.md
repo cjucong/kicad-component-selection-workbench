@@ -19,7 +19,7 @@
 | 1–7 | Complete | Commits `9e1c2a8` through `f8cd862`; focused regressions, Chromium and native WebView2 checks |
 | 8: Validation | Complete | 1,169 pytest cases; actual KiCad typed metadata, geometry, staged retry, undo, automatic open and save/reopen passed |
 | 8: Review | Complete | One independent overall review; all findings fixed and incrementally rechecked |
-| 8: Delivery | Pending | Commit, push, installation and byte/converter verification follow validation |
+| 8: Delivery | Complete | Implementation `ab4e22b` pushed to main; 67 installed files byte-identical, 51 converter files unchanged; no public Release |
 
 The checklists below retain the original implementation instructions; the status table records execution. The final native run used only a synthetic disposable project and KiCad `10.0.0-19-g65df3ab11c`. No production CAD was written. Existing unknown editor ownership correctly blocked automatic opening in earlier runs; the final run passed once ownership could be verified. No cross-version compatibility or public Release is implied.
 
