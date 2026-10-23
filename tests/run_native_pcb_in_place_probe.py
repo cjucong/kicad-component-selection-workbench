@@ -30,7 +30,7 @@ def native_build(root):
     origin = p.VECTOR2I(0, 0)
     directory = root / 'Local.pretty'
     directory.mkdir()
-    sheet = str(uuid4())
+    sheet, new_root, top_sheet, out_sheet = (str(uuid4()) for _ in range(4))
     symbols, definitions, defined = [], [], set()
     from kicad_sexpr import parse_sexpr
     for ref, angle, back, count in [('R1', 37, False, 2), ('R2', -25, False, 2), ('U1', 90, True, 4)]:
@@ -53,7 +53,7 @@ def native_build(root):
         old.SetReference(ref)
         old.SetValue('fixture value')
         symbol_id = str(uuid4())
-        old.SetPath(p.KIID_PATH('/' + sheet + '/' + symbol_id))
+        old.SetPath(p.KIID_PATH('/' + top_sheet + '/' + out_sheet + '/' + symbol_id))
         library_file, entry_name = ('Device', 'R') if ref.startswith('R') else ('Connector_Generic', 'Conn_01x04')
         library_text = (Path(p.__file__).parents[3] / 'share' / 'kicad' / 'symbols' / (library_file + '.kicad_sym')).read_text(encoding='utf-8')
         definition = next(node for node in parse_sexpr(library_text, 'kicad_symbol_lib').children_named('symbol') if node.arg() == entry_name)
@@ -70,7 +70,7 @@ def native_build(root):
             '(property "Value" "fixture value" (at 50 52 0) (effects (font (size 1.27 1.27)))) '
             f'(property "Footprint" "Local:Original_{ref}" (at 50 54 0) (effects (font (size 1.27 1.27)) (hide yes))) '
             f'(property "Comment" "{ref}" (at 50 56 0) (effects (font (size 1.27 1.27)) (hide yes))) '
-            f'(instances (project "Probe" (path "/{sheet}" (reference "{ref}") (unit 1)))))')
+            f'(instances (project "Probe" (path "/{sheet}/{top_sheet}/{out_sheet}" (reference "{ref}") (unit 1)))))')
         if back:
             old.Flip(origin, False)
         old.SetOrientationDegrees(angle)
@@ -103,8 +103,20 @@ def native_build(root):
         target.SetReference('T_' + ref)
     p.SaveBoard(str(root / 'Probe.kicad_pcb'), board)
     (root / 'Probe.kicad_pro').write_text('{}', encoding='utf-8')
-    (root / 'Probe.kicad_sch').write_text(f'(kicad_sch (version 20250114) (generator "eeschema") '
-        f'(uuid "{sheet}") (paper "A4") (lib_symbols ' + ''.join(definitions) + ') ' + ''.join(symbols) + ')', encoding='utf-8')
+    (root / 'Probe.kicad_sch').write_text(f'''(kicad_sch (version 20250114) (generator "eeschema")
+        (uuid "{new_root}") (paper "A4") (lib_symbols)
+        (sheet (at 30 30) (size 40 30) (uuid "{top_sheet}")
+          (property "Sheetname" "Top" (at 30 29 0) (effects (font (size 1.27 1.27))))
+          (property "Sheetfile" "Top.kicad_sch" (at 30 62 0) (effects (font (size 1.27 1.27))))
+          (instances (project "Probe" (path "/{sheet}" (page "2"))))))''', encoding='utf-8')
+    (root / 'Top.kicad_sch').write_text(f'''(kicad_sch (version 20250114) (generator "eeschema")
+        (uuid "{uuid4()}") (paper "A4") (lib_symbols)
+        (sheet (at 30 30) (size 40 30) (uuid "{out_sheet}")
+          (property "Sheetname" "Parts" (at 30 29 0) (effects (font (size 1.27 1.27))))
+          (property "Sheetfile" "Parts.kicad_sch" (at 30 62 0) (effects (font (size 1.27 1.27))))
+          (instances (project "Probe" (path "/{sheet}/{top_sheet}" (page "3"))))))''', encoding='utf-8')
+    (root / 'Parts.kicad_sch').write_text(f'(kicad_sch (version 20250114) (generator "eeschema") '
+        f'(uuid "{uuid4()}") (paper "A4") (lib_symbols ' + ''.join(definitions) + ') ' + ''.join(symbols) + ')', encoding='utf-8')
     (root / 'fp-lib-table').write_text('(fp_lib_table (lib (name "Local") (type "KiCad") '
         '(uri "${KIPRJMOD}/Local.pretty") (options "") (descr "")))', encoding='utf-8')
 

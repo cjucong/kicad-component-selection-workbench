@@ -17,45 +17,94 @@ from part_selection_runtime import runtime_directory
 
 def schematic_identity(root, directory, refs):
     from kicad_sexpr import parse_sexpr
-    root, directory = Path(root), Path(directory)
+    root, directory = Path(root).resolve(), Path(directory).resolve()
     projects = {path.stem for path in root.glob('*.kicad_pro')}
-    files = set(directory.glob('*.kicad_sch')) | set(root.glob('*.kicad_sch'))
     parsed, hashes = {}, {}
-    for path in files:
-        content = path.read_bytes()
-        parsed[path.resolve()] = parse_sexpr(content.decode('utf-8-sig'), 'kicad_sch')
-        hashes[str(path.resolve())] = hashlib.sha256(content).hexdigest()
-    roots = [node.child('uuid').arg() for path, node in parsed.items()
-             if path.stem in projects and node.child('uuid')]
-    if not roots:
+
+    def read(path):
+        path = path.resolve()
+        if path not in parsed:
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                raise ValueError('无法读取原理图层级页：' + str(path)) from exc
+            parsed[path] = parse_sexpr(content.decode('utf-8-sig'), 'kicad_sch')
+            hashes[str(path)] = hashlib.sha256(content).hexdigest()
+        return parsed[path]
+
+    def sheet_file(path, sheet):
+        prop = next((prop for prop in sheet.children_named('property')
+                     if prop.arg().lower() == 'sheetfile'), None)
+        if not prop or not prop.arg(2):
+            raise ValueError('原理图层级页缺少 Sheetfile：' + str(path))
+        return (path.parent / prop.arg(2).replace('${KIPRJMOD}', str(root))).resolve()
+
+    mains = [root / (name + '.kicad_sch') for name in projects
+             if (root / (name + '.kicad_sch')).is_file()]
+    if not mains:
+        files = set(directory.glob('*.kicad_sch')) | set(root.glob('*.kicad_sch'))
         referenced = set()
-        for path, node in parsed.items():
+        for path in files:
+            node = read(path)
             for sheet in node.children_named('sheet'):
-                for prop in sheet.children_named('property'):
-                    if prop.arg().lower() == 'sheetfile':
-                        referenced.add((path.parent / prop.arg(2)).resolve())
-        roots = [node.child('uuid').arg() for path, node in parsed.items()
-                 if path not in referenced and node.child('uuid')]
-    if len(set(roots)) != 1:
+                referenced.add(sheet_file(path, sheet))
+        mains = [path for path in files if path.resolve() not in referenced]
+    if len(mains) != 1:
         raise ValueError('无法唯一核验原理图根页与 PCB 关联')
-    root_uuid = roots[0]
+    main = mains[0].resolve()
+    main_node = read(main)
+    root_id = main_node.child('uuid')
+    if not root_id or not root_id.arg():
+        raise ValueError('原理图根页缺少 UUID：' + str(main))
+    root_uuid = root_id.arg()
+
+    def instances(node):
+        group = node.child('instances')
+        if group:
+            for project in group.children_named('project'):
+                if project.arg() in projects:
+                    yield from project.children_named('path')
+
+    # Copied/imported projects can retain a historical root in their own
+    # top-level instance records. Verify it there, not by trusting a leaf suffix.
+    anchors = {root_uuid}
+    for child in main_node.children_named('sheet') + main_node.children_named('symbol'):
+        for instance in instances(child):
+            parts = tuple(filter(None, instance.arg().split('/')))
+            if len(parts) == 1:
+                anchors.add(parts[0])
     paths = {ref: set() for ref in refs}
-    for node in parsed.values():
+
+    def walk(path, chain, ancestors):
+        path = path.resolve()
+        if path in ancestors or len(ancestors) >= 64:
+            raise ValueError('原理图层级循环或过深：' + str(path))
+        node = read(path)
         for symbol in node.children_named('symbol'):
-            identifier, instances = symbol.child('uuid'), symbol.child('instances')
-            if not identifier or not instances:
+            identifier = symbol.child('uuid')
+            if not identifier or not identifier.arg():
                 continue
-            for project in instances.children_named('project'):
-                if project.arg() not in projects:
-                    continue
-                for instance in project.children_named('path'):
-                    ref_node = instance.child('reference')
-                    ref = ref_node.arg().upper() if ref_node else ''
-                    prefix = instance.arg().strip('/')
-                    if ref in paths and prefix.split('/')[0] == root_uuid:
-                        paths[ref].add('/' + prefix + '/' + identifier.arg())
-    if any(not values for values in paths.values()):
-        raise ValueError('原理图缺少可核验的位号 UUID / 实例关联路径')
+            for instance in instances(symbol):
+                ref_node = instance.child('reference')
+                ref = ref_node.arg().upper() if ref_node else ''
+                prefix = tuple(filter(None, instance.arg().split('/')))
+                rooted = len(prefix) == len(chain) + 1 and prefix[0] in anchors and prefix[1:] == chain
+                if ref in paths and (prefix == chain or rooted):
+                    relative = '/' + '/'.join((*chain, identifier.arg()))
+                    paths[ref].add(relative)
+                    paths[ref].add('/' + root_uuid + relative)
+                    if rooted:
+                        paths[ref].add('/' + prefix[0] + relative)
+        for sheet in node.children_named('sheet'):
+            identifier = sheet.child('uuid')
+            if not identifier or not identifier.arg():
+                raise ValueError('原理图层级页缺少 UUID：' + str(path))
+            walk(sheet_file(path, sheet), (*chain, identifier.arg()), (*ancestors, path))
+
+    walk(main, (), ())
+    missing = [ref for ref, values in paths.items() if not values]
+    if missing:
+        raise ValueError('原理图缺少可核验的位号 UUID / 实例关联路径：' + ', '.join(missing))
     return {'paths': {ref: sorted(values) for ref, values in paths.items()}, 'hashes': hashes}
 
 
