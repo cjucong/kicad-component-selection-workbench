@@ -9,13 +9,14 @@ import tempfile
 import time
 from uuid import uuid4
 
-from part_selection_overrides import load_overrides
+from part_selection_design_source import DesignSource
+from part_selection_footprint_changes import classify_footprint_change, board_copper_hashes
 from part_selection_pcb_geometry import solve_placement
-from part_selection_pcb_session import PcbSession, replacement, encode
+from part_selection_pcb_session import PcbSession, replacement, encode, metadata_replacement, metadata_values
 from part_selection_runtime import runtime_directory
 
 
-def schematic_identity(root, directory, refs):
+def schematic_identity(root, directory, refs, *, read_page=None, visit_symbol=None):
     from kicad_sexpr import parse_sexpr
     root, directory = Path(root).resolve(), Path(directory).resolve()
     projects = {path.stem for path in root.glob('*.kicad_pro')}
@@ -24,6 +25,9 @@ def schematic_identity(root, directory, refs):
     def read(path):
         path = path.resolve()
         if path not in parsed:
+            if read_page:
+                parsed[path], hashes[str(path)] = read_page(path)
+                return parsed[path]
             try:
                 content = path.read_bytes()
             except OSError as exc:
@@ -90,6 +94,8 @@ def schematic_identity(root, directory, refs):
                 prefix = tuple(filter(None, instance.arg().split('/')))
                 rooted = len(prefix) == len(chain) + 1 and prefix[0] in anchors and prefix[1:] == chain
                 if ref in paths and (prefix == chain or rooted):
+                    if visit_symbol:
+                        visit_symbol(ref, symbol, path)
                     relative = '/' + '/'.join((*chain, identifier.arg()))
                     paths[ref].add(relative)
                     paths[ref].add('/' + root_uuid + relative)
@@ -111,15 +117,17 @@ def schematic_identity(root, directory, refs):
 class PcbUpdates:
     def __init__(self, app, session=None, build=None):
         self.app = app
+        self.sources = DesignSource(app)
         self.session = session or PcbSession(app.project_root)
         self.build = build or (lambda original, target, placement: encode(replacement(original, target, placement)))
         self.lock = threading.RLock()
         self.previews = OrderedDict()
 
-    def _source(self, refs):
-        actual = self.app.read_schematic_fields(self.app.config['schematic_dir'], refs, ('footprint',))
-        records = load_overrides(self.app.overrides_path)
-        records = {ref: records.get(ref, {}) for ref in refs}
+    def _source(self, refs, source=None):
+        source = source or self.sources.capture(refs)
+        if source['refs'] != refs or not self.sources.validate(source):
+            raise ValueError('源快照已改变，请重新预检')
+        actual, records = source['fields'], source['records']
         targets = {}
         for ref in refs:
             if ref not in actual or records[ref].get('decision') == 'DNP':
@@ -131,41 +139,93 @@ class PcbUpdates:
             if ':' not in bound:
                 raise ValueError(ref + ' 缺少有效的完整库封装标识')
             targets[ref] = bound
-        table = self.app.project_root / 'fp-lib-table'
         return {'actual': actual, 'records': records, 'targets': targets,
-                'identity': schematic_identity(self.app.project_root, self.app.config['schematic_dir'], refs),
-                'table_hash': hashlib.sha256(table.read_bytes() if table.exists() else b'').hexdigest()}
+                'identity': source['identity'], 'design':source}
 
-    def preview(self, refs: list[str], bom: str, *, alignment='rigid') -> dict:
+    @staticmethod
+    def _fields(source, ref):
+        fields = {}
+        for key, value in source['actual'][ref].items():
+            name = source['design']['properties'][ref][key]
+            builtin = {'value':'Value','description':'Description'}.get(key)
+            if builtin:
+                fields[builtin] = value
+                if name.casefold() == builtin.casefold():
+                    continue
+            if key == 'footprint' and name.casefold() == 'footprint':
+                continue
+            fields[name] = value
+        return fields
+
+    def preview(self, refs: list[str], bom: str, *, alignment='rigid', source=None) -> dict:
         if alignment not in ('rigid', 'center'):
             raise ValueError('未知的封装对齐方式')
         if not refs or len(refs) > 300 or len(set(refs)) != len(refs):
             raise ValueError('请选择 1 至 300 个不重复的位号')
         with self.app.selection_save_lock:
-            source = self._source(refs)
+            source = self._source(refs, source)
         snapshot = self.session.snapshot(self.app.project_root, refs)
+        copper_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
+            'source', {}).get('instance_geometry_hash')]
+        copper = board_copper_hashes(snapshot['text'], copper_refs) if copper_refs else {}
         replacements, targets, items = [], [], []
+        libraries = {}
         for ref in refs:
             original = snapshot['parts'][ref]
             if original.get('symbol_path') not in source['identity']['paths'][ref]:
                 raise ValueError(ref + ' 原理图实例与 PCB 关联不一致，请先核对 UUID / 重新关联，不能只凭同位号替换')
-            target = self.session.read_library(source['targets'][ref], back=original['back'])
+            desired = self._fields(source, ref)
+            current_fields = metadata_values(original) if desired else {}
+            folded = {name.casefold():name for name in current_fields}
+            field_changes = [{'name':folded.get(name.casefold(), name),
+                              'before':current_fields.get(folded.get(name.casefold(), name), ''), 'after':value}
+                             for name, value in desired.items()
+                             if current_fields.get(folded.get(name.casefold(), name)) != value]
+            fields = {item['name']:item['after'] for item in field_changes}
+            record = deepcopy(source['records'][ref])
+            record.setdefault('field_overrides', {})['footprint'] = source['targets'][ref]
+            change = classify_footprint_change(record, {**original, 'instance_geometry_hash':copper.get(ref)})
+            kind = change['kind']
+            common = {'ref':ref, 'kind':kind if kind != 'none' else 'fields' if fields else 'none',
+                      'before':original['footprint'], 'after':source['targets'][ref],
+                      'reason':change['reason'], 'field_changes':field_changes, 'needs_ack':kind == 'replace'}
+            if kind == 'unknown':
+                items.append(common)
+                continue
+            if kind in ('rename','none'):
+                prototype = metadata_replacement(original, footprint=source['targets'][ref] if kind == 'rename' else None,
+                                                 fields=fields) if kind == 'rename' or fields else original['proto']
+                replacements.append({'ref':ref, 'proto':prototype, 'fields':fields, 'kind':common['kind']})
+                evidence_target = record.get('footprint_change', {}).get('target', {}) if kind == 'rename' else {}
+                if evidence_target.get('path'):
+                    target_hash = hashlib.sha256(Path(evidence_target['path']).read_bytes()).hexdigest()
+                    if target_hash != evidence_target.get('hash'):
+                        raise ValueError('改名后的目标库封装已改变，请重新预检')
+                    targets.append({'ref':ref, 'path':evidence_target['path'], 'hash':target_hash})
+                items.append(common)
+                continue
+            key = (source['targets'][ref], original['back'])
+            if key not in libraries:
+                libraries[key] = self.session.read_library(key[0], back=key[1])
+            target = libraries[key]
             if target['footprint'] != source['targets'][ref]:
                 raise ValueError('库读取返回了不同的完整封装标识，请重新预检')
             placement = solve_placement(original, target, alignment=alignment)
             if not placement['ok']:
                 raise ValueError(ref + ' 不能原位替换：' + placement['reason'])
             prototype = self.build(original, target, placement)
-            replacements.append({'ref': ref, 'proto': prototype})
+            if fields:
+                prototype = metadata_replacement({'proto':prototype}, fields=fields)
+            replacements.append({'ref': ref, 'proto': prototype, 'fields':fields, 'kind':'replace'})
             targets.append({'ref': ref, 'path': target['source_path'], 'hash': target['source_hash']})
-            items.append({'ref': ref, 'before': original['footprint'], 'after': target['footprint'],
+            items.append({**common,
                 'old_position_mm': original['position_mm'], 'old_rotation_deg': original['rotation_deg'],
                 'position_mm': placement['position_mm'], 'rotation_deg': placement['rotation_deg'],
                 'back': original['back'], 'max_error_mm': placement['max_error_mm'],
                 'center_error_mm': placement['center_error_mm'], 'pad_errors': placement['pad_errors'],
                 'differences': placement['differences']})
         with self.app.selection_save_lock:
-            if self._source(refs) != source:
+            if not self.sources.validate(source['design']):
                 raise ValueError('读取期间原理图或工作台记录已改变，请重新预检')
         token = uuid4().hex
         with self.lock:
@@ -175,8 +235,9 @@ class PcbUpdates:
                     del self.previews[key]
             self.previews[token] = {'refs': refs, 'snapshot': snapshot, 'source': source,
                 'targets': targets, 'replacements': replacements, 'time': now, 'started': False,
-                'alignment': alignment}
+                'alignment': alignment, 'items':items}
         return {'ok': True, 'preview_id': token, 'items': items,
+                'blocked':any(item['kind'] == 'unknown' for item in items),
                 'alignment': alignment,
                 'basis': '当前 PCB 焊盘位置，不是历史位置恢复', 'saved': False}
 
@@ -192,7 +253,9 @@ class PcbUpdates:
                 return deepcopy(state['result'])
             if state['started']:
                 raise ValueError('此预检已执行或结果未能确认，请检查 PCB 后重新预检，不能重复执行')
-            if self._source(state['refs']) != state['source']:
+            if any(item['kind'] == 'unknown' for item in state['items']):
+                raise ValueError('封装改动类型待核对，请先明确选择封装操作')
+            if not self.sources.validate(state['source']['design']):
                 raise ValueError('工作台记录或原理图已改变，请重新预检')
             for target in state['targets']:
                 if hashlib.sha256(Path(target['path']).read_bytes()).hexdigest() != target['hash']:
@@ -200,6 +263,9 @@ class PcbUpdates:
             if self.session.snapshot(self.app.project_root, state['refs']) != state['snapshot']:
                 raise ValueError('PCB 在预检后发生变化，请重新预检')
             state['started'] = True
+            if all(item['kind'] == 'none' for item in state['items']):
+                state['result'] = {'ok':True, 'saved':False, 'refs':state['refs'], 'no_changes':True}
+                return deepcopy(state['result'])
             directory = runtime_directory(self.app.project_root) / ('pcb-update-' + preview_id)
             result = self.session.apply(state['snapshot'], state['replacements'], directory)
             state['result'] = {key: value for key, value in result.items() if key != 'snapshot'}
@@ -235,10 +301,12 @@ class PcbUpdates:
             state = self.previews.get(preview_id)
             if not state or ref not in state['refs'] or state['started'] or time.monotonic() - state['time'] > 600:
                 raise ValueError('请重新预检后查看所选器件对比')
-            if self._source(state['refs']) != state['source']:
+            if not self.sources.validate(state['source']['design']):
                 raise ValueError('原理图或工作台记录已改变，请重新预检')
             if self.session.snapshot(self.app.project_root, state['refs']) != state['snapshot']:
                 raise ValueError('PCB 已改变，请重新预检')
+            if next(item for item in state['items'] if item['ref'] == ref)['kind'] != 'replace':
+                raise ValueError('此器件没有需要渲染的几何替换')
             target = next(item for item in state['targets'] if item['ref'] == ref)
             content = Path(target['path']).read_bytes()
             source = content.decode('utf-8-sig')
@@ -269,7 +337,7 @@ class PcbUpdates:
                 if not rendered.get('ok'):
                     raise ValueError('封装图读取失败：' + str(rendered.get('reason')))
                 if (self.session.snapshot(self.app.project_root, state['refs']) != state['snapshot'] or
-                        self._source(state['refs']) != state['source'] or
+                        not self.sources.validate(state['source']['design']) or
                         hashlib.sha256(Path(target['path']).read_bytes()).hexdigest() != target['hash']):
                     raise ValueError('预览生成期间 PCB 已改变，请重新预检')
                 cached[ref] = {**rendered, 'alignment': result, 'pcb_comparison': True}

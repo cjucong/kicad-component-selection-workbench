@@ -87,3 +87,22 @@ def test_same_library_reselection_still_records_replace_operation(footprint_app)
     app.footprint_choices.library_detail(preview['preview_id'], 'Local:Original')
     app.row_footprint({'footprint_choice':choice(preview, existing_id='Local:Original')})
     assert load_overrides(app.overrides_path)['R1']['footprint_change']['operation'] == 'replace'
+
+
+def test_live_board_copper_evidence_ignores_labels_but_not_pad_changes():
+    from part_selection_footprint_changes import board_copper_hashes
+    text = '''(kicad_pcb (footprint "Local:Old" (layer "F.Cu") (at 10 20 90)
+      (property "Reference" "R1") (property "Comment" "resistor")
+      (fp_text user "label" (at 1 2))
+      (pad "1" smd rect (at -1 0 90) (size 1 2) (layers "F.Cu") (uuid "one") (net 1 "N1"))))'''
+    original = board_copper_hashes(text, ['R1'])['R1']
+    labels = text.replace('Local:Old', 'Other:Renamed').replace('resistor','new').replace('(at 1 2)', '(at 5 6)')
+    labels = labels.replace('(size 1 2)', '(size 1.000 2.0)').replace('uuid "one"', 'uuid "changed"')
+    assert board_copper_hashes(labels, ['R1'])['R1'] == original
+    assert board_copper_hashes(text.replace('(size 1 2)', '(size 1 3)'), ['R1'])['R1'] != original
+    record = {'field_overrides':{'footprint':'Other:Renamed'}, 'footprint_change':{
+        'schema':1,'operation':'rename','before':'Local:Old','after':'Other:Renamed',
+        'source':{'instance_geometry_hash':original}}}
+    from part_selection_footprint_changes import classify_footprint_change
+    assert classify_footprint_change(record, {'footprint':'Local:Old','instance_geometry_hash':original})['kind'] == 'rename'
+    assert classify_footprint_change(record, {'footprint':'Local:Old','instance_geometry_hash':'changed'})['kind'] == 'unknown'

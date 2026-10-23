@@ -72,6 +72,63 @@ def describe(fp):
             'locked': fp.locked, 'pads': pads, 'proto': encode(fp)}
 
 
+def metadata_replacement(original: dict, *, footprint=None, fields=None) -> str:
+    """Copy the live instance verbatim; change only explicitly supplied metadata."""
+    from kipy.board_types import Field
+    result = decode(original['proto'])
+    if footprint is not None:
+        if not isinstance(footprint, str) or footprint.count(':') != 1 or not all(footprint.split(':')):
+            raise ValueError('缺少完整库封装标识')
+        result.definition.id.library, result.definition.id.name = footprint.split(':')
+    fields = fields or {}
+    if not isinstance(fields, dict) or any(not isinstance(name, str) or not name.strip()
+            or name != name.strip() or len(name) > 128 or any(ord(c) < 32 for c in name)
+            or not isinstance(value, str) for name, value in fields.items()):
+        raise ValueError('PCB 字段更新参数无效')
+    if len({name.casefold() for name in fields}) != len(fields):
+        raise ValueError('PCB 字段目标大小写冲突')
+    if {'reference', '位号', 'footprint'} & {name.casefold() for name in fields}:
+        raise ValueError('不能通过属性更新修改位号或封装身份')
+    builtins = {'value':'value_field', 'description':'description_field', 'datasheet':'datasheet_field'}
+    existing = {key:[getattr(result, attr)] for key, attr in builtins.items()}
+    for field in result.definition.items:
+        if isinstance(field, Field):
+            existing.setdefault(field.name.casefold(), []).append(field)
+    if any(len(items) > 1 for items in existing.values()):
+        raise ValueError('PCB 存在重复大小写属性，请先核对')
+    next_id = max([3, *(f.field_id for group in existing.values() for f in group)]) + 1
+    for name, value in fields.items():
+        matching = existing.get(name.casefold())
+        if matching:
+            matching[0].text.value = value
+        else:
+            field = Field(deepcopy(result.value_field.proto))
+            field.name = name
+            field.proto.id.id = next_id
+            next_id += 1
+            field.proto.text.id.value = str(uuid4())
+            field.proto.text.parent.CopyFrom(result.id)
+            field.visible = False
+            field.text.value = value
+            result.definition.add_item(field)
+    return encode(result)
+
+
+def metadata_values(original):
+    from kipy.board_types import Field
+    fp = decode(original['proto'])
+    result = {'Value':fp.value_field.text.value, 'Description':fp.description_field.text.value,
+              'Datasheet':fp.datasheet_field.text.value}
+    folded = {name.casefold() for name in result}
+    for field in fp.definition.items:
+        if isinstance(field, Field):
+            if field.name.casefold() in folded:
+                raise ValueError('PCB 存在重复大小写属性：' + field.name)
+            result[field.name] = field.text.value
+            folded.add(field.name.casefold())
+    return result
+
+
 def outside_parts(text, selected_ids):
     root = parse_sexpr(text, 'kicad_pcb')
     return [tree_data(node) for node in root.children[1:] if not
@@ -274,16 +331,27 @@ class PcbSession:
                 if actual_value != expected_value:
                     raise ValueError(ref + ' 写入回读不一致：' + key + '；实际 ' + str(new[key])[:160] + '；预期 ' + str(expected[key])[:160])
             a, b = decode(old['proto']), decode(new['proto'])
+            changed = {name.casefold() for name in item.get('fields', {})}
             for field in ('id', 'symbol_path', 'layer', 'locked', 'reference_field', 'value_field',
                           'datasheet_field', 'description_field', 'attributes', 'overrides',
                           'symbol_sheet_name', 'symbol_sheet_filename', 'symbol_footprint_filters'):
-                if getattr(a.proto, field) != getattr(b.proto, field):
+                if field.removesuffix('_field') in changed and field in (
+                        'value_field','description_field','datasheet_field'):
+                    expected_field = deepcopy(getattr(b.proto, field))
+                    expected_field.text.text.text = getattr(a.proto, field).text.text.text
+                    if expected_field != getattr(a.proto, field):
+                        raise ValueError(ref + ' 字段位置或样式改变：' + field)
+                elif getattr(a.proto, field) != getattr(b.proto, field):
                     raise ValueError(ref + ' 实例信息改变：' + field)
             from kipy.board_types import Field
             preserved = {item.name: item.proto for item in a.definition.items if isinstance(item, Field)}
             actual_fields = {item.name: item.proto for item in b.definition.items if isinstance(item, Field)}
-            if any(actual_fields.get(name) != value for name, value in preserved.items()):
-                raise ValueError(ref + ' 自定义字段或文字位置改变')
+            for name, value in preserved.items():
+                actual_field = deepcopy(actual_fields.get(name))
+                if actual_field is not None and name.casefold() in changed:
+                    actual_field.text.text.text = value.text.text.text
+                if actual_field != value:
+                    raise ValueError(ref + ' 自定义字段或文字位置改变')
             if footprint_bytes(b) != footprint_bytes(decode(item['proto'])):
                 raise ValueError(ref + ' 完整封装定义回读不一致，可能有图形、模型或属性未保留')
         return {'ok': True}

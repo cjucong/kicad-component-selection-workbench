@@ -127,12 +127,14 @@ class FootprintChoices:
 
     def change_evidence(self, choice, refs, before, result):
         """Capture only validated server-side preview evidence, never client metadata."""
-        from part_selection_footprint_changes import make_footprint_change
+        from part_selection_footprint_changes import make_footprint_change, board_copper_hashes
         state = self.previews[choice['preview_id']]
         nickname, name = result['footprint'].split(':', 1)
         target = checked_path(self.root, self.libraries()[nickname] / (item_name(name) + '.kicad_mod'))
         target_info = {'path': str(target), 'hash': digest(target)}
         operation = 'rename' if result.get('renamed') else 'replace'
+        board_hashes = (board_copper_hashes(Path(state['board']['path']).read_text(encoding='utf-8-sig'), refs)
+                        if state.get('board') else {})
         entries = state['existing']
         originals = state.get('baseline_ids', state['original_ids'])
         evidence = {}
@@ -148,6 +150,8 @@ class FootprintChoices:
                 source['path'] = str(entry['path'])
             if state.get('board'):
                 source['board'] = {k: str(v) for k, v in state['board'].items()}
+                if ref in board_hashes:
+                    source['instance_geometry_hash'] = board_hashes[ref]
             original_id = entry.get('placement', {}).get('footprint', before[ref]) if entry else before[ref]
             evidence[ref] = make_footprint_change(operation=operation, before=original_id,
                 after=result['footprint'], source=source, target=target_info)

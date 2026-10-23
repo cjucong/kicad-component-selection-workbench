@@ -14,10 +14,13 @@ def updates(scratch_project):
     root = scratch_project
     (root / 'test.kicad_pro').write_text('{}')
     (root / 'test.kicad_sch').write_text('(kicad_sch (uuid "sheet") (symbol (uuid "symbol") '
-        '(property "Reference" "R1") (instances (project "test" (path "/sheet" (reference "R1"))))))')
+        '(property "Reference" "R1") (property "Footprint" "Local:New") '
+        '(instances (project "test" (path "/sheet" (reference "R1"))))))')
     overrides = root / 'overrides.json'
     overrides.write_text(json.dumps({'R1': {'decision': 'Accept', 'stock_c_code': 'C123',
-        'field_overrides': {'footprint': 'Local:New'}}}))
+        'field_overrides': {'footprint': 'Local:New'}, 'footprint_change': {
+            'schema':1,'operation':'replace','before':'Local:Old','after':'Local:New',
+            'source':{},'target':{}}}}))
     app = SimpleNamespace(project_root=root, config={'schematic_dir': root}, overrides_path=overrides,
         selection_save_lock=threading.RLock(), read_schematic_fields=Mock(return_value={'R1': {'footprint': 'Local:New'}}))
     part = {'ref': 'R1', 'uuid': 'r1', 'footprint': 'Local:Old', 'position_mm': [0, 0],
@@ -62,7 +65,8 @@ def test_preflight_changes_never_apply(updates, problem):
     elif problem == 'library_changed':
         library.write_text('changed')
     elif problem == 'schematic_changed':
-        app.read_schematic_fields.return_value = {'R1': {'footprint': 'Local:Other'}}
+        path = app.project_root / 'test.kicad_sch'
+        path.write_text(path.read_text().replace('Local:New','Local:Other'))
     with pytest.raises(ValueError):
         service.apply(preview['preview_id'], problem != 'no_ack')
     session.apply.assert_not_called()
@@ -72,7 +76,8 @@ def test_unsynced_schematic_and_empty_selection_are_blocked(updates):
     service, app, session, _ = updates
     with pytest.raises(ValueError):
         service.preview([], '')
-    app.read_schematic_fields.return_value = {'R1': {'footprint': 'Local:Old'}}
+    path = app.project_root / 'test.kicad_sch'
+    path.write_text(path.read_text().replace('Local:New','Local:Old'))
     with pytest.raises(ValueError, match='同步原理图'):
         service.preview(['R1'], '')
     session.apply.assert_not_called()
