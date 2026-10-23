@@ -3779,6 +3779,7 @@ def render_index(app: PartSelectionApp) -> str:
     desktop_lifecycle_js = (Path(__file__).resolve().parent / "web" / "desktop-lifecycle.js").read_text(encoding="utf-8")
     plugin_updates_js = (Path(__file__).resolve().parent / "web" / "plugin-updates.js").read_text(encoding="utf-8")
     candidate_desktop_js = (Path(__file__).resolve().parent / "web" / "candidate-desktop.js").read_text(encoding="utf-8")
+    tool_desktop_js = (Path(__file__).resolve().parent / "web" / "tool-desktop.js").read_text(encoding="utf-8")
     inventory_js = (Path(__file__).resolve().parent / "web" / "local-inventory.js").read_text(encoding="utf-8")
     pcb_js = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.js').read_text(encoding='utf-8')
     pcb_css = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.css').read_text(encoding='utf-8')
@@ -6644,14 +6645,14 @@ function updateCandidateWindowControls() {{
 }}
 
 function restoreCandidates() {{
-  if (!candidateOnly && window.pywebview?.api?.candidate_window) {{ void window.restoreNativeCandidates(); return; }}
+  if (!candidateOnly && (window.pywebview?.api?.tool_window || window.pywebview?.api?.candidate_window)) {{ void window.restoreNativeCandidates(); return; }}
   if (!candidateModal.classList.contains("open")) return;
   candidateModal.classList.remove("minimized");
 }}
 
 function minimizeCandidates() {{
-  if (window.pywebview?.api?.candidate_window) {{
-    if (candidateOnly) void window.pywebview.api.candidate_window('minimize');
+  if (window.pywebview?.api?.tool_window || window.pywebview?.api?.candidate_window) {{
+    if (candidateOnly) void (window.pywebview?.api?.tool_window ? window.minimizeNativeTool() : window.pywebview.api.candidate_window('minimize'));
     else void window.minimizeNativeCandidates();
     return;
   }}
@@ -6755,7 +6756,7 @@ function beginCandidateResize(event) {{
 }}
 
 async function openCandidates(tr) {{
-  if (!candidateOnly && window.pywebview?.api?.candidate_window) return window.openNativeCandidates(tr);
+  if (!candidateOnly && (window.pywebview?.api?.tool_window || window.pywebview?.api?.candidate_window)) return window.openNativeCandidates(tr);
   if (candidateTargetRow && candidateTargetRow.dataset.candidateSaving === "1") {{
     restoreCandidates();
     return;
@@ -8567,6 +8568,7 @@ if (!candidateOnly) window.workbenchRowFilters = window.RowFilters?.createRowFil
 if (!candidateOnly) initializeWorkbenchRows();
 </script>
 <script>{candidate_desktop_js}</script>
+<script>{tool_desktop_js}</script>
 <script>{inventory_js}</script>
 <script>{spec_warnings_js}</script>
 <script>{value_parameters_js}</script>

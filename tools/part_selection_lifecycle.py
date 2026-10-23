@@ -86,9 +86,19 @@ class DesktopBridge:
         return self._lifecycle.finish_exit(restart, update)
 
     def candidate_window(self, action, value=None):
+        if self._lifecycle.tools is not None:
+            from uuid import uuid4
+            request = ({'kind':'candidate','request_id':uuid4().hex,'payload':value}
+                       if action == 'open' else {'kind':'candidate'})
+            return self._lifecycle.tools.main_action(action, request)
         if self._lifecycle.candidates is None:
             return {'ok': False, 'error': '当前宿主不支持独立选型窗口，请重新安装插件'}
         return self._lifecycle.candidates.main_action(action, value)
+
+    def tool_window(self, action, value=None):
+        if self._lifecycle.tools is None:
+            return {'ok':False,'error':'当前宿主不支持独立工具窗口，请重新安装并重启工作台'}
+        return self._lifecycle.tools.main_action(action, value)
 
     def plugin_update(self, action, value=None):
         lifecycle = self._lifecycle
@@ -129,6 +139,7 @@ class DesktopLifecycle:
         self.updater = None
         self.install_update = False
         self.candidates = None
+        self.tools = None
 
     def on_closing(self):
         if self.allow_close:
@@ -203,16 +214,25 @@ class DesktopLifecycle:
                     install_update = False
             if self.candidates:
                 self.candidates.check_exit()
+            if self.tools:
+                self.tools.check_exit()
             self._stop_backend()
             self.install_update = install_update
             self.restart = restart
             self.allow_close = True
             if self.candidates:
                 self.candidates.dispose()
+            if self.tools:
+                self.tools.dispose()
             self.window.destroy()
             return {'ok':True}
         except Exception as exc:
             logging.exception('Desktop close deferred')
+            if self.tools and not self.allow_close:
+                try:
+                    self.tools.cancel_exit()
+                except Exception:
+                    logging.exception('Could not resume tool windows')
             if self.candidates and not self.allow_close:
                 try:
                     self.candidates.cancel_exit()

@@ -4,6 +4,17 @@
   let candidateActionBusy = false, candidateExiting = false, blankPress = null;
   const bridge = () => window.pywebview?.api?.candidate_window;
   async function nativeAction(action, value) {
+    if (window.pywebview?.api?.tool_window) {
+      if (candidateOnly) {
+        const result = await window.pywebview.api.tool_window(action);
+        if (!result?.ok) throw new Error(result?.error || '更换型号窗口操作失败');
+        return result;
+      }
+      if (action === 'open') return window.openNativeTool('candidate', value);
+      const result = await window.pywebview.api.tool_window(action, {kind:'candidate'});
+      if (!result?.ok) throw new Error(result?.error || '更换型号窗口操作失败');
+      return result;
+    }
     if (!bridge()) throw new Error('更换型号窗口尚未就绪，请稍后重试');
     const result = await bridge()(action, value ?? null);
     if (!result?.ok) throw new Error(result?.error || '更换型号窗口操作失败');
