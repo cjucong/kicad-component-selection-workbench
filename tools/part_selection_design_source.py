@@ -69,6 +69,8 @@ class DesignSource:
                   'records':{ref:deepcopy(records.get(ref, {})) for ref in refs},
                   'identity':identity, 'mapping':config['mapping'], 'properties':properties,
                   'versions':{'configuration':config,'files':files,'hashes':hashes}}
+        if hasattr(self.app, 'design_sync_parameter_snapshot'):
+            result['parameters'] = self.app.design_sync_parameter_snapshot(result)
         if not self.validate(result):
             raise ValueError('读取期间原理图、库表或工作台记录已改变，请重新预检')
         return result
@@ -78,6 +80,8 @@ class DesignSource:
             versions = snapshot['versions']
             config = self._configuration()
             return (config == versions['configuration'] and self._files(config) == versions['files']
+                    and ('parameters' not in snapshot or snapshot['parameters'] ==
+                         self.app.design_sync_parameter_snapshot(snapshot))
                     and all(content_hash(path) == digest for path, digest in versions['hashes'].items()))
         except (OSError, ValueError, KeyError, TypeError):
             return False

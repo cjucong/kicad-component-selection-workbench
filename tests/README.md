@@ -15,6 +15,8 @@
 ```powershell
 python -m pip install -r tools/requirements.txt pytest
 $env:PYTHONDONTWRITEBYTECODE = '1'
+$env:PYTHONUTF8 = '1'
+$env:PYTHONPATH = Join-Path $PWD 'tools'
 python -B -m pytest tests -p no:cacheprovider
 ```
 
@@ -33,6 +35,7 @@ Node.js 用于部分前端行为检查；涉及 KiCad CLI/pcbnew、WebView2 或�
 | `test_candidate_*`、`test_progressive_search.py`、`test_part_stock_lookup.py` | 搜索、筛选、库存、订货与请求竞态 |
 | `test_product_details.py`、`test_candidate_parameter_completion.py`、`run_candidate_parameter_completion_smoke.py` | 商品详情页完整属性、身份/来源隔离、固定域名、大小/缓存/并发边界；搜索和库存刷新保留同料号已知参数；Chromium 后台补取、迟到结果、失败重试、温度系数/工作电压筛选及保存。默认合成来源，不修改生产 CAD/记录 |
 | `test_*selection*`、`test_selected_schematic_sync.py` | 配置、主料一致性、记录及同步范围 |
+| `test_design_sync.py`、`test_design_source.py` | 同步预检参数与主表一致、同编码缓存及已保存参数优先级、冻结快照与过期检查；一次性原理图实际写入/回读、缺失或映射参数字段、同步后差异消除、确认状态保留及重复同步不操作编辑器 |
 | `test_path_settings.py`、`test_part_selection_overrides.py` | 更换型号网页搜索偏好、确认时间戳持久化及路径设置 |
 | `test_field_mapping.py` | 中英文自动识别、标准字段优先、手动映射持久化、冲突拒绝、缺失属性隐藏创建、单行/所选同步与内置 Value/Footprint 镜像校验；仅使用合成工程 |
 | `test_chinese_data_paths.py` | 中文与空格路径下的保存/加载、中文导出、隔离工程同步、旧标准配置迁移、外部备份、冲突及失败回滚；不操作生产工程 |

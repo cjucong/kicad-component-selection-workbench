@@ -260,6 +260,129 @@ def test_real_app_desired_fields_are_read_only_and_missing_is_not_empty(scratch_
         if hasattr(app,'design_sync'): app.design_sync.close()
 
 
+@pytest.mark.parametrize('property_name', ['Description', 'Parameters', None])
+@pytest.mark.parametrize('review_status', ['Confirmed', 'Pending'])
+def test_changed_code_cached_parameters_sync_and_clear_pending_warning(scratch_project, property_name, review_status):
+    import json
+    from part_selection_server import PartSelectionApp, stock_param_text
+    from part_selection_overrides import load_overrides, save_overrides
+    config = scratch_project / 'settings.json'
+    config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data',
+                                 'field_mapping':{'description':property_name or 'Description'}}))
+    (scratch_project / 'Design.kicad_pro').write_text('{}')
+    schematic = scratch_project / 'Design.kicad_sch'
+    schematic.write_text('''(kicad_sch (uuid "root")
+      (symbol (uuid "symbol") (property "Reference" "U1")
+        (property "Value" "NEW-IC") (property "Comment" "NEW-IC")
+        (property "Footprint" "Local:SOIC16")
+        (property "Description" "old parameters")
+        (instances (project "Design" (path "/root" (reference "U1") (unit 1))))))''')
+    text = schematic.read_text()
+    schematic.write_text(text.replace('(property "Description" "old parameters")',
+        '(property "' + property_name + '" "old parameters")' if property_name else ''))
+    app = PartSelectionApp(config)
+    try:
+        save_overrides(app.overrides_path, {'U1':{'manual_c_code':'C200',
+            'accepted_c_code':'C200','decision':'AcceptManual','review_status':review_status,
+            'field_overrides':{'description':'old parameters','description_c_code':'C100'}}})
+        stock = {'c_code':'C200','model':'NEW-IC','param':'Digital Isolator',
+                 'param_detail':'Channels: 4','brand':'TEST','package':'SOIC16','ok':True}
+        app.stock_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        app.stock_cache_path.write_text(json.dumps({'C200':stock}))
+        app.prepare_kicad_for_external_schematic_write = Mock(return_value={'ok':True})
+        app.notify_kicad_schematic_changed = Mock(return_value={'ok':True})
+        app.verify_schematic_after_notify = Mock(side_effect=lambda fields, **kwargs:
+            app.verify_schematic_field_values(fields))
+        records = app.overrides_path.read_bytes()
+        preview = app.design_sync.preview({'refs':['U1'],'destination':'schematic'})
+        assert app.overrides_path.read_bytes() == records
+        assert any(change['name']=='description' and change['after']==stock_param_text(stock)
+                   for change in preview['schematic_changes'])
+        job = app.design_sync.start(preview['preview_id'], {})
+        state = await_job(app.design_sync, job['job_id'])
+        assert state['stage'] == 'complete', state
+        assert app.read_schematic_fields(scratch_project,['U1'],['description'])['U1']['description'] == stock_param_text(stock)
+        rows = app.rows('', '__schematic__', include_stock=False)
+        assert len(rows) == 1
+        assert rows[0].get('field_edit_status') != 'NeedsSchematicUpdate', rows[0].get('field_diffs')
+        assert load_overrides(app.overrides_path)['U1']['review_status'] == review_status
+        repeated = app.design_sync.preview({'refs':['U1'],'destination':'schematic'})
+        assert repeated['schematic_changes'] == []
+        app.prepare_kicad_for_external_schematic_write.reset_mock()
+        job = app.design_sync.start(repeated['preview_id'], {})
+        assert await_job(app.design_sync, job['job_id'])['stage'] == 'complete'
+        app.prepare_kicad_for_external_schematic_write.assert_not_called()
+    finally:
+        app.design_sync.close(); app.search_jobs.close(); app.selection_jobs.close()
+
+
+@pytest.mark.parametrize('cache_code,saved_code', [('C200','C100'), ('C999','C100'), (None,'C100'), ('C200','C200')])
+def test_sync_parameter_source_and_snapshot_validation(scratch_project, cache_code, saved_code):
+    import json
+    from part_selection_server import PartSelectionApp, stock_param_text
+    from part_selection_overrides import save_overrides
+    config = scratch_project / 'settings.json'
+    config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
+    (scratch_project / 'Design.kicad_pro').write_text('{}')
+    schematic = scratch_project / 'Design.kicad_sch'
+    schematic.write_text('''(kicad_sch (uuid "root") (symbol (uuid "symbol")
+      (property "Reference" "U1") (property "Value" "IC")
+      (instances (project "Design" (path "/root" (reference "U1") (unit 1))))))''')
+    app = PartSelectionApp(config)
+    try:
+        save_overrides(app.overrides_path, {'U1':{'manual_c_code':'C200',
+            'accepted_c_code':'C200','decision':'AcceptManual','review_status':'Confirmed',
+            'field_overrides':{'description':'explicit parameters','description_c_code':saved_code}}})
+        stock = {'c_code':cache_code,'model':'IC','param_detail':'Channels: 4','stock':100}
+        app.stock_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        def write_cache():
+            app.stock_cache_path.write_text(json.dumps({'C200':stock} if cache_code else {}))
+        write_cache()
+        source = app.design_sync.sources.capture(['U1'])
+        desired = app.design_sync_fields(source, '__schematic__')['U1']
+        expected = 'explicit parameters' if saved_code == 'C200' else (
+            stock_param_text(stock) if cache_code == 'C200' else '')
+        assert desired.get('description', '') == expected
+        if cache_code:
+            stock['stock'] = 200
+            write_cache()
+            assert app.design_sync.sources.validate(source)
+            preview = app.design_sync.preview({'refs':['U1'],'destination':'schematic'})
+            before = schematic.read_bytes()
+            stock['param_detail'] = 'Channels: 8'
+            write_cache()
+            # The approved desired values stay frozen even after cache refresh.
+            assert app.design_sync_fields(source, '__schematic__')['U1'] == desired
+            if cache_code == 'C200' and saved_code != 'C200':
+                assert not app.design_sync.sources.validate(source)
+                with pytest.raises(ValueError, match='改变'):
+                    app.design_sync.start(preview['preview_id'], {})
+                assert schematic.read_bytes() == before
+            else:
+                assert app.design_sync.sources.validate(source)
+    finally:
+        app.design_sync.close(); app.search_jobs.close(); app.selection_jobs.close()
+
+
+@pytest.mark.parametrize('code', ['c200', 'C 200', ' C200 '])
+def test_sync_normalizes_schematic_codes_before_resolving_parameters(scratch_project, code):
+    import json
+    from part_selection_server import PartSelectionApp, stock_param_text
+    config = scratch_project / 'settings.json'
+    config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
+    app = PartSelectionApp(config)
+    try:
+        stock = {'c_code':'C200','model':'IC','param_detail':'Channels: 4'}
+        app.stock_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        app.stock_cache_path.write_text(json.dumps({'C200':stock}))
+        source = {'refs':['U1'], 'records':{}, 'fields':{'U1':{'value':'IC','lcsc_c_code':code}}}
+        desired = app.design_sync_fields(source, '__schematic__')['U1']
+        assert desired['lcsc_c_code'] == 'C200'
+        assert desired['description'] == stock_param_text(stock)
+    finally:
+        app.design_sync.close(); app.search_jobs.close(); app.selection_jobs.close()
+
+
 def test_prepared_schematic_sync_revalidates_after_editor_save(scratch_project):
     import json
     from part_selection_server import PartSelectionApp

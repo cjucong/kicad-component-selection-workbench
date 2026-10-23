@@ -445,6 +445,8 @@ def enrich_rows_with_selection_stock(
         row["effective_c_code"]: row.get("stock", {"status": "待查询", "c_code": row["effective_c_code"]})
         for row in code_rows
     }
+    stocks = {code: stock for code, stock in stocks.items()
+              if normalize_lcsc_c_code(stock.get("c_code", code)) == code}
     for row in rows:
         codes = selection_codes_for_row(row)
         selections = row.get("per_ref_selection") or {}
@@ -489,7 +491,7 @@ def enrich_rows_with_selection_stock(
             code = codes.get(str(ref).upper(), "")
             stock = stocks.get(code) or {}
             if not fields.get("description") and stock:
-                description = stock_param_text(stock)
+                description = selected_stock_description(code, stock)
                 if description:
                     fields["description"] = description
                     fields["description_c_code"] = code
@@ -720,6 +722,14 @@ def saved_candidate_description(row: dict[str, object]) -> str:
     return ""
 
 
+def selected_stock_description(code: str, stock: object) -> str:
+    if not code or not isinstance(stock, dict):
+        return ""
+    if normalize_lcsc_c_code(stock.get("c_code", code)) != code:
+        return ""
+    return stock_param_text(stock)
+
+
 def candidate_selection_fields(item: dict[str, object], refs: list[str]) -> dict[str, str]:
     item = {**item}
     for key in ("model", "package", "param", "param_detail"):
@@ -766,7 +776,7 @@ def row_schematic_sync_fields(row: dict[str, object]) -> dict[str, str]:
     if c_code and not row.get("selection_codes_mixed"):
         fields["lcsc_c_code"] = c_code
         fields["lcsc_url"] = lcsc_code_url(c_code)
-    description = saved_candidate_description(row) or stock_param_text(row.get("stock"))
+    description = saved_candidate_description(row) or selected_stock_description(c_code, row.get("stock"))
     if description and not row.get("selection_codes_mixed"):
         fields["description"] = description
     if not row.get("selection_mixed"):
@@ -2085,20 +2095,39 @@ class PartSelectionApp:
                     if result is not None and not restored.get('ok'):
                         result['warning'] = 'PCB 已更新；原理图重新打开失败，请从工程管理器打开：' + str(restored.get('message',''))
 
+    @staticmethod
+    def _design_sync_row(source, ref):
+        actual, override = source['fields'][ref], source['records'].get(ref, {})
+        part = PartInfo(ref=ref, accepted_c_code=actual.get('lcsc_c_code', ''),
+            **{key:value for key,value in actual.items() if key in PartInfo.__dataclass_fields__})
+        return {**effective_part_fields(part, override),
+            'effective_c_code':normalize_lcsc_c_code(selection_code(part, override)),
+            'override':override, 'alternate_parts':part_alternate_parts(part, override),
+            'procurement_choice':part_procurement_choice(part, override)}
+
+    def design_sync_parameter_snapshot(self, source):
+        cache = load_stock_cache(self.stock_cache_path)
+        result = {}
+        for ref in source['refs']:
+            row = self._design_sync_row(source, ref)
+            code = row_effective_c_code(row)
+            result[ref] = saved_candidate_description(row) or selected_stock_description(code, cache.get(code))
+        return result
+
     def design_sync_fields(self, source, selected_bom):
         """Build desired fields without normalizing records or writing during preview."""
         if not self.is_schematic_source(selected_bom):
             raise ValueError('设计同步请使用当前原理图数据；导入 BOM 请先保存到工作台')
+        parameters = source.get('parameters')
+        if parameters is None:
+            parameters = self.design_sync_parameter_snapshot(source)
         result = {}
         for ref in source['refs']:
             actual, override = source['fields'][ref], source['records'].get(ref, {})
-            part = PartInfo(ref=ref, accepted_c_code=actual.get('lcsc_c_code', ''),
-                **{key:value for key,value in actual.items() if key in PartInfo.__dataclass_fields__})
-            code = selection_code(part, override)
-            row = {**effective_part_fields(part, override), 'effective_c_code':code,
-                'override':override, 'stock':{}, 'alternate_parts':part_alternate_parts(part, override),
-                'procurement_choice':part_procurement_choice(part, override)}
+            row = self._design_sync_row(source, ref)
             desired = row_schematic_sync_fields(row)
+            if parameters.get(ref):
+                desired['description'] = parameters[ref]
             fields = override.get('field_overrides') or {}
             for name in EDITABLE_FIELDS:
                 if name not in actual and name not in fields:
