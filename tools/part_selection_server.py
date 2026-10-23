@@ -3856,6 +3856,8 @@ def render_index(app: PartSelectionApp) -> str:
     tool_desktop_js = (Path(__file__).resolve().parent / "web" / "tool-desktop.js").read_text(encoding="utf-8")
     design_sync_js = (Path(__file__).resolve().parent / 'web' / 'design-sync.js').read_text(encoding='utf-8')
     design_sync_css = (Path(__file__).resolve().parent / 'web' / 'design-sync.css').read_text(encoding='utf-8')
+    tool_pages_js = (Path(__file__).resolve().parent / 'web' / 'tool-pages.js').read_text(encoding='utf-8')
+    tool_pages_css = (Path(__file__).resolve().parent / 'web' / 'tool-pages.css').read_text(encoding='utf-8')
     inventory_js = (Path(__file__).resolve().parent / "web" / "local-inventory.js").read_text(encoding="utf-8")
     pcb_js = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.js').read_text(encoding='utf-8')
     pcb_css = (Path(__file__).resolve().parent / 'web' / 'pcb-updates.css').read_text(encoding='utf-8')
@@ -4253,7 +4255,7 @@ tr.hidden-row {{ display: none; }}
   </div>
   <div class="app-menu">
     <button type="button" data-menu-trigger aria-expanded="false">设置</button>
-    <div class="menu-popup"><button type="button" id="openPathConfig">工程设置…</button><button type="button" id="openPluginUpdates">插件更新…</button></div>
+    <div class="menu-popup"><button type="button" id="openPathConfig">工程设置…</button><button type="button" id="openFieldMapping">字段映射…</button><button type="button" id="openPluginUpdates">插件更新…</button></div>
   </div>
   <span class="menubar-spacer" aria-hidden="true"></span>
   <button type="button" class="project-path-link" data-action="open-project-path" title="点击打开工程目录">{html.escape(str(app.project_root))}</button>
@@ -8693,6 +8695,8 @@ window.addEventListener("workbench-tool-changed", event => {{
 <script>{path_settings_js}</script>
 <script>{desktop_lifecycle_js}</script>
 <script>{plugin_updates_js}</script>
+<style>{tool_pages_css}</style>
+<script>{tool_pages_js}</script>
 </body>
 </html>"""
 

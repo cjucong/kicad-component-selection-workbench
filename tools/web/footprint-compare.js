@@ -605,6 +605,7 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
         continue;
       }
       await loadRows(anchor);
+      if (typeof toolOnly !== 'undefined' && toolOnly) await window.notifyNativeToolChanged();
       setState('封装修改已保存，请同步原理图；C 编码、Value、Comment 和物料参数未改动', 'saved');
       break;
     }

@@ -27,6 +27,8 @@ if (typeof module !== 'undefined') module.exports = {localInventoryComparison, l
 if (typeof document !== 'undefined') (() => {
   if (candidateOnly) return;
   let records = {}, pendingRecords = {}, readIssue = '', initialized = false, busy = false, previewId = '', sequence = 0, pendingMatches = {};
+  let dirty = false;
+  window.hasUnsavedInventory = () => dirty;
   const count = document.getElementById('localInventorySetCount');
   const savedCount = loadUiSettings().localInventorySetCount;
   count.value = Number.isInteger(savedCount) && savedCount >= 1 && savedCount <= 1000000 ? savedCount : 3;
@@ -76,6 +78,7 @@ if (typeof document !== 'undefined') (() => {
     initialized = true;
     window.refreshLocalInventory();
   }
+  window.reloadLocalInventory = load;
 
   count.addEventListener('input', () => {
     const next = count.value === '' ? NaN : Number(count.value);
@@ -159,14 +162,15 @@ if (typeof document !== 'undefined') (() => {
     closeToolbarMenus();
     if (!dialog.open) dialog.showModal();
   });
-  dialog.querySelectorAll('[data-inventory-close]').forEach(button => button.addEventListener('click', () => { if (!busy) dialog.close(); }));
-  dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
-  source.addEventListener('input', () => { invalidate(); pendingMatches = {}; dialog.querySelector('#inventoryUnmatched').hidden = true; sheet.innerHTML = '<option value="">自动识别</option>'; status.textContent = '等待预览'; });
+  dialog.querySelectorAll('[data-inventory-close]').forEach(button => button.addEventListener('click', () => { if (!busy) {dirty=false;dialog.close();} }));
+  dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); else dirty=false; });
+  source.addEventListener('input', () => { dirty = true; invalidate(); pendingMatches = {}; dialog.querySelector('#inventoryUnmatched').hidden = true; sheet.innerHTML = '<option value="">自动识别</option>'; status.textContent = '等待预览'; });
   source.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); preview(); } });
-  sheet.addEventListener('change', () => { pendingMatches = {}; preview(); });
+  sheet.addEventListener('change', () => { dirty=true; pendingMatches = {}; preview(); });
   dialog.querySelector('#inventoryUnmatched').addEventListener('input', event => {
     const input = event.target.closest('[data-inventory-match]');
     if (!input) return;
+    dirty = true;
     previewId = '';
     confirm.disabled = true;
     const value = input.value.trim().toUpperCase();
@@ -184,6 +188,7 @@ if (typeof document !== 'undefined') (() => {
       invalidate();
       pendingMatches = {};
       source.value = result.path;
+      dirty = true;
       sheet.innerHTML = '<option value="">自动识别</option>';
     } catch (error) { status.textContent = error.message; }
     finally { setBusy(false); }
@@ -196,6 +201,8 @@ if (typeof document !== 'undefined') (() => {
       const result = await request('/api/local_inventory/import', {confirmed: true, preview_id: previewId});
       invalidate();
       await load();
+      dirty = false;
+      if (toolOnly) await window.notifyNativeToolChanged();
       const s = result.summary;
       const message = `库存已导入：新增 ${s.added}，更新 ${s.updated}，重复 ${s.repeated}，待核实 ${s.unresolved}，待匹配 ${s.unmatched}；未出现的编码已保留`;
       status.textContent = message;

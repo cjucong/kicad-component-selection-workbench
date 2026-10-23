@@ -4,6 +4,7 @@
   const view = query.get('view'), kind = view === 'candidate' ? 'candidate' : query.get('tool');
   const isChild = view === 'tool' || view === 'candidate';
   const handlers = new Map();
+  const proposals = new Map();
   let current = null, mounted = null, exiting = false;
   async function action(name, value = null) {
     const bridge = window.pywebview?.api?.tool_window;
@@ -19,6 +20,45 @@
   window.closeNativeTool = () => action('close');
   window.minimizeNativeTool = () => action('minimize');
   window.restoreNativeTool = tool => action('restore', {kind:tool});
+  window.proposeNativeToolAction = (operation, value = null) => new Promise((resolve,reject) => {
+    const request_id = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      proposals.delete(request_id); reject(new Error('宿主尚未响应，请核对主窗口中的操作状态'));
+    },120000);
+    proposals.set(request_id,{resolve,reject,timer});
+    action('propose',{action:operation,value,request_id}).catch(error => {
+      clearTimeout(timer); proposals.delete(request_id); reject(error);
+    });
+  });
+  window.receiveNativeToolResult = value => {
+    const pending = proposals.get(value?.request_id);
+    if (!pending) return;
+    proposals.delete(value.request_id); clearTimeout(pending.timer);
+    if (value.result?.ok === false) pending.reject(new Error(value.result.error || '宿主未能完成操作'));
+    else pending.resolve(value.result);
+  };
+  window.nativeToolProposal = async message => {
+    const proposal = message?.proposal;
+    if (isChild || !proposal) return;
+    let result;
+    try {
+      if (message.kind === 'plugin-update' && /^update-(status|check|preferences|prepare)$/.test(proposal.action)) {
+        window.pluginUpdateBusy = true;
+        try { result = await window.pywebview.api.plugin_update(proposal.action.slice(7),proposal.value); }
+        finally { window.pluginUpdateBusy = false; }
+      } else if (message.kind === 'list-view' && proposal.action === 'autosize') {
+        autoSizeColumns(false); result = {ok:true};
+      } else if ((['settings','field-mapping'].includes(message.kind) && proposal.action === 'restart') ||
+                 (message.kind === 'plugin-update' && proposal.action === 'restart-update')) {
+        result = {ok:true};
+        await action('proposal-result',{kind:message.kind,request_id:proposal.request_id,result});
+        setTimeout(()=>window.requestDesktopExit(true,proposal.action==='restart-update'),0);
+        return;
+      } else throw new Error('不支持的工具请求');
+    } catch (error) {result={ok:false,error:error.message || String(error)};}
+    try { await action('proposal-result',{kind:message.kind,request_id:proposal.request_id,result}); }
+    catch (error) { window.dispatchEvent(new CustomEvent('workbench-tool-error',{detail:error.message})); }
+  };
   window.nativeToolVisibility = value => {
     if (value?.kind === 'candidate') window.nativeCandidateVisibility?.(value);
     window.dispatchEvent(new CustomEvent('workbench-tool-visibility', {detail:value}));
@@ -44,6 +84,7 @@
       });
     }
     mounted = current.request_id;
+    window.nativeToolMounted = true;
   }
   window.registerWorkbenchTool = (name, value) => {
     if (!value || typeof value.mount !== 'function') throw new Error('工具页缺少挂载入口');
@@ -91,6 +132,11 @@
     document.body.inert = false;
     if (kind === 'candidate') window.cancelNativeCandidateExit?.();
     else handler()?.cancelExit?.();
+  };
+  window.nativeToolDidClose = () => {
+    window.nativeToolMounted = false;
+    handler()?.unmount?.();
+    current = null; mounted = null;
   };
   if (isChild) {
     const ready = () => action('ready').catch(error => {

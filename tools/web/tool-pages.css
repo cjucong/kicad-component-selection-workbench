@@ -1,0 +1,13 @@
+.native-tool-shell { padding:14px 18px; color:#26323a; font:13px "Microsoft YaHei","Segoe UI",sans-serif; }
+.native-tool-shell > header { display:flex; align-items:center; justify-content:space-between; }
+.native-tool-shell h2 { font-size:17px; margin:0; }
+.native-tool-shell header button { width:30px; height:30px; padding:4px; }
+.native-tool-shell [data-error="true"] { color:#a23d27; }
+.native-tool-shell table { width:100%; border-collapse:collapse; }
+.native-tool-shell td { padding:8px; overflow-wrap:anywhere; border-bottom:1px solid #dce2e4; }
+html.native-utility-page dialog { width:calc(100vw - 2px); max-width:none; height:calc(100vh - 2px); max-height:none; margin:0; box-sizing:border-box; border:0; border-radius:0; }
+html.native-utility-page dialog th { position:static; }
+html.native-utility-page #columnPanel { display:block; position:static !important; width:100%; max-width:none !important; max-height:none !important; padding:0; border:0; box-shadow:none; }
+html.native-utility-page .fp-overlay { padding:0; background:#fff; }
+html.native-utility-page .fp-dialog { width:100vw; max-width:none; height:100vh; max-height:none; border:0; border-radius:0; }
+html.tool-field-mapping .path-settings-body > :not(#pathFieldMapping):not(#pathSettingsStatus) { display:none; }

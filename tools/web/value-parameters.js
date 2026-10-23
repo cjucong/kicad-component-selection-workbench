@@ -150,6 +150,8 @@ if (typeof document !== 'undefined') (() => {
   const apply = dialog.querySelector('[data-value-apply]');
   const errorBox = dialog.querySelector('[data-value-error]');
   const chosen = () => [...dialog.querySelectorAll('[data-value-key]:checked')].map(input => input.dataset.valueKey);
+  window.hasUnsavedValueParameters = () => Boolean(dialog.dataset.saving ||
+    (context && dialog.open && chosen().join(',') !== context.initialChosen));
   const findRow = refs => [...rowsEl.querySelectorAll('tr[data-refs]')].find(tr => tr.dataset.refs === refs);
   const identifyKind = row => {
     const kinds = new Set((row.refs || row.ref || '').split(/[,\s]+/).map(ref => /^([RCL])\d+$/i.exec(ref)?.[1]?.toUpperCase()).filter(Boolean));
@@ -183,6 +185,7 @@ if (typeof document !== 'undefined') (() => {
     dialog.querySelector('[data-value-source]').textContent = `${refs} · ${context.code}`;
     dialog.querySelector('[data-value-before]').textContent = original || '（空）';
     errorBox.hidden = true;
+    context.initialChosen = chosen().join(',');
     preview(); dialog.showModal();
   };
   const close = () => { if (!dialog.dataset.saving) dialog.close(); };
@@ -204,6 +207,7 @@ if (typeof document !== 'undefined') (() => {
       input.value = ValueParameters.compose(context.model, chosen());
       queueRowInput(input);
       await flushRowEdits();
+      if (toolOnly) await window.notifyNativeToolChanged();
       dialog.close();
     } catch (error) {
       errorBox.textContent = error.message; errorBox.hidden = false;

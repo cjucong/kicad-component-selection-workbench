@@ -20,6 +20,10 @@ TOOL_FIELDS = {
            else ROW_FIELDS if kind in ('value-parameters','undo') else set())
     for kind in TOOL_TITLES
 }
+TOOL_PROPOSALS = {
+    'plugin-update': {'update-status','update-check','update-preferences','update-prepare','restart-update'},
+    'settings': {'restart'}, 'field-mapping': {'restart'}, 'list-view': {'autosize'},
+}
 
 
 class ToolBridge:
@@ -87,7 +91,7 @@ class ToolWindows:
     def _create(self, kind, request):
         query = {'view':'candidate'} if kind == 'candidate' else {'view':'tool','tool':kind}
         entry = {'url':self.lifecycle.url + '?' + urlencode(query), 'ready':False,
-                 'request':request, 'minimized':False}
+                 'request':request, 'minimized':False, 'proposals':{}}
         window = self.create_window(TOOL_TITLES[kind], entry['url'],
             width=1180 if kind in ('candidate','footprint','design-sync') else 900,
             height=720, min_size=(540,400), text_select=True, hidden=False,
@@ -123,6 +127,18 @@ class ToolWindows:
         try:
             self._verify_host()
             with self.lock:
+                if action == 'proposal-result':
+                    if not isinstance(value,dict) or set(value) != {'kind','request_id','result'}:
+                        raise ValueError('工具响应无效')
+                    entry = self._entry(value['kind'])
+                    expected = entry['proposals'].get(value['request_id'])
+                    if not expected or not entry['request'] or expected != entry['request']['request_id']:
+                        raise ValueError('工具请求已过期')
+                    if not isinstance(value['result'],dict) or len(json.dumps(value['result'])) > 200000:
+                        raise ValueError('工具响应过长或类型无效')
+                    entry['window'].evaluate_js('window.receiveNativeToolResult?.(' + json.dumps(value,ensure_ascii=True) + '); true')
+                    entry['proposals'].pop(value['request_id'], None)
+                    return {'ok':True}
                 if action == 'open':
                     request = self.validate_request(value)
                     kind = request['kind']
@@ -136,6 +152,7 @@ class ToolWindows:
                             if entry['ready'] and entry['window'].evaluate_js('window.nativeToolCanReplace?.() === true') is not True:
                                 raise ValueError('工具窗口有未保存编辑或正在处理，请先完成当前操作')
                             entry['request'] = request
+                            entry['proposals'].clear()
                             try:
                                 self._deliver(kind)
                             except Exception:
@@ -167,6 +184,22 @@ class ToolWindows:
         try:
             with self.lock:
                 entry = self._entry(kind)
+                if action == 'propose':
+                    if (not entry['request'] or not isinstance(value,dict)
+                            or set(value) - {'action','request_id','value'}
+                            or value.get('action') not in TOOL_PROPOSALS.get(kind,set())
+                            or not isinstance(value.get('request_id'),str) or not 1 <= len(value['request_id']) <= 128):
+                        raise ValueError('工具操作请求无效')
+                    operation, argument = value['action'], value.get('value')
+                    if (operation == 'update-preferences' and argument not in ('off','check','auto')
+                            or operation == 'update-check' and argument is not None and type(argument) is not bool
+                            or operation not in ('update-preferences','update-check') and argument is not None):
+                        raise ValueError('工具操作参数无效')
+                    if value['request_id'] in entry['proposals'] or len(entry['proposals']) >= 4:
+                        raise ValueError('工具已有未完成操作')
+                    entry['proposals'][value['request_id']] = entry['request']['request_id']
+                    self._main_message('nativeToolProposal', {**self._envelope(entry),'proposal':value})
+                    return {'ok':True}
                 if value is not None:
                     raise ValueError('子窗口操作不接受额外参数')
                 if action == 'ready':
@@ -180,10 +213,12 @@ class ToolWindows:
                     if action == 'close' and entry['ready']:
                         if entry['window'].evaluate_js('window.prepareNativeToolExit?.() === true') is not True:
                             raise ValueError('工具窗口有未保存编辑或正在处理，窗口已保留')
+                        entry['window'].evaluate_js('window.nativeToolDidClose?.(); true')
                     entry['window'].hide()
                     self._main_message('nativeToolVisibility', {'kind':kind,'open':action!='close','minimized':True})
                     if action == 'close':
                         entry['request'] = None
+                        entry['proposals'].clear()
                         if entry['ready']:
                             entry['window'].evaluate_js('window.cancelNativeToolExit?.(); true')
                 else:

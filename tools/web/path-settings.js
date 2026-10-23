@@ -212,11 +212,14 @@
     if (!saved && changed() && !window.confirm('放弃尚未保存的工程设置？')) return;
     dialog.close();
     clearTimeout(mappingTimer); mappingSequence++;
-    if (saved) window.location.reload();
+    if (saved && !toolOnly) window.location.reload();
   }
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
   dialog.querySelectorAll('[data-close-paths]').forEach(button => button.addEventListener('click', close));
-  dialog.querySelector('#pathRestart').addEventListener('click', () => window.requestDesktopExit(true));
+  dialog.querySelector('#pathRestart').addEventListener('click', () => {
+    if (toolOnly) void window.proposeNativeToolAction('restart').catch(error=>notify(error.message,true));
+    else window.requestDesktopExit(true);
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (saving || saved) return;
@@ -228,6 +231,7 @@
     const moving = ['bom_dir', ...Object.keys(dataFiles)].some(key => normalized(inputs.get(key).value) !== normalized(initialValues[key]));
     if (moving && !window.confirm('将复制已有选料记录、缓存、位号清单、导出表及同步日志到新位置；原文件保留，目标有不同数据时停止。继续保存？')) return;
     saving = true;
+    window.pathSettingsBusy = true;
     const controls = [...form.querySelectorAll('input,select,button')];
     controls.forEach(control => { control.disabled = true; });
     try {
@@ -235,6 +239,7 @@
       const result = await post('/api/path_settings', {revision: snapshot.revision, values, field_mapping: draftMapping(), copy_existing: moving});
       snapshot = result.settings;
       saved = true;
+      if (toolOnly) void window.notifyNativeToolChanged().catch(error=>notify('设置已保存；主表刷新失败：'+error.message,true));
       notify('已保存并应用；复制 ' + result.copied_files + ' 个文件。备份：' + result.backup_path + (result.restart_required ? '。运行目录需重启工作台后生效。' : ''));
       try { sessionStorage.setItem('partSelectionSourceOnce', JSON.stringify({project: snapshot.project_root, source: imported.checked ? snapshot.import_source : '__schematic__'})); }
       catch (_) { notify('工程设置已保存，但无法记住本次导入；刷新后请在数据源中手动选择 BOM。', true); }
@@ -243,11 +248,12 @@
       restart.hidden = !result.restart_required;
       restart.disabled = false;
     } catch (error) { notify(error.message, true); controls.forEach(control => { control.disabled = false; }); }
-    finally { saving = false; }
+    finally { saving = false; window.pathSettingsBusy = false; }
   });
   window.openPathSettings = async () => {
     if (opening || dialog.open) return;
     opening = true;
+    window.pathSettingsBusy = true;
     try {
       snapshot = await api('/api/path_settings');
       saved = false;
@@ -268,6 +274,6 @@
       for (const [id, key] of [['pathProjectRoot', 'project_root'], ['pathConfigFile', 'config_path'], ['pathRuntimeEffective', 'runtime_directory'], ['pathDesktopEffective', 'desktop_home_effective'], ['pathPluginDirectory', 'plugin_directory']]) dialog.querySelector('#' + id).textContent = snapshot[key];
       dialog.querySelector('#pathConverterStatus').textContent = snapshot.converter_path ? '已检测到：' + snapshot.converter_path : '未检测到转换器；可手动选择 easykiconverter.exe。';
       updateDirectory(); updateSource(); notify(''); dialog.showModal();
-    } finally { opening = false; }
+    } finally { opening = false; window.pathSettingsBusy = false; }
   };
 })();

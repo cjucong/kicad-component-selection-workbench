@@ -25,6 +25,7 @@
     status.style.color = failed ? '#b02d33' : '#236b53';
   };
   async function call(action, value) {
+    if (typeof toolOnly !== 'undefined' && toolOnly) return window.proposeNativeToolAction('update-'+action,value ?? null);
     const api = window.pywebview?.api?.plugin_update;
     if (!api) throw new Error('请从 KiCad 插件入口重新打开新版独立工作台');
     const result = await api(action, value ?? null);
@@ -97,7 +98,8 @@
     if (window.hasUnsavedPathSettings?.()) { notify('请先保存或取消工程设置，再更新并重启。', true); return; }
     if (!window.confirm('更新后将保存行编辑并重启工作台。工程文件、选料记录与转换器保持不变。继续？')) return;
     dialog.close();
-    await window.requestDesktopExit(true, true);
+    if (typeof toolOnly !== 'undefined' && toolOnly) await window.proposeNativeToolAction('restart-update');
+    else await window.requestDesktopExit(true, true);
   });
   async function startup() {
     if (started || !window.pywebview?.api?.plugin_update) return;
