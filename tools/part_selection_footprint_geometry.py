@@ -19,6 +19,9 @@ from kicad_sexpr import parse_sexpr
 
 
 _TOLERANCE = 0.025
+# Group equivalence only: absorb historical 10 nm coordinates plus native
+# integer transform rounding, without accepting micrometer-scale layout edits.
+_REFERENCE_CENTER_TOLERANCE = 0.00002
 _ROOT = Path(__file__).resolve().parents[1]
 _SUPPORTED = {
     'version', 'generator', 'generator_version', 'layer', 'descr', 'tags', 'attr',
@@ -68,9 +71,12 @@ def reference_layout_difference(source, reference):
         if len(pads) < 2:
             return '缺少至少两个唯一编号焊盘，无法核对方向'
         for number in sorted(pads):
-            if math.dist(pads[number], baseline[number]) > 1e-6 + 1e-12:
-                return ('焊盘 %s 局部中心不同：(%g, %g) / (%g, %g) mm' %
-                        (number, *pads[number], *baseline[number]))
+            distance = math.dist(pads[number], baseline[number])
+            if distance > _REFERENCE_CENTER_TOLERANCE + 1e-12:
+                return ('焊盘 %s 局部中心不同：(%.9f, %.9f) / (%.9f, %.9f) mm；'
+                        '偏差 %.9f mm，允许 %.9f mm（不比较丝印）' %
+                        (number, *pads[number], *baseline[number], distance,
+                         _REFERENCE_CENTER_TOLERANCE))
         return ''
     except (ValueError, TypeError, OverflowError) as exc:
         return '焊盘坐标不可识别：' + str(exc)

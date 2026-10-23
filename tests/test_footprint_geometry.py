@@ -69,6 +69,45 @@ def test_shared_reference_ignores_text_shape_and_size_not_numbering(geometry):
     assert '编号不同' in geometry.reference_layout_difference(footprint([('9',1,2)]), footprint())
 
 
+@pytest.mark.parametrize('offset', [
+    (0, .000002), (.000001, .000001), (.000003, .000003),
+    (0, .00001), (.00001, .00001), (.000012, .000016),
+])
+def test_shared_reference_accepts_native_nanometer_rounding(geometry, offset):
+    dx, dy = offset
+    points = [(n, x+dx, y+dy) for n,x,y in POINTS]
+    assert geometry.reference_layout_difference(footprint(points), footprint()) == ''
+
+
+def test_shared_reference_accepts_single_pad_historical_decimal_difference(geometry):
+    baseline = [('1', 0, 0), ('2', 0, -.65001), ('3', 0, -1.3)]
+    other = [('1', 0, 0), ('2', 0, -.65), ('3', 0, -1.3)]
+    assert geometry.reference_layout_difference(footprint(other), footprint(baseline)) == ''
+    assert geometry.reference_layout_difference(footprint(baseline), footprint(other)) == ''
+
+
+@pytest.mark.parametrize('offset', [.000021, .001, .05])
+def test_shared_reference_still_rejects_real_pad_displacements(geometry, offset):
+    points = POINTS[:-1] + [('3', 1+offset, 2)]
+    message = geometry.reference_layout_difference(footprint(points), footprint())
+    assert '局部中心不同' in message
+    assert '偏差' in message and '0.000020000 mm' in message and '不比较丝印' in message
+
+
+def test_shared_reference_uses_absolute_euclidean_tolerance(geometry):
+    points = [('1', 1000, 1000), ('2', 1002, 1000)]
+    moved = [('1', 1000.000015, 1000.000015), points[1]]
+    assert '局部中心不同' in geometry.reference_layout_difference(footprint(moved), footprint(points))
+
+
+@pytest.mark.parametrize('points', [
+    [('1', 0, 0)], [('1', 0, 0), ('1', 1, 0)],
+    [('1', float('nan'), 0), ('2', 1, 0)],
+])
+def test_shared_reference_keeps_ambiguous_geometry_protection(geometry, points):
+    assert geometry.reference_layout_difference(footprint(points), footprint(points))
+
+
 @pytest.mark.parametrize('angle', [90, -90, 180, 37.5])
 def test_numbered_points_determine_kicad_rotation_and_translation(geometry, angle):
     radians = math.radians(angle)

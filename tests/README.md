@@ -2,6 +2,8 @@
 
 本目录保留可复用测试和稳定夹具，不含生产 CAD、BOM、人工选料记录或 Git 数据。电路连通性、FPGA、工程目录检查和 U46 审核测试由原工程维护。
 
+分组封装误差回归：`test_footprint_geometry.py` 覆盖单焊盘 0.65000/0.65001 mm、20 纳米绝对欧氏距离边界及编号/非有限值拒绝；`test_footprint_choices.py` 覆盖转换、独立改名和转换页改名，两种基准选择及超限时不发布。`test_footprint_alignment_integration.py` 使用真实 pcbnew 覆盖正背面、非整数放置、旋转和 10 纳米历史差异。`run_native_grouped_footprint_probe.py --report-dir <工程外绝对目录>` 使用桌面 Python/kipy、真实临时 KiCad 工程验证多位号改名/转换、同步原理图、PCB 更新及撤销；仅上游转换输入为合成夹具，不代表真实商城联网转换。复用原生标准库探测的正背面、网络、走线、保存重开和自动清理验证。
+
 封装窗口生命周期回归：`test_tool_windows.py` 覆盖跨行独立窗口、同一行复用、关闭重开及过期桥接；`run_tool_windows_smoke.py` 覆盖加载失败可重试、加载中取消及迟到结果不恢复预览。`run_native_tool_windows_probe.py --report-dir <工程外目录>` 使用真实 WebView2 和合成库，实际应用库封装、改名、前进后退、Esc、多行窗口及主窗口联动关闭后台；不调用生产 CAD，不代表真实商城联网转换或 KiCad PCB 更新测试。
 
 撤回/关闭回归：`test_workbench_undo.py` 验证跨同步旧快照回退与新编辑基线，`test_row_footprint.py` 验证真实行改名后只撤回封装记录、不改 C 编码或 CAD；`test_tool_desktop_ui.py` 覆盖十种子窗口 Esc、未保存保护、输入法及内层对话框，`test_footprint_overlay_ui.py` 的 escape 场景验证只关闭最上层及对比返回预检。`run_tool_windows_smoke.py` 还验证聚焦 C 编码时刷新改名不会误发保存请求。

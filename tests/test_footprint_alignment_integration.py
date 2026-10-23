@@ -204,20 +204,34 @@ assert new.GetOrientationDegrees()==old.GetOrientationDegrees()
     assert board.read_bytes() == unchanged
 
 
-def test_grouped_rotated_pcb_instances_with_moved_polarity_text_can_share_conversion(native_preview):
+@pytest.mark.parametrize('back, rounding_mm', [(False, 0), (True, 0), (True, .00001)])
+def test_grouped_rotated_pcb_instances_with_moved_polarity_text_can_share_conversion(
+        native_preview, back, rounding_mm):
     root, service, _, _, original, _ = native_preview
     board = root/'fixture.kicad_pcb'
     script = '''import pcbnew,sys
 b=pcbnew.BOARD()
 source=open(sys.argv[1],encoding='utf-8').read()
-for i,angle in enumerate((0,180,-90)):
+for i,angle in enumerate((0,180,-90,37.5)):
     text=source[:-1]+'(fp_text user "+" (at %s 3 %s) (layer "F.SilkS") (effects (font (size 1 1) (thickness .15)))))' % (i,angle)
     f=pcbnew.PCB_IO_KICAD_SEXPR().Parse(text).Cast()
     b.Add(f)
     f.SetReference('C'+str(i+1))
     f.SetFPID(pcbnew.LIB_ID('Local','Original'))
+    if i==1:
+        pad=next(p for p in f.Pads() if p.GetNumber()=='2')
+        pad.Move(pcbnew.VECTOR2I(0,pcbnew.FromMM(float(sys.argv[4]))))
+    if sys.argv[3]=='back':
+        f.Flip(f.GetPosition(),False)
     f.SetOrientationDegrees(angle)
-    f.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(30+i*20),pcbnew.FromMM(45+i*10)))
+    f.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(135.8646+i*20),pcbnew.FromMM(80.149445+i*10)))
+    for p in f.Pads():
+        net=pcbnew.NETINFO_ITEM(b,'/'+f.GetReference()+'_'+p.GetNumber())
+        b.Add(net);p.SetNet(net)
+        track=pcbnew.PCB_TRACK(b)
+        track.SetStart(p.GetPosition());track.SetEnd(p.GetPosition()+pcbnew.VECTOR2I(pcbnew.FromMM(1),0))
+        track.SetWidth(pcbnew.FromMM(.15));track.SetLayer(pcbnew.B_Cu if f.IsFlipped() else pcbnew.F_Cu)
+        track.SetNet(net);b.Add(track)
 pcbnew.SaveBoard(sys.argv[2],b)
 '''
     def native(code, *args):
@@ -225,7 +239,7 @@ pcbnew.SaveBoard(sys.argv[2],b)
             capture_output=True, timeout=30, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         assert completed.returncode == 0, completed.stderr.decode(errors='replace')
 
-    native(script, original, board)
+    native(script, original, board, 'back' if back else 'front', rounding_mm)
     unchanged = board.read_bytes()
     converted_text = module('Converted', [('1',-2,-1),('2',2,-1),('3',1,2)],.8)
     def staged(code, progress=None):
@@ -237,7 +251,7 @@ pcbnew.SaveBoard(sys.argv[2],b)
             f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))')
         return {'footprint':f'LCSC_{code}:Converted','symbol':f'LCSC_{code}:Part','c_code':code}
     with patch('part_selection_footprints.LibraryImporter.convert', side_effect=staged):
-        preview=service.prepare('C456',['Local:Original'],refs=['C1','C2','C3'])
+        preview=service.prepare('C456',['Local:Original'],refs=['C1','C2','C3','C4'])
     detail=service.comparison(preview['preview_id'],preview['default_reference_id'])
     assert detail['alignment']['ok'], detail
     result=service.commit({'preview_id':preview['preview_id'],'source':'converted',
@@ -246,25 +260,36 @@ pcbnew.SaveBoard(sys.argv[2],b)
     published=root/result['target_path']/'Shared.kicad_mod'
     native('''import pcbnew,sys
 b=pcbnew.LoadBoard(sys.argv[1])
+tracks=[(t.GetStart(),t.GetEnd(),t.GetNetname()) for t in b.GetTracks()]
 for old in list(b.GetFootprints()):
     new=pcbnew.PCB_IO_KICAD_SEXPR().Parse(open(sys.argv[2],encoding='utf-8').read()).Cast()
     b.Add(new)
+    if old.IsFlipped():
+        new.Flip(new.GetPosition(),False)
     new.SetOrientationDegrees(old.GetOrientationDegrees())
     new.SetPosition(old.GetPosition())
-    points={p.GetNumber():p.GetPosition() for p in old.Pads()}
+    pads={p.GetNumber():p for p in old.Pads()}
     for p in new.Pads():
-        delta=p.GetPosition()-points[p.GetNumber()]
-        assert abs(delta.x)<=3 and abs(delta.y)<=3, (old.GetReference(),p.GetNumber(),delta)
-''', board, published)
+        original=pads[p.GetNumber()]
+        p.SetNet(original.GetNet())
+        delta=p.GetPosition()-original.GetPosition()
+        assert abs(delta.x)<=int(sys.argv[3]) and abs(delta.y)<=int(sys.argv[3]), (old.GetReference(),p.GetNumber(),delta)
+        assert p.GetNetname()==original.GetNetname()
+    assert new.GetPosition()==old.GetPosition()
+    assert new.GetOrientationDegrees()==old.GetOrientationDegrees()
+    assert new.IsFlipped()==old.IsFlipped()
+assert tracks==[(t.GetStart(),t.GetEnd(),t.GetNetname()) for t in b.GetTracks()]
+''', board, published, 15 if rounding_mm else 5)
     assert board.read_bytes() == unchanged
     # Rename uses copper/pad layout as the shared-library compatibility rule.
-    renamed=service.prepare_rename(['Local:Original'],'Renamed',code='C456',refs=['C1','C2','C3'])
+    renamed=service.prepare_rename(['Local:Original'],'Renamed',code='C456',refs=['C1','C2','C3','C4'])
     service.library_detail(renamed['preview_id'],renamed['default_id'])
     renamed_result=service.commit({'preview_id':renamed['preview_id'],'source':'rename',
             'existing_id':renamed['default_id'],'target_mode':'existing','target_library':'Local',
             'name':'Renamed','acknowledged':True})
     assert renamed_result['copper_matched']
-    assert set(renamed_result['visual_differences']) == {'PCB:C2','PCB:C3'}
+    assert set(renamed_result['visual_differences']) == {'PCB:C2','PCB:C3','PCB:C4'}
+    assert board.read_bytes() == unchanged
 
 
 def test_explicit_original_library_can_restore_a_previously_shifted_pcb(native_preview):

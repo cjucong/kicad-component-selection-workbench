@@ -570,6 +570,44 @@ class FootprintChoicesTest(unittest.TestCase):
         result = self.service.commit(self.choice(preview, source='rename', name='Renamed'))
         self.assertEqual(result['visual_differences'], ['DSMU:Other'])
 
+    def test_grouped_paths_accept_single_pad_nanometer_history(self):
+        self.old.write_text(module('0603'), encoding='utf-8')
+        other = self.pretty / 'Other.kicad_mod'
+        other.write_text(module('Other').replace('(at 0.75 0)', '(at 0.75001 0)'), encoding='utf-8')
+        for index, mode in enumerate(('converted', 'rename', 'rename-from-conversion')):
+            with self.subTest(mode=mode):
+                ids = ['DSMU:0603', 'DSMU:Other']
+                if mode == 'rename':
+                    preview = self.service.prepare_rename(ids, 'Renamed', code='C123')
+                    self.service.library_detail(preview['preview_id'], 'DSMU:Other')
+                else:
+                    preview = self.service.prepare('C123', ids)
+                    self.service.comparison(preview['preview_id'], 'DSMU:Other')
+                result = self.service.commit(self.choice(preview,
+                    source='converted' if mode=='converted' else 'rename',
+                    existing_id='DSMU:Other', name='Rounded'+str(index)))
+                self.assertEqual(result['footprint'], 'DSMU:Rounded'+str(index))
+                if mode != 'converted':
+                    from part_selection_footprints import rename_content
+                    self.assertEqual(rename_content((self.pretty/('Rounded'+str(index)+'.kicad_mod')).read_text()),
+                                     rename_content(other.read_text()))
+
+    def test_grouped_paths_refuse_real_copper_mismatch_before_publication(self):
+        self.old.write_text(module('0603'), encoding='utf-8')
+        (self.pretty/'Other.kicad_mod').write_text(
+            module('Other').replace('(at 0.75 0)', '(at 0.750021 0)'), encoding='utf-8')
+        preview = self.service.prepare('C123', ['DSMU:0603', 'DSMU:Other'])
+        with self.assertRaisesRegex(ValueError, '局部中心不同'):
+            self.service.comparison(preview['preview_id'], 'DSMU:0603')
+        for source in ('converted', 'rename'):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, '局部中心不同'):
+                self.service.commit(self.choice(preview, source=source, name='Refused'))
+        renamed = self.service.prepare_rename(['DSMU:0603', 'DSMU:Other'], 'Refused', code='C123')
+        self.service.library_detail(renamed['preview_id'], 'DSMU:0603')
+        with self.assertRaisesRegex(ValueError, '局部中心不同'):
+            self.service.commit(self.choice(renamed, source='rename', name='Refused'))
+        self.assertFalse((self.pretty/'Refused.kicad_mod').exists())
+
 
 if __name__ == '__main__':
     unittest.main()
