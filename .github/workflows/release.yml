@@ -17,6 +17,16 @@ jobs:
           node-version: '22'
       - name: Install test dependencies
         run: python -m pip install -r tools/requirements.txt pytest jsonschema
+      - name: Install browser test dependencies
+        shell: pwsh
+        run: |
+          $browserRoot = Join-Path '${{ runner.temp }}' 'workbench-browser-tests'
+          npm install --prefix $browserRoot --no-audit --no-fund playwright@1.62.1
+          if($LASTEXITCODE -ne 0) { throw 'Browser dependency installation failed' }
+          $modules = Join-Path $browserRoot 'node_modules'
+          "NODE_PATH=$modules" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          node (Join-Path $modules 'playwright/cli.js') install chromium
+          if($LASTEXITCODE -ne 0) { throw 'Chromium installation failed' }
       - name: Verify version and run regression tests
         shell: pwsh
         run: |
