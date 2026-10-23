@@ -2089,9 +2089,12 @@ class PartSelectionApp:
                 if "conflict" in library:
                     return {"ok": True, "footprint_conflict": library["conflict"]}
                 try:
+                    evidence = self.footprint_choices.change_evidence(choice, refs,
+                        {ref: str(current.get(ref, {}).get('field_overrides', {}).get('footprint',
+                            actual[ref].get('footprint', ''))) for ref in refs}, library)
                     result = self.save_field_override({"refs": ",".join(refs), "bom": context["bom"],
                         "field_overrides": {"footprint": library["footprint"]}},
-                        baseline=actual, mark_unconfirmed=changes_geometry)
+                        baseline=actual, mark_unconfirmed=changes_geometry, footprint_change=evidence)
                 except Exception:
                     self.footprint_choices.rollback(choice["preview_id"])
                     raise
@@ -2182,6 +2185,9 @@ class PartSelectionApp:
                 library = self.footprint_choices.commit(choice)
                 if 'conflict' in library:
                     return {"ok": True, "footprint_conflict": library['conflict']}
+                library['footprint_changes'] = self.footprint_choices.change_evidence(choice, refs,
+                    {ref: str(current.get(ref, {}).get('field_overrides', {}).get('footprint',
+                        actual[ref].get('footprint', ''))) for ref in refs}, library)
             try:
                 return self._save_candidate(refs, code, item, fields, library, mode, revisions)
             except OSError as exc:
@@ -2229,6 +2235,8 @@ class PartSelectionApp:
                 "field_overrides": ref_fields, "schematic_field_snapshot": snapshot,
                 "procurement_choice": {},
             }
+            if library and ref in library.get('footprint_changes', {}):
+                update['footprint_change'] = library['footprint_changes'][ref]
             filtered = [part for part in alternate_parts if part["c_code"] != code]
             if len(filtered) != len(alternate_parts):
                 update["alternate_parts"] = filtered
@@ -2245,7 +2253,8 @@ class PartSelectionApp:
             result["library"] = library
         return result
 
-    def save_field_override(self, payload: dict[str, object], *, baseline=None, mark_unconfirmed=False) -> dict[str, object]:
+    def save_field_override(self, payload: dict[str, object], *, baseline=None, mark_unconfirmed=False,
+                            footprint_change=None) -> dict[str, object]:
         refs = split_refs(payload.get("refs", "")) or split_refs(payload.get("ref", ""))
         raw_fields = payload.get("field_overrides", {})
         if not refs:
@@ -2289,6 +2298,8 @@ class PartSelectionApp:
                 previous = overrides.get(ref, {})
                 selection = inherited.get(ref, {})
                 ref_update = {**selection, **update, "field_overrides": {**selection.get("field_overrides", {}), **fields}}
+                if footprint_change is not None:
+                    ref_update['footprint_change'] = footprint_change.get(ref, {})
                 if baseline is not None:
                     ref_update["schematic_field_snapshot"] = {
                         **baseline.get(ref, {}), **normalize_schematic_field_snapshot(previous.get("schematic_field_snapshot"))}

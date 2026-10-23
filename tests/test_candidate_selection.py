@@ -28,6 +28,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_footprint_conflict_does_not_save_selection_until_resolved(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare_rename.return_value = {'preview_id':'collision', 'kind':'rename'}
         self.app.footprint_choices = service
         self.app.select_candidate({'refs':'R85,R86', 'candidate':self.item,
@@ -48,6 +49,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_preview_does_not_save_and_confirmation_uses_bound_candidate(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare.return_value = {"ok": True, "preview_id": "preview", "compatible": True}
         self.app.footprint_choices = service
         payload = {"refs": "R85,R86", "candidate": self.item, "footprint_mode": "convert", "phase": "preview"}
@@ -71,6 +73,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_preview_stale_row_rejected_before_library_publish(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare.return_value = {'ok': True, 'preview_id': 'preview'}
         self.app.footprint_choices = service
         self.app.select_candidate({'refs': 'R85', 'candidate': self.item, 'footprint_mode': 'convert', 'phase': 'preview'})
@@ -83,6 +86,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_preview_http_job_and_confirm_protocol(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare.return_value = {'ok': True, 'preview_id': 'p-http', 'compatible': True}
         service.commit.return_value = {'footprint': 'DSMU:0805_C4283613'}
         self.app.footprint_choices = service
@@ -117,6 +121,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_row_change_while_waiting_for_save_lock_does_not_publish_library(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare.return_value = {'ok': True, 'preview_id': 'race'}
         self.app.footprint_choices = service
         self.app.select_candidate({'refs':'R85', 'candidate':self.item, 'footprint_mode':'convert', 'phase':'preview'})
@@ -175,6 +180,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_library_mode_binds_candidate_and_uses_library_service_without_conversion(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare_library.return_value = {'kind':'library', 'preview_id':'lib-pick', 'items':[]}
         service.commit.return_value = {'footprint':'DSMU:0805', 'reused':True}
         self.app.footprint_choices = service
@@ -200,6 +206,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_rename_mode_uses_original_library_without_conversion_and_saves_binding(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare_rename.return_value = {'kind': 'rename', 'preview_id': 'rename-pick', 'items': []}
         service.commit.return_value = {'footprint': 'DSMU:R0805', 'renamed': True}
         self.app.footprint_choices = service
@@ -440,6 +447,7 @@ class CandidateSelectionTest(unittest.TestCase):
         from unittest.mock import Mock
         library = {"footprint": "LCSC_C4283613:Part", "symbol": "LCSC_C4283613:Part"}
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare.return_value = {'preview_id': 'verified'}
         service.commit.return_value = library
         self.app.footprint_choices = service
@@ -468,6 +476,7 @@ class CandidateSelectionTest(unittest.TestCase):
     def test_old_conversion_cannot_replace_newer_selection(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         def prepare(*args, **kwargs):
             self.app.select_candidate({"refs": "R85", "candidate": {**self.item, "c_code": "C456"}})
             return {'preview_id': 'stale'}
@@ -748,6 +757,7 @@ vm.runInContext(FUNCTIONS,ctx);
     def test_conversion_job_api_saves_only_verified_footprint(self):
         from unittest.mock import Mock
         service = Mock()
+        service.change_evidence.return_value = {}
         service.prepare.return_value = {'ok': True, 'preview_id': 'verified-job', 'compatible': True}
         self.app.footprint_choices = service
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.app))

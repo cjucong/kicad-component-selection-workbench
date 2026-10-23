@@ -125,6 +125,34 @@ class FootprintChoices:
         self.conversion_lock = threading.RLock()
         self.conversion_cache = OrderedDict()
 
+    def change_evidence(self, choice, refs, before, result):
+        """Capture only validated server-side preview evidence, never client metadata."""
+        from part_selection_footprint_changes import make_footprint_change
+        state = self.previews[choice['preview_id']]
+        nickname, name = result['footprint'].split(':', 1)
+        target = checked_path(self.root, self.libraries()[nickname] / (item_name(name) + '.kicad_mod'))
+        target_info = {'path': str(target), 'hash': digest(target)}
+        operation = 'rename' if result.get('renamed') else 'replace'
+        entries = state['existing']
+        originals = state.get('baseline_ids', state['original_ids'])
+        evidence = {}
+        for ref in refs:
+            entry = next((e for e in entries if e.get('placement', {}).get('ref') == ref), None)
+            if entry is None:
+                entry = next((e for e in entries if e['id'] == before[ref]), None)
+            if entry is None:
+                entry = next((e for e in entries if e['id'] in originals), None)
+            source = {key: deepcopy(entry[key]) for key in ('geometry_hash', 'hash', 'source', 'placement')
+                      if entry and key in entry}
+            if entry and not state.get('board'):
+                source['path'] = str(entry['path'])
+            if state.get('board'):
+                source['board'] = {k: str(v) for k, v in state['board'].items()}
+            original_id = entry.get('placement', {}).get('footprint', before[ref]) if entry else before[ref]
+            evidence[ref] = make_footprint_change(operation=operation, before=original_id,
+                after=result['footprint'], source=source, target=target_info)
+        return evidence
+
     def libraries(self):
         table = checked_path(self.root, self.root / 'fp-lib-table')
         if not table.exists():

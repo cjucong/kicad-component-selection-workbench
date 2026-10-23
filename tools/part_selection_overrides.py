@@ -180,6 +180,9 @@ def load_overrides(path: Path) -> dict[str, dict[str, Any]]:
             if key == "workbench_undo" and isinstance(item, dict):
                 if isinstance(item.get("record"), dict):
                     cleaned[key] = deepcopy(item)
+            elif key == "footprint_change":
+                if isinstance(item, dict):
+                    cleaned[key] = deepcopy(item)
             elif key == "alternate_parts":
                 cleaned[key] = normalize_alternate_parts(item)
             elif key == "procurement_choice":
@@ -261,8 +264,14 @@ def merge_override_record(current: dict[str, Any], update: dict[str, Any], now: 
         if capture_undo and 'footprint' in update['field_overrides'] and field_overrides.get('footprint') != existing_fields.get('footprint'):
             current['pcb_update_required'] = {'target': field_overrides['footprint'], 'since': now,
                                               'status': 'requires_live_check'}
+            current.pop('footprint_change', None)
         current["field_overrides"] = field_overrides
         current["field_updated_at"] = now
+    if "footprint_change" in update:
+        if isinstance(update['footprint_change'], dict) and update['footprint_change']:
+            current['footprint_change'] = deepcopy(update['footprint_change'])
+        else:
+            current.pop('footprint_change', None)
     if "alternate_parts" in update:
         current["alternate_parts"] = normalize_alternate_parts(update.get("alternate_parts"))
         current["alternate_parts_updated_at"] = now
