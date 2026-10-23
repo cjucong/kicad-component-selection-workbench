@@ -25,15 +25,15 @@
     }
     window.pcbUpdateBusy = true;
     let closed = false, started = false, polling = false, preview = null, job = null;
-    let comparing = false;
+    let comparing = false, sequence = 0;
     const dialog = document.createElement('dialog');
     dialog.className = 'pcb-dialog';
     dialog.setAttribute('aria-label', '更新 PCB（所选器件）');
     dialog.innerHTML = `<header><h2>更新 PCB（所选器件）</h2><button type="button" data-pcb-close title="关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
-      <section class="pcb-update-body"><p class="pcb-update-status" role="status">正在读取当前 PCB 并预检…</p>
+      <section class="pcb-update-body"><label class="pcb-alignment">对齐方式 <select data-pcb-alignment aria-label="对齐方式" disabled><option value="center">中心对齐</option><option value="rigid">焊盘原位</option></select></label><p class="pcb-update-status" role="status">正在读取当前 PCB 并预检…</p>
       <div class="pcb-update-table-wrap" hidden><table class="pcb-update-table"><thead><tr><th>位号</th><th>封装</th><th>X / Y（mm）</th><th>角度</th><th>焊盘核对</th></tr></thead><tbody></tbody></table></div>
       <p class="pcb-update-note" hidden>以当前 PCB 焊盘位置为基准。仅更新所选器件；不自动保存 PCB。已错位的器件不能据此找回历史位置。</p></section>
-      <footer><label hidden><input type="checkbox" data-pcb-ack>已核对焊盘编号、尺寸、钻孔及引脚功能</label><div><button type="button" data-pcb-cancel>取消</button><button type="button" data-pcb-retry hidden>查询结果</button><button type="button" data-pcb-apply disabled>更新 PCB</button></div></footer>`;
+      <footer><label hidden><input type="checkbox" data-pcb-ack><span data-pcb-ack-text>已核对焊盘编号、尺寸、钻孔及引脚功能</span></label><div><button type="button" data-pcb-cancel>取消</button><button type="button" data-pcb-retry hidden>查询结果</button><button type="button" data-pcb-apply disabled>更新 PCB</button></div></footer>`;
     document.body.append(dialog); dialog.showModal();
     const q = selector => dialog.querySelector(selector);
     function status(message, error = false) { q('.pcb-update-status').textContent = message; q('.pcb-update-status').dataset.error = String(error); }
@@ -58,6 +58,7 @@
           if (data.done) {
             started = false;
             q('[data-pcb-close]').disabled = false; q('[data-pcb-cancel]').disabled = false;
+            q('[data-pcb-alignment]').disabled = false;
             q('[data-pcb-cancel]').textContent = '关闭';
             if (!data.ok || !data.result?.ok) {
               status((data.error || 'PCB 更新未成功') + '\n任务：' + job, true);
@@ -79,6 +80,7 @@
     q('[data-pcb-apply]').onclick = async () => {
       if (started || !preview || !q('[data-pcb-ack]').checked) return;
       started = true;
+      q('[data-pcb-alignment]').disabled = true;
       q('[data-pcb-apply]').disabled = true; q('[data-pcb-close]').disabled = true; q('[data-pcb-cancel]').disabled = true;
       try {
         const data = await post('/api/start_pcb_update', {preview_id:preview.preview_id, acknowledged:true});
@@ -90,17 +92,34 @@
         await poll();
       }
     };
-    try {
+    async function preflight() {
+      if (started || comparing || closed) return;
+      const token = ++sequence, alignment = q('[data-pcb-alignment]').value;
+      preview = null; job = null;
+      q('[data-pcb-apply]').disabled = true; q('[data-pcb-ack]').checked = false;
+      q('.pcb-update-table-wrap').hidden = true; q('footer label').hidden = true;
+      q('.pcb-update-note').hidden = true;
+      status('正在读取当前 PCB 并预检…');
+      try {
       await flushRowEdits();
+      if (closed || token !== sequence) return;
+      q('[data-pcb-alignment]').disabled = false;
       const refs = selectedSyncRefs();
       if (!refs.length) throw new Error('请先勾选需要更新 PCB 的器件行');
-      preview = await post('/api/pcb_update_preview', {refs:refs.join(','), bom:loadedRowsBom});
-      if (closed) return;
+      const result = await post('/api/pcb_update_preview', {refs:refs.join(','), bom:loadedRowsBom, alignment});
+      if (closed || token !== sequence) return;
+      preview = result;
       q('tbody').innerHTML = preview.items.map(item => `<tr><td>${escape(item.ref)}<small>${item.back ? '背面' : '正面'}</small></td>
         <td>${escape(item.before)}<small>→ ${escape(item.after)}</small><button type="button" data-pcb-compare="${escape(item.ref)}" title="查看当前 PCB 与目标库封装叠加对比">封装对比</button></td>
         <td>${item.old_position_mm.map(number).join(' / ')}<small>→ ${item.position_mm.map(number).join(' / ')}</small></td>
         <td>${number(item.old_rotation_deg)}°<small>→ ${number(item.rotation_deg)}°</small></td>
-        <td>中心偏差 ${number(item.max_error_mm)} mm${item.differences.map(change => `<details><summary>焊盘 ${escape(change.number)} 属性有差异</summary><small>原：${escape(padSummary(change.before))}</small><small>新：${escape(padSummary(change.after))}</small></details>`).join('')}</td></tr>`).join('');
+        <td>${alignment === 'center' ? `封装中心偏差 ${number(item.center_error_mm || 0)} mm<small>焊盘最大移动 ${number(item.max_error_mm)} mm</small>` : `焊盘中心偏差 ${number(item.max_error_mm)} mm`}${(item.pad_errors || []).some(p=>p.error_mm > .001) ? `<details><summary>焊盘移动明细</summary>${item.pad_errors.map(p=>`<small>${escape(p.number)}：${number(p.error_mm)} mm</small>`).join('')}</details>` : ''}${item.differences.map(change => `<details><summary>焊盘 ${escape(change.number)} 属性有差异</summary><small>原：${escape(padSummary(change.before))}</small><small>新：${escape(padSummary(change.after))}</small></details>`).join('')}</td></tr>`).join('');
+      q('.pcb-update-note').textContent = alignment === 'center'
+        ? '按当前 PCB 铜焊盘中心对齐并校正方向，保留目标库几何。焊盘允许移动，原有走线不移动；更新后请检查连接和 DRC。不自动保存 PCB。'
+        : '以当前 PCB 焊盘位置为基准。仅更新所选器件；不自动保存 PCB。已错位的器件不能据此找回历史位置。';
+      q('[data-pcb-ack-text]').textContent = alignment === 'center'
+        ? '已核对封装及引脚，接受焊盘偏移，并将在更新后检查走线与 DRC'
+        : '已核对焊盘编号、尺寸、钻孔及引脚功能';
       q('.pcb-update-table-wrap').hidden = false; q('.pcb-update-note').hidden = false;
       q('footer label').hidden = false;
       status(`已预检 ${preview.items.length} 个器件`);
@@ -123,9 +142,12 @@
           q('[data-pcb-close]').disabled = false; comparing = false;
         }
       };
-    } catch (error) {
-      if (!closed) status(error.message || String(error), true);
+      } catch (error) {
+        if (!closed && token === sequence) status(error.message || String(error), true);
+      }
     }
+    q('[data-pcb-alignment]').onchange = preflight;
+    await preflight();
   };
   document.getElementById('updateSelectedPcb')?.addEventListener('click', window.previewSelectedPcbUpdate);
 })();

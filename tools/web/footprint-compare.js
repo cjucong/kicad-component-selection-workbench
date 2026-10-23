@@ -310,7 +310,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const alignment = value.alignment || {};
       const format = (number, digits = 3) => Number.isFinite(number) ? String(Number(number.toFixed(digits))) : '—';
       q('[data-fp-alignment]').dataset.ok = String(alignment.ok === true);
-      q('[data-fp-alignment]').textContent = value.pcb_comparison ? '当前 PCB / 目标库封装 · 按编号原位对齐 · mm' : value.library_comparison ? '当前库封装 / 所选库封装 · 同原点、同比例 · mm' : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
+      q('[data-fp-alignment]').textContent = value.pcb_comparison ? `当前 PCB / 目标库封装 · ${alignment.method === 'center' ? '铜焊盘中心对齐，允许焊盘偏移' : '按编号原位对齐'} · mm` : value.library_comparison ? '当前库封装 / 所选库封装 · 同原点、同比例 · mm' : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
         ? `中心已对齐 · 校正 ${format(alignment.rotation_deg)}° · 焊盘中心最大偏差 ${format(alignment.max_error_mm, 4)} mm${alignment.requires_review ? ' · 间距有差异，请核对' : ''}`
         : '无法对齐，请检查焊盘编号与原封装';
       q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);

@@ -136,7 +136,9 @@ class PcbUpdates:
                 'identity': schematic_identity(self.app.project_root, self.app.config['schematic_dir'], refs),
                 'table_hash': hashlib.sha256(table.read_bytes() if table.exists() else b'').hexdigest()}
 
-    def preview(self, refs: list[str], bom: str) -> dict:
+    def preview(self, refs: list[str], bom: str, *, alignment='rigid') -> dict:
+        if alignment not in ('rigid', 'center'):
+            raise ValueError('未知的封装对齐方式')
         if not refs or len(refs) > 300 or len(set(refs)) != len(refs):
             raise ValueError('请选择 1 至 300 个不重复的位号')
         with self.app.selection_save_lock:
@@ -150,7 +152,7 @@ class PcbUpdates:
             target = self.session.read_library(source['targets'][ref], back=original['back'])
             if target['footprint'] != source['targets'][ref]:
                 raise ValueError('库读取返回了不同的完整封装标识，请重新预检')
-            placement = solve_placement(original, target)
+            placement = solve_placement(original, target, alignment=alignment)
             if not placement['ok']:
                 raise ValueError(ref + ' 不能原位替换：' + placement['reason'])
             prototype = self.build(original, target, placement)
@@ -160,6 +162,7 @@ class PcbUpdates:
                 'old_position_mm': original['position_mm'], 'old_rotation_deg': original['rotation_deg'],
                 'position_mm': placement['position_mm'], 'rotation_deg': placement['rotation_deg'],
                 'back': original['back'], 'max_error_mm': placement['max_error_mm'],
+                'center_error_mm': placement['center_error_mm'], 'pad_errors': placement['pad_errors'],
                 'differences': placement['differences']})
         with self.app.selection_save_lock:
             if self._source(refs) != source:
@@ -171,8 +174,10 @@ class PcbUpdates:
                 if now - self.previews[key]['time'] > 600 or len(self.previews) >= 16:
                     del self.previews[key]
             self.previews[token] = {'refs': refs, 'snapshot': snapshot, 'source': source,
-                'targets': targets, 'replacements': replacements, 'time': now, 'started': False}
+                'targets': targets, 'replacements': replacements, 'time': now, 'started': False,
+                'alignment': alignment}
         return {'ok': True, 'preview_id': token, 'items': items,
+                'alignment': alignment,
                 'basis': '当前 PCB 焊盘位置，不是历史位置恢复', 'saved': False}
 
     def apply(self, preview_id: str, acknowledged: bool) -> dict:
@@ -257,7 +262,7 @@ class PcbUpdates:
                 selected = work / 'target.kicad_mod'
                 selected.write_text(source, encoding='utf-8')
                 aligned = work / 'aligned.kicad_mod'
-                result = align_module(selected, Path(records[0]['path']), aligned)
+                result = align_module(selected, Path(records[0]['path']), aligned, method=state['alignment'])
                 if not result.get('ok'):
                     raise ValueError('比较配准失败：' + str(result.get('reason')))
                 rendered = render_comparison(Path(records[0]['path']), aligned, work / 'svg')

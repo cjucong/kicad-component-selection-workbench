@@ -10,6 +10,7 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -90,6 +91,12 @@ def native_build(root):
         target = raw('Standard_' + ref, .9)
         target.SetFPID(p.LIB_ID('Local', 'Standard_' + ('R1' if ref == 'R2' else ref)))
         p.PCB_IO_KICAD_SEXPR().FootprintSave(str(directory), target)
+        if ref != 'R2':
+            centered = raw('Center_' + ref, .9)
+            centered.SetFPID(p.LIB_ID('Local', 'Center_' + ref))
+            for pad in centered.Pads():
+                pad.SetPosition(p.VECTOR2I(round(pad.GetPosition().x*.8), round(pad.GetPosition().y*.8)))
+            p.PCB_IO_KICAD_SEXPR().FootprintSave(str(directory), centered)
         board.Add(target)
         if back:
             target.Flip(origin, False)
@@ -187,7 +194,7 @@ def replace_proto(original, target):
     return result
 
 
-def check_replacement(before, after, target, *, persisted=False):
+def check_replacement(before, after, target, *, persisted=False, allow_pad_motion=False):
     assert before.id == after.id, 'Footprint UUID changed'
     assert before.proto.symbol_path == after.proto.symbol_path, 'Schematic link changed'
     assert before.layer == after.layer, 'Board side changed'
@@ -209,7 +216,8 @@ def check_replacement(before, after, target, *, persisted=False):
         old, wanted = old_pads[pad.number], target_pads[pad.number]
         assert pad.id == old.id, 'Pad UUID changed'
         assert pad.proto.net == old.proto.net, 'Pad net changed'
-        assert max(abs(pad.position.x - old.position.x), abs(pad.position.y - old.position.y)) <= 5, 'Pad moved'
+        if not allow_pad_motion:
+            assert max(abs(pad.position.x - old.position.x), abs(pad.position.y - old.position.y)) <= 5, 'Pad moved'
         actual_stack, expected_stack = deepcopy(pad.proto.pad_stack), deepcopy(wanted.proto.pad_stack)
         delta = (actual_stack.angle.value_degrees - expected_stack.angle.value_degrees + 180) % 360 - 180
         assert abs(delta) <= 1e-5, f'Standard pad angle changed: {actual_stack.angle.value_degrees} / {expected_stack.angle.value_degrees}'
@@ -226,27 +234,36 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   const page=await browser.newPage({viewport:{width:1440,height:980}}), errors=[];
   page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(60000);
   await page.goto(process.env.PCB_WORKBENCH_URL);
-  for(const ref of ['R1','R2','U1']) {
+  const center=process.env.PCB_WORKBENCH_CENTER==='1',refs=center?['R1','U1']:['R1','R2','U1'];
+  const prefix=center?'Center_':'Standard_';
+  for(const ref of refs) {
    const target=ref==='R2'?'R1':ref;
    const row=page.locator(`#rows tr[data-refs="${ref}"]`);await row.waitFor();
    await row.getByRole('button',{name:'预览／管理封装'}).click();
    const library=page.locator('[data-fp-page="library"]');
-   await library.locator('[data-fp-items] option[value="Local:Standard_'+target+'"]').waitFor({state:'attached'});
-   await library.locator('[data-fp-items]').selectOption('Local:Standard_'+target);
-   await library.getByText('Local:Standard_'+target+' · 焊盘 '+(ref.startsWith('R')?2:4)+' 个 · 编号 '+(ref.startsWith('R')?'1, 2':'1, 2, 3, 4'),{exact:true}).waitFor();
+   await library.locator('[data-fp-items] option[value="Local:'+prefix+target+'"]').waitFor({state:'attached'});
+   await library.locator('[data-fp-items]').selectOption('Local:'+prefix+target);
+   await library.getByText('Local:'+prefix+target+' · 焊盘 '+(ref.startsWith('R')?2:4)+' 个 · 编号 '+(ref.startsWith('R')?'1, 2':'1, 2, 3, 4'),{exact:true}).waitFor();
    await library.locator('[data-fp-ack]').check();await library.locator('.fp-apply').click();
-   await page.waitForFunction(({ref,target})=>currentRows.find(row=>row.ref===ref)?.footprint==='Local:Standard_'+target,{ref,target});
+   await page.waitForFunction(({ref,target,prefix})=>currentRows.find(row=>row.ref===ref)?.footprint==='Local:'+prefix+target,{ref,target,prefix});
   }
   const synced=await page.request.post(process.env.PCB_WORKBENCH_URL+'api/bulk_sync_schematic',{
-   data:{bom:'__schematic__',notify:false,selected_refs:['R1','R2','U1']},timeout:180000});
+   data:{bom:'__schematic__',notify:false,selected_refs:refs},timeout:180000});
   const sync=await synced.json();assert(synced.ok()&&sync.ok,JSON.stringify(sync));
   assert(sync.schematic_verify?.ok,JSON.stringify(sync));
   await page.evaluate(async()=>{await loadRows();});
-  for(const ref of ['R1','R2','U1'])await page.locator(`#rows tr[data-refs="${ref}"] [data-select-row]`).check();
+  for(const ref of refs)await page.locator(`#rows tr[data-refs="${ref}"] [data-select-row]`).check();
   await page.getByRole('button',{name:'更新 PCB（所选器件）',exact:true}).click();
-  await page.getByText('已预检 3 个器件',{exact:true}).waitFor();
+  await page.getByText(`已预检 ${refs.length} 个器件`,{exact:true}).waitFor();
+  if(!center) {
+   await page.locator('[data-pcb-alignment]').selectOption('rigid');
+   await page.getByText(`已预检 ${refs.length} 个器件`,{exact:true}).waitFor();
+  } else {
+   assert.equal(await page.locator('[data-pcb-alignment]').inputValue(),'center');
+   await page.getByText(/焊盘允许移动/).waitFor();
+  }
   await page.locator('[data-pcb-compare="R1"]').click();
-  await page.getByText('当前 PCB / 目标库封装 · 按编号原位对齐 · mm',{exact:true}).waitFor();
+  await page.getByText(center?'当前 PCB / 目标库封装 · 铜焊盘中心对齐，允许焊盘偏移 · mm':'当前 PCB / 目标库封装 · 按编号原位对齐 · mm',{exact:true}).waitFor();
   assert((await page.locator('.pcb-comparison-page [data-fp-layer-image]').count())>=2);
   await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/pcb-comparison.png'});
   await page.getByRole('button',{name:'返回预检',exact:true}).click();
@@ -260,13 +277,13 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.getByText('已更新到 PCB 编辑器，尚未保存。',{exact:true}).waitFor();
   await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/workbench-complete.png'});
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,schematic_sync:sync.schematic_verify.ok,refs:['R1','R2','U1']}));
+  console.log(JSON.stringify({ok:true,schematic_sync:sync.schematic_verify.ok,refs,alignment:center?'center':'rigid'}));
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
 
 
-def workbench_flow(root, report, session):
+def workbench_flow(root, report, session, *, center=False):
     import threading
     from http.server import ThreadingHTTPServer
     from part_selection_paths import resolve_config
@@ -282,7 +299,7 @@ def workbench_flow(root, report, session):
     thread.start()
     try:
         env = dict(os.environ, PCB_WORKBENCH_URL=f'http://127.0.0.1:{server.server_port}/',
-                   PCB_WORKBENCH_REPORT=str(report))
+                   PCB_WORKBENCH_REPORT=str(report), PCB_WORKBENCH_CENTER='1' if center else '0')
         result = subprocess.run(['node', '-e', WORKBENCH], capture_output=True,
                                 text=True, encoding='utf-8', env=env, timeout=240,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
@@ -455,6 +472,49 @@ def run_probe(report):
             for ref in ('R1', 'R2', 'U1'):
                 check_replacement(before[ref], live[ref], before['T_' + ref])
             assert disk == (root / 'Probe.kicad_pcb').read_bytes(), 'Workbench auto-saved PCB'
+            results['stage'] = 'center_workbench_flow'
+            center_before = session.snapshot(root, ['R1', 'U1'])
+            center_changes = []
+            for ref, original in center_before['parts'].items():
+                target = session.read_library('Local:Center_' + ref, back=original['back'])
+                placement = solve_placement(original, target, alignment='center')
+                assert placement['ok'] and placement['max_error_mm'] > .1
+                center_changes.append({'ref': ref, 'proto': encode(replacement(original, target, placement))})
+            center_report = report / 'center'
+            center_report.mkdir(exist_ok=True)
+            results['checks']['center_workbench_update'] = workbench_flow(root, center_report, session, center=True)
+            centered = session.snapshot(root, ['R1', 'U1'])
+            # Runtime writes generate fresh graphic UUIDs. Independent golden
+            # checks compare placement/geometry and preserved instance identity,
+            # not those intentionally new random identifiers.
+            from part_selection_pcb_session import outside_parts
+            selected_ids = {p['uuid'] for p in center_before['parts'].values()}
+            assert outside_parts(center_before['text'], selected_ids) == outside_parts(centered['text'], selected_ids)
+            for change in center_changes:
+                ref = change['ref']
+                expected = decode(change['proto'])
+                actual = decode(centered['parts'][ref]['proto'])
+                check_replacement(decode(center_before['parts'][ref]['proto']), actual, expected, allow_pad_motion=True)
+                expected_pads = {pad.number: pad for pad in expected.definition.pads}
+                for pad in actual.definition.pads:
+                    assert max(abs(pad.position.x-expected_pads[pad.number].position.x),
+                               abs(pad.position.y-expected_pads[pad.number].position.y)) <= 5
+            def pad_center(part):
+                return [(min(p['position_mm'][i] for p in part['pads']) +
+                         max(p['position_mm'][i] for p in part['pads']))/2 for i in (0, 1)]
+            for ref in ('R1', 'U1'):
+                assert math.dist(pad_center(center_before['parts'][ref]), pad_center(centered['parts'][ref])) <= .000005
+                old = {p['number']: p for p in center_before['parts'][ref]['pads']}
+                assert max(math.dist(p['position_mm'], old[p['number']]['position_mm']) for p in centered['parts'][ref]['pads']) > .1
+            assert tracks_before == [t.proto.SerializeToString() for t in board.get_tracks()], 'Center update moved tracks'
+            assert disk == (root / 'Probe.kicad_pcb').read_bytes(), 'Center update auto-saved PCB'
+            assert libraries == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (root / 'Local.pretty').glob('*')}, 'Center update changed library'
+            client.run_action('common.Interactive.undo')
+            time.sleep(.25)
+            assert session.snapshot(root, ['R1', 'U1']) == center_before, 'Center update was not one undo step'
+            session.apply(center_before, center_changes, report / ('center-reapply-' + str(uuid4())))
+            live = footprint_map(board)
+            results['checks']['center_world_coordinates_tracks_and_undo'] = True
             results['stage'] = 'save_and_reopen'
             board.save()  # Only the disposable fixture: explicit persistence verification.
             saved = (root / 'Probe.kicad_pcb').read_text(encoding='utf-8')
@@ -474,7 +534,7 @@ def run_probe(report):
             assert reopened is not None, 'Saved fixture did not reopen'
             (report / 'reopened.json').write_text(json.dumps(reopened, indent=2), encoding='utf-8')
             for ref in ('R1', 'R2', 'U1'):
-                check_replacement(before[ref], decode(reopened['parts'][ref]['proto']), before['T_' + ref], persisted=True)
+                check_replacement(live[ref], decode(reopened['parts'][ref]['proto']), live[ref], persisted=True)
             results['checks']['saved_and_reopened'] = True
             results['passed'] = True
             results['stage'] = 'complete'

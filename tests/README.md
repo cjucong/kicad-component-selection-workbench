@@ -125,6 +125,8 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 ## 标准库原位更新 PCB
 
+中心对齐另由 `test_pcb_in_place_geometry.py` 覆盖 L9 同型间距差（3.6068 / 3.048 mm）、中心不动、逐焊盘移动 0.2794 mm、正背面及编号拒绝；`run_pcb_updates_smoke.py` 覆盖默认中心模式、严格模式失败、切换清除确认和迟到响应隔离。真实探测在严格流程后运行不同间距标准库的正背面中心更新，独立核验中心、实际移动量、目标几何、网络、走线不动、单步撤销与保存重开。两种模式的“位置保持”含义不同，不能把中心对齐写成每颗焊盘原位。
+
 `test_pcb_session.py` 另覆盖从原理图入口按需连接 PCB、PCB 晚于工作台打开、多工程/同工程重复编辑器、独立服务端令牌及本机接口发现。真实探测脚本的工作台阶段不传入 PCB 启动接口，由正式连接逻辑发现并核验一次性工程的实时 PCB。
 
 `test_pcb_schematic_identity.py` 覆盖复制工程遗留根 UUID、PCB 省略根 UUID、实际 Sheetfile 层级（含子目录）、无关页面/错误页面链/其他工程实例拒绝、缺页和循环诊断。真实 PCB 探测夹具采用三级页面、历史根实例记录和省略根 UUID 的 PCB 路径，避免只测手工拼出的平面根路径。

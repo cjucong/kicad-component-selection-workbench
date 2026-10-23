@@ -148,3 +148,16 @@ def test_pcb_execution_obeys_selection_then_override_lock_order():
     block = next(node for node in ast.walk(tree) if isinstance(node, ast.With))
     locks = [ast.unparse(item.context_expr) for item in block.items]
     assert locks.index('self.selection_save_lock') < locks.index('OVERRIDES_UPDATE_LOCK')
+
+
+def test_explicit_center_preview_binds_mode_and_reports_movement(updates):
+    service, _, session, _ = updates
+    session.read_library.return_value['pads'][1]['position_mm'] = [1.4, 0]
+    with pytest.raises(ValueError):
+        service.preview(['R1'], '', alignment='rigid')
+    result = service.preview(['R1'], '', alignment='center')
+    assert result['alignment'] == 'center'
+    assert result['items'][0]['max_error_mm'] == pytest.approx(.2)
+    assert result['items'][0]['center_error_mm'] <= 1e-9
+    assert service.previews[result['preview_id']]['alignment'] == 'center'
+    session.apply.assert_not_called()

@@ -24,7 +24,10 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     calls.push({url,body:options?.body?JSON.parse(options.body):null});
     if(url==='/api/pcb_update_preview') {
      if(window.hold) await new Promise(resolve=>window.release=resolve);
-     return {ok:true,json:async()=>sample};
+     const mode=JSON.parse(options.body).alignment;
+     if(mode==='rigid'&&window.delayRigid)await new Promise(resolve=>window.releaseRigid=resolve);
+     if(mode==='rigid'&&window.rejectRigid)return {ok:false,json:async()=>({ok:false,error:'模拟间距不一致'})};
+     return {ok:true,json:async()=>({...sample,alignment:mode})};
     }
     if(url==='/api/start_pcb_update')return {ok:true,json:async()=>({ok:true,job_id:'job'})};
     return {ok:true,json:async()=>({ok:true,done:true,result:{ok:true,saved:false}})};
@@ -46,6 +49,24 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await page.evaluate(()=>window.pcbUpdateBusy),false);
   await page.getByRole('button',{name:'PCB',exact:true}).click();
   await page.getByText('已预检 1 个器件',{exact:true}).waitFor();
+  const mode=page.getByLabel('对齐方式',{exact:true});
+  assert.equal(await mode.inputValue(),'center');
+  assert.equal(await page.evaluate(()=>calls.filter(c=>c.url==='/api/pcb_update_preview').at(-1).body.alignment),'center');
+  await page.getByText(/焊盘允许移动/).waitFor();
+  await page.evaluate(()=>window.rejectRigid=true);
+  await mode.selectOption('rigid');
+  await page.getByText('模拟间距不一致',{exact:true}).waitFor();
+  assert(await page.getByRole('button',{name:'更新 PCB',exact:true}).isDisabled());
+  await mode.selectOption('center');
+  await page.getByText('已预检 1 个器件',{exact:true}).waitFor();
+  await page.evaluate(()=>window.delayRigid=true);
+  await mode.selectOption('rigid');
+  await mode.selectOption('center');
+  await page.getByText('已预检 1 个器件',{exact:true}).waitFor();
+  await page.evaluate(()=>window.releaseRigid());
+  await page.waitForTimeout(50);
+  assert.equal(await mode.inputValue(),'center');
+  assert.equal(await page.getByText('模拟间距不一致',{exact:true}).count(),0);
   assert.equal(await page.getByRole('button',{name:'更新 PCB',exact:true}).isDisabled(),true);
   if(process.env.PCB_SCREENSHOT)await page.screenshot({path:process.env.PCB_SCREENSHOT+'.desktop.png'});
   await page.setViewportSize({width:390,height:850});
@@ -59,7 +80,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.getByRole('button',{name:'关闭',exact:true}).last().click();
   assert.equal(await page.evaluate(()=>window.pcbUpdateBusy),false);
   assert.deepEqual(errors,[]);
-  process.stdout.write(JSON.stringify({ok:true,checks:10}));
+  process.stdout.write(JSON.stringify({ok:true,checks:15}));
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''

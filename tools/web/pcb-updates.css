@@ -26,3 +26,5 @@
 .pcb-comparison-page .fp-title { display:none; }
 .pcb-update-table [data-pcb-compare] { margin-top:5px; font-size:11px; padding:3px 6px; }
 @media(max-width:600px) { .pcb-dialog { width:calc(100vw - 16px); max-height:calc(100vh - 16px); } .pcb-update-body { padding:10px; } .pcb-update-table { min-width:660px; } }
+.pcb-alignment { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.pcb-alignment select { height: 32px; max-width: 100%; }

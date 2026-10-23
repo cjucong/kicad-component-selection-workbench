@@ -3662,7 +3662,8 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == '/api/pcb_update_preview':
                     refs = split_refs(payload.get('refs', ''))
-                    json_response(self, app.pcb_updates.preview(refs, str(payload.get('bom') or '')))
+                    json_response(self, app.pcb_updates.preview(refs, str(payload.get('bom') or ''),
+                        alignment=str(payload.get('alignment') or 'rigid')))
                     return
                 if parsed.path == '/api/pcb_update_comparison':
                     json_response(self, {'ok': True, 'detail': app.pcb_updates.comparison(

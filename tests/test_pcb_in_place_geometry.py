@@ -1,4 +1,5 @@
 import math
+from copy import deepcopy
 
 import pytest
 
@@ -56,3 +57,29 @@ def test_unsafe_mapping_is_rejected(problem):
     result = solve_placement(source, target)
     assert not result['ok']
     assert result['reason']
+
+
+@pytest.mark.parametrize('back', [False, True])
+def test_center_alignment_keeps_standard_pitch_and_reports_pad_movement(back):
+    source, target = shape(back), shape(back)
+    source['pads'][0]['position_mm'] = [89.0524, 88.607645]
+    source['pads'][1]['position_mm'] = [92.6592, 88.607645]
+    target['pads'][0]['position_mm'] = [0, -1.524]
+    target['pads'][1]['position_mm'] = [0, 1.524]
+    before = deepcopy((source, target))
+    assert not solve_placement(source, target)['ok']
+    result = solve_placement(source, target, alignment='center')
+    assert result['ok']
+    assert result['rotation_deg'] == pytest.approx(90)
+    assert result['position_mm'] == pytest.approx([90.8558, 88.607645])
+    assert result['center_error_mm'] <= 1e-9
+    assert result['max_error_mm'] == pytest.approx(.2794)
+    assert [pad['error_mm'] for pad in result['pad_errors']] == pytest.approx([.2794, .2794])
+    assert (source, target) == before
+
+
+def test_center_alignment_does_not_allow_unknown_pin_mapping():
+    source, target = shape(), shape()
+    target['pads'][1]['number'] = '3'
+    assert not solve_placement(source, target, alignment='center')['ok']
+    assert not solve_placement(source, target, alignment='unknown')['ok']
