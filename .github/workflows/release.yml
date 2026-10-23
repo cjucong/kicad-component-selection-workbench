@@ -7,6 +7,10 @@ permissions:
 jobs:
   package:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: ${{ github.workspace }}/tools
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,8 +38,26 @@ jobs:
           $env:RELEASE_TAG='${{ github.ref_name }}'
           python -B -c "import os,sys; sys.path.insert(0,'tools/kicad_plugin'); from updater import VERSION; assert os.environ['RELEASE_TAG']=='v'+VERSION"
           if($LASTEXITCODE -ne 0) { throw 'Tag and package version differ' }
-          python -B -m pytest tests -q -p no:cacheprovider --tb=short
+          python -B -m pytest tests -q -p no:cacheprovider --tb=short --junitxml='${{ runner.temp }}/workbench-tests.xml'
           if($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }
+      - name: Report regression failures
+        if: failure()
+        shell: python
+        env:
+          TEST_REPORT: ${{ runner.temp }}/workbench-tests.xml
+        run: |
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          report = Path(os.environ['TEST_REPORT'])
+          if report.is_file():
+              for case in ET.parse(report).iter('testcase'):
+                  for tag in ('failure', 'error'):
+                      failure = case.find(tag)
+                      if failure is not None:
+                          title = (case.get('classname', '') + '.' + case.get('name', '')).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                          message = (failure.text or failure.get('message', ''))[:10000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                          print(f'::error title={title}::{message}')
       - name: Build verified package
         shell: pwsh
         run: |
