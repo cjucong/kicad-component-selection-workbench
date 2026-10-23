@@ -53,6 +53,8 @@ def native_build(root):
         board.Add(old)
         old.SetReference(ref)
         old.SetValue('fixture value')
+        old.SetField('LCSC', 'C12345')
+        old.SetField('Comment', 'fixture comment ' + ref)
         symbol_id = str(uuid4())
         old.SetPath(p.KIID_PATH('/' + top_sheet + '/' + out_sheet + '/' + symbol_id))
         library_file, entry_name = ('Device', 'R') if ref.startswith('R') else ('Connector_Generic', 'Conn_01x04')

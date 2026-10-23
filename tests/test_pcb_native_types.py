@@ -18,7 +18,7 @@ def runtime():
 SCRIPT = r'''
 from uuid import uuid4
 from copy import deepcopy
-from kipy.board_types import FootprintInstance, Pad, BoardText, BoardTextBox
+from kipy.board_types import FootprintInstance, Pad, BoardText, BoardTextBox, Field
 from kipy.proto.board.board_types_pb2 import BoardLayer
 from kipy.geometry import Vector2
 from part_selection_pcb_session import replacement, describe
@@ -39,16 +39,41 @@ if MODE=='ids':
  aid={item.id.value for item in a.definition.items};bid={item.id.value for item in b.definition.items}
  assert not aid & bid, 'Cached target child UUIDs reused across instances'
  assert {p.id.value for p in a.definition.pads}=={p.id.value for p in old1.definition.pads}
-else:
+elif MODE=='unsupported':
  box=BoardTextBox();old1.definition.add_item(box)
  try:replacement(describe(old1),describe(target),placement)
  except ValueError:pass
  else:raise AssertionError('Unsupported source text box was silently discarded')
+else:
+ from part_selection_pcb_session import footprint_bytes, encode, PcbSession
+ field=Field();field.name='Comment';field.text.value='fixture comment';field.proto.text.id.value=str(uuid4())
+ old1.definition.add_item(field)
+ expected=replacement(describe(old1),describe(target),placement)
+ actual=FootprintInstance(deepcopy(expected.proto))
+ actual.definition.items=list(reversed(actual.definition.items))
+ assert encode(expected)!=encode(actual), 'Fixture did not reorder objects'
+ assert footprint_bytes(expected)==footprint_bytes(actual), 'Unordered object contents rejected'
+ if MODE=='order':
+  text='(kicad_pcb (footprint "Local:Standard" (uuid "'+old1.id.value+'")))'
+  before={'session_id':'fixture','text':text,'parts':{'R1':describe(old1)}}
+  after={'session_id':'fixture','text':text,'parts':{'R1':describe(actual)}}
+  assert PcbSession.verify(before,after,[{'ref':'R1','proto':encode(expected)}])['ok']
+ else:
+  if MODE=='field_change':
+   next(item for item in actual.definition.items if isinstance(item,Field)).text.value='changed'
+  elif MODE=='geometry_change':actual.definition.pads[0].proto.pad_stack.angle.value_degrees=31
+  elif MODE=='net_change':actual.definition.pads[0].proto.net.name='changed'
+  elif MODE=='id_change':actual.definition.pads[0].proto.id.value=str(uuid4())
+  elif MODE=='count_change':actual.definition.add_item(deepcopy(actual.definition.items[0]))
+  elif MODE=='position_change':actual.position=Vector2.from_xy(10,20)
+  elif MODE=='metadata_change':actual.proto.symbol_sheet_name='changed'
+  assert footprint_bytes(expected)!=footprint_bytes(actual), 'Real content change was ignored'
 print('verified')
 '''
 
 
-@pytest.mark.parametrize('mode', ['ids', 'unsupported'])
+@pytest.mark.parametrize('mode', ['ids', 'unsupported', 'order', 'field_change', 'geometry_change',
+                                'net_change', 'id_change', 'count_change', 'position_change', 'metadata_change'])
 def test_replacement_native_proto_boundaries(mode):
     python = runtime()
     if python is None:

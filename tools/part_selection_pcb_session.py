@@ -35,6 +35,16 @@ def encode(item):
     return b64encode(item.proto.SerializeToString()).decode('ascii')
 
 
+def footprint_bytes(item):
+    """Compare complete definitions without treating object order as geometry."""
+    proto = deepcopy(item.proto)
+    objects = sorted(obj.SerializeToString(deterministic=True) for obj in proto.definition.items)
+    proto.definition.ClearField('items')
+    for obj in objects:
+        proto.definition.items.add().ParseFromString(obj)
+    return proto.SerializeToString(deterministic=True)
+
+
 def decode(value):
     from kipy.board_types import FootprintInstance
     from kipy.proto.board.board_types_pb2 import FootprintInstance as Proto
@@ -257,7 +267,11 @@ class PcbSession:
             old, new = before['parts'][ref], after['parts'][ref]
             expected = describe(decode(item['proto']))
             for key in ('uuid', 'back', 'footprint', 'position_mm', 'rotation_deg', 'pads'):
-                if new[key] != expected[key]:
+                actual_value, expected_value = new[key], expected[key]
+                if key == 'pads':
+                    actual_value = sorted(actual_value, key=lambda pad: pad['number'])
+                    expected_value = sorted(expected_value, key=lambda pad: pad['number'])
+                if actual_value != expected_value:
                     raise ValueError(ref + ' 写入回读不一致：' + key + '；实际 ' + str(new[key])[:160] + '；预期 ' + str(expected[key])[:160])
             a, b = decode(old['proto']), decode(new['proto'])
             for field in ('id', 'symbol_path', 'layer', 'locked', 'reference_field', 'value_field',
@@ -270,7 +284,7 @@ class PcbSession:
             actual_fields = {item.name: item.proto for item in b.definition.items if isinstance(item, Field)}
             if any(actual_fields.get(name) != value for name, value in preserved.items()):
                 raise ValueError(ref + ' 自定义字段或文字位置改变')
-            if encode(b) != item['proto']:
+            if footprint_bytes(b) != footprint_bytes(decode(item['proto'])):
                 raise ValueError(ref + ' 完整封装定义回读不一致，可能有图形、模型或属性未保留')
         return {'ok': True}
 
@@ -302,7 +316,7 @@ class PcbSession:
             commit = board.begin_commit()
             try:
                 staged = board.update_items(prepared)
-                if sorted(encode(item) for item in staged) != sorted(item['proto'] for item in replacements):
+                if sorted(footprint_bytes(item) for item in staged) != sorted(footprint_bytes(item) for item in prepared):
                     (backup_dir / 'staged.json').write_text(json.dumps([encode(item) for item in staged]), encoding='utf-8')
                     raise ValueError('KiCad 暂存返回内容与预检不一致，未发布更改')
             except BaseException as exc:

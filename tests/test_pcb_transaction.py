@@ -21,6 +21,7 @@ def transaction(scratch_project, monkeypatch):
     monkeypatch.setattr(module, 'decode', lambda value: SimpleNamespace(
         id=SimpleNamespace(value='a'), reference_field=SimpleNamespace(text=SimpleNamespace(value='R1'))))
     monkeypatch.setattr(module, 'encode', lambda value: value)
+    monkeypatch.setattr(module, 'footprint_bytes', lambda value: value if isinstance(value, str) else 'new')
     monkeypatch.setattr(module, 'validate_item_ids', lambda snapshot, prepared: None)
     return session, snapshot, board
 
