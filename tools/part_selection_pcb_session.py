@@ -6,6 +6,8 @@ import json
 import math
 import os
 from pathlib import Path
+import re
+import tempfile
 import threading
 from uuid import uuid4
 
@@ -19,9 +21,9 @@ def fingerprint(value):
 
 def select_document(documents, project_root):
     root = Path(project_root).resolve()
-    matches = [doc for doc in documents if Path(doc.project.path).resolve() == root]
+    matches = [doc for doc in documents if doc.project.path and Path(doc.project.path).resolve() == root]
     if len(matches) != 1:
-        raise ValueError('无法唯一确定当前工程的 PCB 编辑器，请打开目标 PCB 并从其插件入口启动')
+        raise ValueError('无法唯一确定当前工程的 PCB 编辑器，请只保留一个目标 PCB 编辑器')
     path = Path(matches[0].board_filename)
     path = (root / path).resolve()
     if path.parent != root or path.suffix.lower() != '.kicad_pcb':
@@ -146,6 +148,31 @@ def validate_item_ids(snapshot, prepared):
             existing.add(identifier)
 
 
+def pcb_socket_candidates(inherited):
+    """Discover local KiCad transports only; a transport is never proof of identity."""
+    candidates = [inherited] if inherited.startswith('ipc://') else []
+    directories = {Path(tempfile.gettempdir()) / 'kicad'}
+    if candidates:
+        directories.add(Path(inherited.removeprefix('ipc://')).parent)
+    if os.name == 'nt':
+        try:
+            with os.scandir(r'\\.\pipe') as pipes:
+                candidates.extend('ipc://' + pipe.name for pipe in pipes
+                                  if re.fullmatch(r'.+[\\/]kicad[\\/]api(?:-\d+)?\.sock', pipe.name, re.I))
+        except OSError:
+            pass
+    else:
+        for directory in directories:
+            candidates.extend('ipc://' + str(path) for path in directory.glob('api*.sock')
+                              if re.fullmatch(r'api(?:-\d+)?\.sock', path.name))
+    # The standard endpoint can be a Windows named pipe, not a disk file.
+    candidates.extend('ipc://' + str(directory / 'api.sock') for directory in directories)
+    unique = {}
+    for candidate in candidates:
+        unique.setdefault(os.path.normcase(candidate), candidate)
+    return list(unique.values())
+
+
 class PcbSession:
     def __init__(self, root, socket=None, library_reader=None):
         self.root = Path(root).resolve()
@@ -154,13 +181,35 @@ class PcbSession:
         self.lock = threading.RLock()
 
     def _board(self):
-        if not self.socket.startswith('ipc://'):
-            raise ValueError('未取得启动 KiCad 的实时接口，请启用 KiCad IPC 并从 PCB 的原生插件入口重新打开工作台')
         from kipy import KiCad
         from kipy.board import Board
         from kipy.proto.common.types import DocumentType
-        client = KiCad(socket_path=self.socket, client_name='component-workbench-pcb', timeout_ms=4000)
-        doc = select_document(client.get_open_documents(DocumentType.DOCTYPE_PCB), self.root)
+        matches = {}
+        for socket in pcb_socket_candidates(self.socket):
+            try:
+                # A token inherited from the schematic belongs to that server,
+                # not necessarily to the PCB server. Learn each server's token.
+                client = KiCad(socket_path=socket, client_name='component-workbench-pcb',
+                               kicad_token='', timeout_ms=600)
+                documents = [doc for doc in client.get_open_documents(DocumentType.DOCTYPE_PCB)
+                             if doc.project.path and Path(doc.project.path).resolve() == self.root]
+            except Exception:
+                continue
+            if not documents:
+                continue
+            doc = select_document(documents, self.root)
+            token = client._client._kicad_token
+            if not token:
+                raise ValueError('KiCad 未返回可核验的会话身份，禁止写入 PCB')
+            identity = (token, str((self.root / doc.board_filename).resolve()))
+            matches.setdefault(identity, (socket, client, doc))
+        if not matches:
+            raise ValueError('未找到当前工程可连接的 PCB 编辑器。请打开当前工程的 PCB 并启用 KiCad IPC，再点击重试；无需关闭或更换工作台入口')
+        if len(matches) != 1:
+            raise ValueError('检测到多个属于当前工程的 PCB 编辑器，无法唯一确定目标；请只保留一个后重试')
+        socket, client, doc = next(iter(matches.values()))
+        self.socket = socket
+        client._client._timeout_ms = 4000
         return client, Board(client._client, doc), doc
 
     def snapshot(self, project_root: Path, refs: list[str]) -> dict:

@@ -125,6 +125,8 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 ## 标准库原位更新 PCB
 
+`test_pcb_session.py` 另覆盖从原理图入口按需连接 PCB、PCB 晚于工作台打开、多工程/同工程重复编辑器、独立服务端令牌及本机接口发现。真实探测脚本的工作台阶段不传入 PCB 启动接口，由正式连接逻辑发现并核验一次性工程的实时 PCB。
+
 `test_pcb_in_place_geometry.py`、`test_pcb_session.py`、`test_pcb_transaction.py`、`test_pcb_update.py` 与 `test_pcb_updates_ui.py` 覆盖严格编号配准、工程身份、批次边界、备份失败、暂存/回读失败、未知结果不重放、源变化及确认状态隔离。`run_pcb_updates_smoke.py` 为可复用离线 Chromium 交互检查；设置 `PCB_SCREENSHOT` 为工程外绝对文件名前缀可保留截图。
 
 `run_native_pcb_in_place_probe.py --report-dir <工程外绝对目录>` 是明确选择运行的真实 KiCad 验证，使用已安装桌面 Python 环境的 `kipy`、KiCad 捆绑 Python 和 Node Playwright（需配置 `NODE_PATH`）。创建并自动清理合成工程，不接受生产工程路径；验证正面任意角度、背面、偏移原点、真实标准库几何替换、网络与走线不变、此前未保存修改、一个撤销步骤，以及显式保存重开。包含真实工作台选库、原理图同步服务与新 PCB 按钮流程；同步服务验证不发起编辑器通知，避免打开多余原理图窗口。报告和截图在指定工程外目录，不能把离线浏览器模拟或接口存在误称为真实流程通过。

@@ -259,8 +259,12 @@ def workbench_flow(root, report, session):
     from http.server import ThreadingHTTPServer
     from part_selection_paths import resolve_config
     from part_selection_server import PartSelectionApp, make_handler
+    from part_selection_pcb_session import PcbSession
     app = PartSelectionApp(resolve_config(root))
-    app.pcb_updates.session = session
+    # The workbench has no PCB launch transport, as with a separate schematic
+    # entry. Discover and verify the already-open fixture board on demand.
+    app.pcb_updates.session = PcbSession(root)
+    app.pcb_updates.session.socket = ''
     server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(app))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -272,7 +276,9 @@ def workbench_flow(root, report, session):
                                 creationflags=subprocess.CREATE_NO_WINDOW)
         (report / 'workbench.log').write_text(result.stdout + result.stderr, encoding='utf-8')
         assert result.returncode == 0, result.stderr
-        return json.loads(result.stdout)
+        outcome = json.loads(result.stdout)
+        assert app.pcb_updates.session.socket == session.socket
+        return {**outcome, 'pcb_connection_discovered_on_demand': True}
     finally:
         server.shutdown()
         server.server_close()
