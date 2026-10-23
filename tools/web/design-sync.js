@@ -39,6 +39,9 @@
       <button type="button" data-design-close aria-label="关闭" title="关闭"><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
       <div class="design-sync-content"><div data-design-phases class="design-sync-phases"></div>
       <p data-design-status role="status">正在读取设计数据…</p>
+      <div class="design-progress" data-design-progress hidden><progress aria-label="同步进度" data-design-bar></progress>
+      <span data-design-elapsed></span></div>
+      <details data-design-timing hidden><summary>阶段耗时</summary><div data-design-timing-items></div></details>
       <div class="design-sync-options"><label data-design-alignment-label>封装对齐 <select data-design-alignment aria-label="封装对齐"><option value="center">中心对齐</option><option value="rigid">焊盘原位</option></select></label></div>
       <div data-design-changes></div>
       <div class="design-sync-confirmations"><label hidden><input type="checkbox" data-design-geometry>已核对目标封装、焊盘编号及引脚功能</label>
@@ -49,14 +52,37 @@
     document.body.append(panel);
     if (!child) panel.showModal();
     const q = selector => panel.querySelector(selector);
+    const cancelPreflight = key => key ? request('/api/cancel_design_sync_preview',{job_id:key}).catch(()=>{}) : Promise.resolve();
     state.panel = panel;
-    state.dispose = () => { state.closed = true; ++state.sequence; panel.remove(); };
+    state.dispose = () => {
+      state.closed = true; ++state.sequence; clearInterval(state.timer);
+      void cancelPreflight(state.preflightJob); state.preflightJob = null; panel.remove();
+    };
     current = state;
     q('[data-design-scope]').textContent = `${refs.length} 个器件 · ${refs.slice(0,8).join(', ')}${refs.length>8?' …':''} · ${payload.destination==='both'?'原理图 + PCB':destinations[payload.destination]}`;
     q('[data-design-alignment]').value = state.payload.alignment;
     function status(message, error = false) {
       q('[data-design-status]').textContent = message; q('[data-design-status]').dataset.error = String(error);
     }
+    function progress(value, active) {
+      const now = performance.now();
+      state.progress = {value,active,at:now};
+      q('[data-design-progress]').hidden = false;
+      const bar = q('[data-design-bar]');
+      if (active) bar.removeAttribute('value');
+      else {bar.max=1;bar.value=value.ok===false?0:1;}
+      const timings = value.timings || [];
+      q('[data-design-timing]').hidden = !timings.length;
+      q('[data-design-timing-items]').innerHTML = timings.map(item=>
+        `<div>${escape(item.message)} <span>${Number(item.seconds).toFixed(1)} s</span></div>`).join('');
+      tick();
+    }
+    function tick() {
+      if (!state.progress) return;
+      const {value,active,at} = state.progress, extra = active ? (performance.now()-at)/1000 : 0;
+      q('[data-design-elapsed]').textContent = `已用 ${(Number(value.elapsed_seconds || 0)+extra).toFixed(1)} s · 当前阶段 ${(Number(value.stage_elapsed_seconds || 0)+extra).toFixed(1)} s`;
+    }
+    state.timer = setInterval(tick,200);
     function busy(value) {
       state.busy = value;
       window.designSyncBusy = value;
@@ -112,19 +138,36 @@
     async function preflight() {
       if (state.busy || state.closed) return;
       const generation = ++state.sequence;
+      const previous = state.preflightJob; state.preflightJob = null;
       state.loading = true; state.preview = null;
       q('[data-design-apply]').disabled = true; q('[data-design-query]').hidden = true;
       q('[data-design-geometry]').checked = false; q('[data-design-movement]').checked = false;
       status('正在读取设计并预检…');
+      progress({},true);
       try {
-        const result = await request('/api/design_sync_preview',state.payload);
+        await cancelPreflight(previous);
         if (state.closed || generation !== state.sequence) return;
+        let value = await request('/api/start_design_sync_preview',state.payload);
+        if (state.closed || generation !== state.sequence) {void cancelPreflight(value.job_id);return;}
+        state.preflightJob = value.job_id;
+        while (!state.closed && generation === state.sequence) {
+          progress(value,!value.done); status(value.message || '正在预检…',value.ok===false);
+          if (value.done) break;
+          await new Promise(resolve=>setTimeout(resolve,400));
+          if (state.closed || generation !== state.sequence) return;
+          value = await request('/api/design_sync_job?id='+encodeURIComponent(value.job_id));
+        }
+        if (state.closed || generation !== state.sequence) return;
+        state.preflightJob = null;
+        if (!value.ok || !value.preview) throw new Error(value.error || '设计预检未完成');
+        const result = value.preview;
         state.loading = false;
         if (state.continuation) state.continuation = result.preview_id;
         render(result);
       } catch (error) {
         if (!state.closed && generation === state.sequence) {
           state.loading = false; status(error.message,true); q('[data-design-refresh]').hidden = false;
+          progress({...state.progress?.value,ok:false},false);
         }
       }
     }
@@ -146,7 +189,7 @@
           }
           if (!value.job_id) throw new Error('尚未确认任务编号，请继续查询，不要重复提交');
           state.job = value.job_id;
-          phases(value.phase_results); status(value.message || '正在同步设计');
+          phases(value.phase_results); status(value.message || '正在同步设计'); progress(value,!value.done);
           if (value.done) {
             busy(false);
             if (value.stage === 'awaiting_pcb_confirmation') {
@@ -171,6 +214,7 @@
           await new Promise(resolve => setTimeout(resolve,500));
         }
       } catch (error) {
+        progress({...state.progress?.value,ok:false},false);
         status('连接中断，结果尚未确认，请勿重复同步。'+(state.job?' 任务：'+state.job:''),true);
         q('[data-design-query]').hidden = false;
       } finally {state.polling = false;}
@@ -188,6 +232,7 @@
     q('[data-design-apply]').onclick = async () => {
       if (q('[data-design-apply]').disabled || state.busy) return;
       busy(true); status('正在提交同步任务…');
+      progress({},true);
       state.rejected = null;
       const acknowledgments = {geometry:q('[data-design-geometry]').checked,pad_movement:q('[data-design-movement]').checked};
       try {

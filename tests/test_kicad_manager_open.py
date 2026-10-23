@@ -74,6 +74,25 @@ if ($found.MainWindowHandle -ne 55) { throw 'Expected exact manager window' }
 Write-Output 'existing'
 '''), "existing")
 
+    def test_pcb_manager_unknown_identity_never_starts_a_second_manager(self):
+        self.assertEqual(self.run_functions(r'''
+function Get-KiCadProjectFile { return 'C:\project\board.kicad_pro' }
+function Get-KiCadTopLevelWindows { return $script:manager }
+function Get-HostedProjectStatus { return 'unknown' }
+try { Ensure-KiCadProjectOpen -RequireUnique; throw 'unexpected success' }
+catch { if ($_.Exception.Message -notmatch 'KICAD_MANAGER_UNVERIFIED') { throw }; 'blocked' }
+'''), 'blocked')
+
+    def test_pcb_multiple_matching_managers_are_not_chosen_by_order(self):
+        self.assertEqual(self.run_functions(r'''
+function Get-KiCadTopLevelWindows {
+    $script:manager
+    [pscustomobject]@{Id=456; MainWindowHandle=[IntPtr]66; MainWindowTitle='board - KiCad 10.0'; ProcessName='kicad'}
+}
+try { Get-KiCadProjectManagerWindow -RequireUnique; throw 'unexpected success' }
+catch { if ($_.Exception.Message -notmatch 'KICAD_MANAGER_AMBIGUOUS') { throw }; 'blocked' }
+'''), 'blocked')
+
     def test_missing_project_fails_without_starting_standalone_editor(self):
         self.assertEqual(self.run_functions(r'''
 function Get-KiCadProjectFile { return '' }

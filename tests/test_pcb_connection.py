@@ -46,7 +46,9 @@ def test_confirmed_closed_opens_once_and_reports_real_stages(scratch_project):
     progress = Mock()
     assert service.ensure(open_if_closed=True,progress=progress)['state'] == 'connected'
     launch.assert_called_once_with(scratch_project / 'Test.kicad_pcb')
-    assert [call.args[0] for call in progress.call_args_list] == ['opening','connecting','connected']
+    stages = [call.args[0] for call in progress.call_args_list]
+    assert stages[0]=='opening' and stages[-1]=='connected'
+    assert set(stages[1:-1])=={'connecting'}
 
 
 @pytest.mark.parametrize('state', ['busy','ipc_disabled','ambiguous','disconnected'])
@@ -122,3 +124,83 @@ def test_manager_hosted_pcb_is_included_in_process_inventory(monkeypatch):
     monkeypatch.setattr(module, 'manager_has_pcb', lambda pid: True, raising=False)
     scan = module.inspect_processes()
     assert scan['processes'][0]['files'] == [str(__import__('pathlib').Path('E:/Test/Test.kicad_pcb').resolve())]
+
+
+def test_launch_uses_verified_manager_command_not_standalone(scratch_project, monkeypatch):
+    import part_selection_pcb_connection as module
+    import part_selection_footprint_geometry as geometry
+    python = scratch_project / 'python.exe'
+    (scratch_project / 'kicad.exe').touch()
+    monkeypatch.setattr(geometry, '_find_kicad_python', lambda: python)
+    run = Mock(return_value=SimpleNamespace(returncode=0, stdout='PcbOpenRequested=1', stderr=''))
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    direct = Mock(side_effect=AssertionError('must not spawn standalone editor'))
+    monkeypatch.setattr(module.subprocess, 'Popen', direct)
+    module.launch_editor(scratch_project / 'Test.kicad_pcb')
+    command = run.call_args.args[0]
+    assert '-OpenPcb' in command
+    assert '-ProjectRoot' in command and str(scratch_project) in command
+    assert '-KicadExe' in command and str(scratch_project / 'kicad.exe') in command
+    direct.assert_not_called()
+
+
+def test_startup_wait_only_polls_ipc_not_cim_inventory(scratch_project):
+    service, _, inventory = connection(scratch_project, [
+        {'state':'unknown'}, {'state':'unknown'}, {'state':'unknown'}, {'state':'connected'}])
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    assert inventory.call_count == 1
+
+
+def test_manager_launcher_without_handle_can_reopen_after_confirmed_close(scratch_project):
+    service, launch, _ = connection(scratch_project, [
+        {'state':'unknown'}, {'state':'connected'}, {'state':'unknown'}, {'state':'connected'}])
+    launch.return_value = None
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    assert launch.call_count == 2
+
+
+def test_late_connection_after_timeout_clears_pending_open(scratch_project):
+    service, launch, _ = connection(scratch_project, [])
+    launch.return_value = None
+    service.discover.side_effect = None
+    service.discover.return_value = {'state':'unknown'}
+    assert service.ensure(open_if_closed=True)['state'] == 'disconnected'
+    service.discover.return_value = {'state':'connected'}
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    service.discover.side_effect = [{'state':'unknown'}, {'state':'connected'}]
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    assert launch.call_count == 2
+
+
+def test_transient_discovery_exception_during_startup_is_retried(scratch_project):
+    service, launch, inventory = connection(scratch_project, [
+        {'state':'unknown'}, OSError('IPC not ready'), {'state':'connected'}])
+    assert service.ensure(open_if_closed=True)['state'] == 'connected'
+    launch.assert_called_once()
+    assert inventory.call_count == 1
+
+
+@pytest.mark.parametrize('result', [
+    SimpleNamespace(returncode=1, stdout='', stderr='manager busy'),
+    SimpleNamespace(returncode=0, stdout='', stderr=''),
+])
+def test_manager_launch_requires_success_marker(scratch_project, monkeypatch, result):
+    import part_selection_pcb_connection as module
+    import part_selection_footprint_geometry as geometry
+    (scratch_project / 'kicad.exe').touch()
+    monkeypatch.setattr(geometry, '_find_kicad_python', lambda: scratch_project / 'python.exe')
+    monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kwargs: result)
+    with pytest.raises(ValueError):
+        module.launch_editor(scratch_project / 'Test.kicad_pcb')
+
+
+def test_manager_timeout_can_reopen_after_fresh_verified_absence(scratch_project):
+    service, launch, _ = connection(scratch_project, [])
+    launch.return_value = None
+    service.discover.side_effect = None
+    service.discover.return_value = {'state':'unknown'}
+    assert service.ensure(open_if_closed=True)['state']=='disconnected'
+    service.discover.side_effect = [{'state':'unknown'}, {'state':'connected'}]
+    assert service.ensure(open_if_closed=True)['state']=='connected'
+    assert launch.call_count == 2

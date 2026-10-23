@@ -71,9 +71,9 @@ def metadata_checks(root, report, session, client, board, results):
     app=PartSelectionApp(resolve_config(root))
     app.pcb_updates.session=session
     apply=app.apply_design_pcb
-    def traced_apply(token):
+    def traced_apply(token, progress=None):
         try:
-            return apply(token)
+            return apply(token, progress=progress)
         except Exception:
             import traceback
             (report/'pcb-apply-error.log').write_text(traceback.format_exc(),encoding='utf-8')
@@ -103,6 +103,12 @@ def metadata_checks(root, report, session, client, board, results):
         assert calls==[], 'Field-only preflight loaded library geometry'
         done=finished(app.design_sync,app.design_sync.continue_pcb(job['job_id'],job['pcb_preview']['preview_id'],{}))
         assert done['stage']=='complete',done
+        (report/'design-sync-progress.json').write_text(json.dumps({
+            'timings':done['timings'], 'elapsed_seconds':done['elapsed_seconds']},
+            ensure_ascii=False,indent=2),encoding='utf-8')
+        assert {'pcb:schematic_guard','pcb:commit','pcb:readback','pcb:restore'} <= {
+            item['stage'] for item in done['timings']}, done['timings']
+        results['checks']['native_progress_stage_timings']=True
         after=footprint_map(board)
         assert after['R1'].value_field.text.value=='22k, 1%'
         assert after['R1'].description_field.text.value=='probe material'

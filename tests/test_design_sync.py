@@ -108,7 +108,7 @@ def coordinator():
         design_sync_fields=Mock(return_value={'R1':{'value':'22k','footprint':'Local:New'}}),
         bulk_sync_bom_state_to_schematic=Mock(return_value={'ok':True,'schematic_verify':{'ok':True}}),
         pcb_updates=pcb)
-    app.apply_design_pcb = lambda token:pcb.apply(token,True)
+    app.apply_design_pcb = lambda token, progress=None:pcb.apply(token,True)
     return DesignSync(app,sources=sources), app, sources
 
 
@@ -502,3 +502,64 @@ def test_all_row_scope_is_not_limited_to_300_designators():
     refs=['C'+str(n) for n in range(1,1256)]
     assert DesignSync._payload({'refs':refs,'destination':'schematic'})['refs']==refs
     with pytest.raises(ValueError):DesignSync._payload({'refs':[{}],'destination':'pcb'})
+
+
+def test_async_preflight_reports_progress_while_native_connection_is_waiting():
+    service, app, _ = coordinator()
+    app.design_sync_fields.return_value={'R1':{'value':'100k','footprint':'Local:New'}}
+    entered, release = threading.Event(), threading.Event()
+    def preview(*args, progress=None, **kwargs):
+        progress('connecting', 'Waiting for verified PCB IPC')
+        entered.set()
+        assert release.wait(3)
+        return {'ok':True,'preview_id':'pcb','blocked':False,'items':[]}
+    app.pcb_updates.preview.side_effect=preview
+    try:
+        job=service.start_preview({'refs':['R1'],'destination':'pcb'})
+        assert entered.wait(2)
+        state=service.status(job['job_id'])
+        assert not state['done'] and state['stage'].endswith('connecting')
+        assert state['elapsed_seconds'] >= state['stage_elapsed_seconds'] >= 0
+        assert service.busy()
+        release.set()
+        state=await_job(service,job['job_id'])
+        assert state['preview']['pcb_preview']['preview_id']=='pcb'
+        assert any(item['stage'].endswith('connecting') for item in state['timings'])
+        app.pcb_updates.apply.assert_not_called()
+    finally:
+        release.set();service.close()
+
+
+def test_async_preflight_failure_stops_timer_and_never_applies():
+    service, app, _ = coordinator()
+    app.design_sync_fields.side_effect=ValueError('source unavailable')
+    try:
+        state=await_job(service, service.start_preview({'refs':['R1'],'destination':'pcb'})['job_id'])
+        assert state['done'] and state['ok'] is False and state['stage']=='failed'
+        assert state['error']=='source unavailable'
+        assert not service.busy()
+        time.sleep(.01)
+        assert service.status(state['job_id'])['elapsed_seconds']==state['elapsed_seconds']
+        app.pcb_updates.apply.assert_not_called()
+    finally:service.close()
+
+
+def test_superseded_queued_preflight_is_cancelled_without_reading_design():
+    service, app, sources = coordinator()
+    entered, release = threading.Event(), threading.Event()
+    def fields(*args):
+        entered.set(); assert release.wait(3)
+        return app.design_sync_fields.return_value
+    app.design_sync_fields.side_effect=fields
+    try:
+        first=service.start_preview({'refs':['R1'],'destination':'both'})
+        assert entered.wait(2)
+        queued=service.start_preview({'refs':['R1'],'destination':'both'})
+        state=service.cancel_preview(queued['job_id'])
+        assert state['done'] and state['stage']=='cancelled'
+        release.set()
+        assert await_job(service, first['job_id'])['ok']
+        assert sources.capture.call_count==1
+        with pytest.raises(ValueError):service.cancel_preview('not-a-preflight')
+    finally:
+        release.set();service.close()

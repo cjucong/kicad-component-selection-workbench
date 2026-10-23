@@ -39,8 +39,10 @@ class DesignSync:
             raise ValueError('数据来源无效')
         return {'refs':list(refs),'destination':destination,'alignment':alignment,'bom':bom}
 
-    def preview(self, payload):
+    def preview(self, payload, progress=None):
+        notify = progress or (lambda *args: None)
         payload = self._payload(payload)
+        notify('source', '正在读取原理图与工作台记录')
         with self.app.selection_save_lock:
             source = self.sources.capture(payload['refs'])
             desired = self.app.design_sync_fields(source, payload['bom'])
@@ -60,9 +62,12 @@ class DesignSync:
                 result.update(blocked=True,suggested_destination='both',
                               reason='所选器件尚有原理图字段未同步，请改为全部同步或先同步原理图')
             else:
+                notify('pcb', '正在准备 PCB 实时预检')
+                options = {'progress':progress} if progress else {}
                 result['pcb_preview'] = self.app.pcb_updates.preview(payload['refs'],payload['bom'],
-                    alignment=payload['alignment'],source=source)
+                    alignment=payload['alignment'],source=source, **options)
                 result['blocked'] = bool(result['pcb_preview'].get('blocked'))
+        notify('validate', '正在核验预检期间的数据版本')
         if not self.sources.validate(source):
             raise ValueError('预检期间数据已改变，请重新预检')
         with self.lock:
@@ -70,6 +75,53 @@ class DesignSync:
             self.previews[result['preview_id']] = {'result':deepcopy(result),'source':source,
                 'desired':desired,'time':time.monotonic()}
         return result
+
+    def start_preview(self, payload):
+        payload = self._payload(payload)
+        with self.lock:
+            if self.closed:
+                raise ValueError('同步服务正在退出')
+            self._prune()
+            if sum(not job['done'] for job in self.jobs.values()) >= 4:
+                raise ValueError('同步任务繁忙，请稍后重试')
+            key = uuid4().hex
+            self.jobs[key] = {'ok':True, 'job_id':key, 'done':False, 'stage':'queued',
+                'message':'等待设计预检', 'needs_confirmation':False, 'phase_results':{},
+                '_time':time.monotonic(), '_kind':'preflight',
+                'refs':payload['refs'], 'destination':payload['destination']}
+            self.jobs[key]['_future'] = self.pool.submit(self._run_preview, key, payload)
+            return self.status(key)
+
+    def _run_preview(self, key, payload):
+        def progress(stage, message):
+            with self.lock:
+                if self.jobs[key].get('_cancelled'):
+                    raise ValueError('预检已取消')
+                self._update(key, stage='preflight:'+stage, message=message)
+        try:
+            preview = self.preview(payload, progress=progress)
+            with self.lock:
+                if self.jobs[key].get('_cancelled'):
+                    raise ValueError('预检已取消')
+                self._update(key, done=True, stage='preview_ready', message='预检完成', preview=preview)
+        except Exception as exc:
+            with self.lock:
+                cancelled = self.jobs[key].get('_cancelled')
+                self._update(key, done=True, ok=bool(cancelled), stage='cancelled' if cancelled else 'failed',
+                    message='预检已取消' if cancelled else str(exc), error='' if cancelled else str(exc))
+
+    def cancel_preview(self, key):
+        with self.lock:
+            job = self.jobs.get(key)
+            if not job or job.get('_kind') != 'preflight':
+                raise ValueError('仅可取消只读预检，不能中断同步写入')
+            if not job['done']:
+                job['_cancelled'] = True
+                if job['_future'].cancel():
+                    self._update(key, done=True, stage='cancelled', message='预检已取消')
+                else:
+                    self._update(key, stage='cancelling', message='正在取消只读预检')
+            return self.status(key)
 
     def _prune(self):
         for token, state in list(self.previews.items()):
@@ -125,7 +177,11 @@ class DesignSync:
             state = self.jobs.get(key)
             if state is None:
                 return {'ok':False,'done':True,'stage':'expired','error':'同步任务已过期，请只读核验当前设计后重新预检'}
-            return deepcopy({name:value for name,value in state.items() if not name.startswith('_')})
+            result = deepcopy({name:value for name,value in state.items() if not name.startswith('_')})
+            now = state.get('_finished', time.monotonic())
+            result['elapsed_seconds'] = max(0, now-state['_time'])
+            result['stage_elapsed_seconds'] = max(0, now-state.get('_stage_started',state['_time']))
+            return result
 
     def job_id(self, preview_id):
         with self.lock:
@@ -133,7 +189,18 @@ class DesignSync:
 
     def _update(self, key, **values):
         with self.lock:
-            self.jobs[key].update(values)
+            job = self.jobs[key]
+            now = time.monotonic()
+            if values.get('stage',job['stage']) != job['stage']:
+                job.setdefault('timings', []).append({'stage':job['stage'],
+                    'message':job['message'], 'seconds':max(0,now-job.get('_stage_started',job['_time']))})
+                job['timings'] = job['timings'][-256:]
+                job['_stage_started'] = now
+            if values.get('done') is True:
+                job['_finished'] = now
+            elif values.get('done') is False:
+                job.pop('_finished', None)
+            job.update(values)
 
     def _run(self, key, preview_id, pcb_only):
         state = self.previews[preview_id]
@@ -159,7 +226,8 @@ class DesignSync:
                 phase = 'pcb_preview'
                 self._update(key,stage=phase,message='原理图已完成，正在核验当前 PCB')
                 source = self.sources.capture(result['refs'])
-                pcb = self.app.pcb_updates.preview(result['refs'],result['bom'],alignment=result['alignment'],source=source)
+                pcb = self.app.pcb_updates.preview(result['refs'],result['bom'],alignment=result['alignment'],source=source,
+                    progress=lambda stage,message:self._update(key,stage='pcb_preview:'+stage,message=message))
                 with self.lock:
                     self.jobs[key]['_pcb_source'] = source
                 self._update(key,done=True,stage='awaiting_pcb_confirmation',needs_confirmation=True,
@@ -168,7 +236,8 @@ class DesignSync:
             self._update(key,stage='pcb',message='正在更新所选 PCB 器件；不会自动保存整板')
             phase = 'pcb_apply'
             pcb_token = result['pcb_preview']['preview_id']
-            pcb = self.app.apply_design_pcb(pcb_token)
+            pcb = self.app.apply_design_pcb(pcb_token,
+                progress=lambda stage,message:self._update(key,stage='pcb:'+stage,message=message))
             if not pcb.get('ok'):
                 raise RuntimeError('PCB 发布结果未确认，请只读核验，不要重复执行')
             with self.lock:
@@ -184,7 +253,7 @@ class DesignSync:
                     job['phase_results']['schematic'] = {'ok':False,'error':str(exc)}
                 else:
                     job['phase_results']['pcb'] = {'ok':False,'error':str(exc),'uncertain':uncertain}
-                job.update(done=True,ok=False,needs_confirmation=False,
+                self._update(key,done=True,ok=False,needs_confirmation=False,
                     stage='uncertain' if uncertain else 'partial' if partial else 'failed',
                     message=str(exc),error=str(exc),result={'ok':False,
                         'retry_stage':None if uncertain else 'pcb' if phase != 'schematic' else 'schematic'})
@@ -217,7 +286,7 @@ class DesignSync:
             if not self.sources.validate(state['source']):
                 raise ValueError('PCB 重试预检已失效')
             state['job_id'] = job_id
-            job.update(done=False,ok=True,stage='queued',needs_confirmation=False,message='等待继续 PCB 同步')
+            self._update(job_id,done=False,ok=True,stage='queued',needs_confirmation=False,message='等待继续 PCB 同步')
             self.pool.submit(self._run,job_id,token,True)
             return self.status(job_id)
 

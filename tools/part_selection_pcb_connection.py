@@ -89,13 +89,21 @@ def launch_editor(target):
     python = _find_kicad_python()
     if python is None or os.name != 'nt':
         raise ValueError('找不到可启动的 KiCad PCB 编辑器')
-    executable = python.parent / 'pcbnew.exe'
+    executable = python.parent / 'kicad.exe'
     if not executable.is_file():
         raise ValueError('KiCad PCB 编辑器程序不存在')
     env = dict(os.environ)
     env.pop('KICAD_API_SOCKET', None)
     env.pop('KICAD_API_TOKEN', None)
-    return subprocess.Popen([str(executable), str(target)],env=env)
+    script = Path(__file__).with_name('kicad_schematic_search.ps1')
+    result = subprocess.run(['powershell.exe','-NoProfile','-NonInteractive',
+        '-ExecutionPolicy','Bypass','-File',str(script),'-OpenPcb',
+        '-ProjectRoot',str(Path(target).resolve().parent),'-KicadExe',str(executable)],
+        env=env, capture_output=True, text=True, encoding='utf-8-sig', errors='replace',
+        timeout=40, creationflags=subprocess.CREATE_NO_WINDOW)
+    if result.returncode or 'PcbOpenRequested=1' not in result.stdout.splitlines():
+        raise ValueError((result.stderr or result.stdout or '工程管理器未确认打开 PCB')[-2000:])
+    return None
 
 
 class PcbConnection:
@@ -163,8 +171,14 @@ class PcbConnection:
         notify = progress or (lambda *args:None)
         with self.lock:
             result = self.inspect()
+            if result['state'] == 'connected':
+                self.opened = None
             if result['state'] != 'closed' or not open_if_closed:
                 return result
+            # Manager commands are idempotent; only allow a retry after this
+            # invocation's fresh full inventory verified no PCB or document lock.
+            if isinstance(self.opened, str):
+                self.opened = None
             if self.opened is not None:
                 poll = getattr(self.opened, 'poll', None)
                 exit_code = poll() if callable(poll) else None
@@ -185,8 +199,15 @@ class PcbConnection:
             notify('connecting','正在等待 PCB 原生接口就绪')
             deadline = self.clock.monotonic() + 30
             while self.clock.monotonic() < deadline:
-                result = self.inspect()
+                notify('connecting','正在等待 PCB 原生接口就绪')
+                # The verified launcher owns opening. Repeated CIM/UI scans here
+                # slow startup and cannot make an IPC session ready any sooner.
+                try:
+                    result = self.discover()
+                except Exception as exc:
+                    result = {'state':'unknown', 'reason':str(exc)}
                 if result['state'] == 'connected':
+                    self.opened = None
                     notify('connected','已连接当前工程 PCB')
                     return result
                 if result['state'] == 'ambiguous':

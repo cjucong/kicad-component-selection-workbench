@@ -355,9 +355,10 @@ class PcbSession:
                 'project':str(self.root),'file':str((self.root / doc.board_filename).resolve()),
                 'session':fingerprint([socket, str(doc), client._client._kicad_token]),'errors':errors}
 
-    def _board(self):
+    def _board(self, progress=None):
         from kipy.board import Board
-        result = self.connection.ensure(open_if_closed=True)
+        options = {'progress':progress} if progress else {}
+        result = self.connection.ensure(open_if_closed=True, **options)
         if result['state'] != 'connected':
             raise ValueError(result.get('reason') or 'PCB 无法连接，请打开当前工程 PCB 并启用 IPC 后重试')
         client, doc = result['client'], result['document']
@@ -371,11 +372,13 @@ class PcbSession:
             transport.send_timeout = transport.recv_timeout = 4000
         return client, Board(client._client, doc), doc
 
-    def snapshot(self, project_root: Path, refs: list[str]) -> dict:
+    def snapshot(self, project_root: Path, refs: list[str], progress=None) -> dict:
         if Path(project_root).resolve() != self.root or not refs or len(set(refs)) != len(refs):
             raise ValueError('无效的工程或位号清单')
         with self.lock:
-            client, board, doc = self._board()
+            client, board, doc = self._board(progress) if progress else self._board()
+            if progress:
+                progress('reading', '正在读取 PCB 实时内容和所选封装')
             text = board.get_as_string()
             instances = board.get_footprints()
             parts = {}
@@ -448,7 +451,8 @@ class PcbSession:
                 raise ValueError(ref + ' 完整封装定义回读不一致，可能有图形、模型或属性未保留')
         return {'ok': True}
 
-    def apply(self, snapshot: dict, replacements: list[dict], backup_dir: Path, *, schematic_close_verified=False) -> dict:
+    def apply(self, snapshot: dict, replacements: list[dict], backup_dir: Path, *, schematic_close_verified=False, progress=None) -> dict:
+        notify = progress or (lambda *args: None)
         with self.lock:
             refs = list(snapshot['parts'])
             if not refs or len(replacements) != len(refs) or {item.get('ref') for item in replacements} != set(refs):
@@ -460,6 +464,7 @@ class PcbSession:
             if backup_dir.is_relative_to(self.root):
                 raise ValueError('PCB 恢复材料必须放在工程外')
             backup_dir.mkdir(parents=True, exist_ok=False)
+            notify('backup', '正在保存本次 PCB 事务的恢复材料（工程外）')
             (backup_dir / 'before.kicad_pcb').write_text(current['text'], encoding='utf-8')
             (backup_dir / 'transaction.json').write_text(json.dumps({
                 'before': current, 'replacements': replacements}, ensure_ascii=False), encoding='utf-8')
@@ -474,6 +479,7 @@ class PcbSession:
             if self.snapshot(self.root, refs) != snapshot:
                 raise ValueError('备份期间 PCB 已改变，请重新预览')
             require_safe_commit_route(schematic_close_verified)
+            notify('commit', '正在向 KiCad 提交所选器件更新')
             commit = board.begin_commit()
             try:
                 staged = board.update_items(prepared)
@@ -498,6 +504,7 @@ class PcbSession:
             # classify without repeating writes or dropping an ended commit.
             import time
             last_error = publish_error
+            notify('readback', '正在回读核验位置、方向、焊盘、网络及未选对象')
             for attempt in range(3):
                 try:
                     actual = self.snapshot(self.root, refs)

@@ -16,12 +16,22 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  try {
   const page=await browser.newPage({viewport:{width:1440,height:920}}), errors=[], requests=[];
   page.on('pageerror',error=>errors.push(error.message));
-  await page.route('**/api/design_sync_preview',async route=>{
+  let pendingPreview=null, previewPolls=0;
+  await page.route('**/api/start_design_sync_preview',async route=>{
    const body=route.request().postDataJSON(); requests.push(body);
-   await route.fulfill({json:{ok:true,preview_id:'synthetic',refs:body.refs,destination:body.destination,
+   pendingPreview={ok:true,preview_id:'synthetic',refs:body.refs,destination:body.destination,
     schematic_changes:[],blocked:false,pcb_preview:body.destination==='schematic'?null:{ok:true,preview_id:'pcb',
      items:[{ref:body.refs[0],kind:'rename',before:'Local:Original',after:'Local:0603',needs_ack:false,
-      field_changes:[{name:'Value',before:'10k',after:'22k'}]}]}}});
+      field_changes:[{name:'Value',before:'10k',after:'22k'}]}]}};
+   previewPolls=0;
+   await route.fulfill({json:{ok:true,job_id:'preflight',done:false,stage:'queued',message:'Waiting for verified PCB IPC'}});
+  });
+  await page.route('**/api/design_sync_job?*',async route=>{
+   previewPolls++;
+   await route.fulfill({json:{ok:true,job_id:'preflight',done:previewPolls>1,
+    stage:previewPolls>1?'preview_ready':'preflight:connecting',message:'Waiting for verified PCB IPC',
+    elapsed_seconds:1,stage_elapsed_seconds:.5,
+    timings:[{stage:'source',message:'Read design data',seconds:.25}],preview:previewPolls>1?pendingPreview:null}});
   });
   await page.goto(process.env.DESIGN_SYNC_URL);
   await page.locator('#rows tr[data-ref]').first().waitFor();
@@ -32,9 +42,15 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.locator('#rows tr[data-refs="R1"] [data-select-row]').check();
   await page.locator('#designSyncMenu').click();
   await page.locator('[data-design-destination="pcb"]').click();
+  await page.getByText('Waiting for verified PCB IPC',{exact:true}).waitFor();
+  assert.equal(await page.locator('[data-design-bar]').getAttribute('value'),null);
+  assert.match(await page.locator('[data-design-elapsed]').textContent(),/s/);
   await page.getByText('封装仅改名',{exact:true}).waitFor();
   assert.deepEqual(requests.at(-1).refs,['R1']);
   assert.equal(await page.locator('[data-design-compare]').count(),0);
+  assert.equal(await page.locator('[data-design-bar]').getAttribute('value'),'1');
+  await page.locator('[data-design-timing] summary').click();
+  await page.getByText('Read design data',{exact:false}).waitFor();
   for(const width of [1440,768,390]) {
    await page.setViewportSize({width,height:920});
    const bounds=await page.locator('[data-design-panel]').boundingBox();

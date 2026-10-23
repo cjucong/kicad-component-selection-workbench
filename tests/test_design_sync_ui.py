@@ -21,12 +21,12 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
    window.fetch=async(path,options)=>{
     const body=options?.body ? JSON.parse(options.body) : null;
     calls.push({path,body});
-    if(path==='/api/design_sync_preview') {
+    if(path==='/api/start_design_sync_preview') {
      if(mode==='late') await new Promise(resolve=>window.finishPreview=resolve);
-     return {ok:true,json:async()=>({ok:true,preview_id:'design-1',refs:['R1'],destination:body.destination,
+     return {ok:true,json:async()=>({ok:true,job_id:'preflight',done:true,stage:'preview_ready',preview:{ok:true,preview_id:'design-1',refs:['R1'],destination:body.destination,
       schematic_changes:[],pcb_preview:body.destination==='both' ? null : {preview_id:'pcb-1',blocked:false,
        items:[{ref:'R1',kind:mode==='replace'?'replace':'rename',before:'Local:Old',after:'Local:New',
-        needs_ack:mode==='replace',max_error_mm:mode==='replace'?.2:0,field_changes:[]}]}})};
+        needs_ack:mode==='replace',max_error_mm:mode==='replace'?.2:0,field_changes:[]}]}}})};
     }
     if(path.includes('start_design_sync')) {
      if(mode==='rejected') return {ok:false,json:async()=>({ok:false,error:'预检后数据已改变，请重新预检'})};
@@ -79,6 +79,7 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
   await page.evaluate(()=>finishPreview());
   await page.waitForTimeout(100);
   assert.equal(await page.locator('[data-design-panel]').count(),0);
+  assert(await page.evaluate(()=>calls.some(x=>x.path==='/api/cancel_design_sync_preview' && x.body.job_id==='preflight')));
   await page.evaluate(()=>{mode='rename';return window.openDesignSync({refs:['R1'],destination:'pcb'});});
   await page.evaluate(()=>mode='rejected');
   await page.locator('[data-design-apply]').click();

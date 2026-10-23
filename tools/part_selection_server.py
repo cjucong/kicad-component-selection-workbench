@@ -2057,12 +2057,15 @@ class PartSelectionApp:
         if payload.get('operation') == 'pcb-update':
             if payload.get('acknowledged') is not True:
                 raise ValueError('请确认 PCB 更新')
-            return self.apply_design_pcb(str(payload.get('preview_id') or ''))
+            return self.apply_design_pcb(str(payload.get('preview_id') or ''), progress=progress)
         if payload.get("operation") == "row-footprint":
             return self.row_footprint(payload, progress=progress)
         return self.select_candidate(payload, progress=progress)
 
-    def apply_design_pcb(self, preview_id):
+    def apply_design_pcb(self, preview_id, progress=None):
+        notify = progress or (lambda *args: None)
+        options = {'progress':progress} if progress else {}
+        notify('waiting', '正在等待设计同步事务')
         with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
             # KiCad 10.0.0 dispatches document-less BeginCommit to an unordered
             # editor handler. A cohosted schematic can crash the entire manager.
@@ -2074,8 +2077,9 @@ class PartSelectionApp:
             if state.get('result'):
                 return deepcopy(state['result'])
             if state.get('items') and all(item['kind'] == 'none' for item in state['items']):
-                return self.pcb_updates.apply(preview_id, True)
+                return self.pcb_updates.apply(preview_id, True, **options)
             closed = False
+            notify('schematic_guard', '正在安全保存并暂关同工程原理图，避免 KiCad 10 事务冲突')
             prepared = self.run_kicad_script(self.kicad_url_for_refs(state['refs']),
                 ['-Mode','FindDialog','-SaveActiveFrame','-CloseAfterSave','-SaveOnly','-ExistingOnly'])
             if not prepared.get('ok'):
@@ -2087,10 +2091,11 @@ class PartSelectionApp:
             closed = 'SchematicClosed=1' in str(prepared.get('message',''))
             result = None
             try:
-                result = self.pcb_updates.apply(preview_id, True, schematic_close_verified=True)
+                result = self.pcb_updates.apply(preview_id, True, schematic_close_verified=True, **options)
                 return result
             finally:
                 if closed:
+                    notify('restore', 'PCB 已处理，正在通过工程管理器恢复原理图')
                     restored = self.notify_kicad_schematic_changed({'updated_refs':state['refs']})
                     if result is not None and not restored.get('ok'):
                         result['warning'] = 'PCB 已更新；原理图重新打开失败，请从工程管理器打开：' + str(restored.get('message',''))
@@ -3803,6 +3808,12 @@ def make_handler(app: PartSelectionApp):
                     return
                 if parsed.path == "/api/start_selection":
                     json_response(self, app.selection_jobs.start(payload))
+                    return
+                if parsed.path == '/api/start_design_sync_preview':
+                    json_response(self, app.design_sync.start_preview(payload))
+                    return
+                if parsed.path == '/api/cancel_design_sync_preview':
+                    json_response(self, app.design_sync.cancel_preview(str(payload.get('job_id') or '')))
                     return
                 if parsed.path == '/api/design_sync_preview':
                     json_response(self, app.design_sync.preview(payload))

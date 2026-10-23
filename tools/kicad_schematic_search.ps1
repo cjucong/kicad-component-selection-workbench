@@ -38,6 +38,8 @@
 
     [switch]$NotifyOnly,
 
+    [switch]$OpenPcb,
+
     [switch]$EnablePageSwitch,
 
     [ValidateSet("SearchPanel", "FindDialog")]
@@ -708,26 +710,40 @@ function Get-TopLevelSchematicFile {
 }
 
 function Get-KiCadProjectManagerWindow {
+    param([switch]$RequireUnique)
+    $managers = @()
+    $unverified = @()
     foreach ($window in (Get-KiCadTopLevelWindows)) {
         if ($window.ProcessName -ne 'kicad' -or $window.MainWindowHandle -eq 0 -or
             $window.MainWindowTitle -notmatch '\sKiCad\s+\d') { continue }
         try {
             # Launch arguments can name a project that the manager has since closed.
-            if ((Get-HostedProjectStatus -Window $window) -eq 'match') { return $window }
+            $status = Get-HostedProjectStatus -Window $window
+            if ($status -eq 'match') { $managers += $window }
+            elseif ($status -ne 'other') { $unverified += $window.Id }
         } catch {
             if ($_.Exception.Message -match 'KICAD_BUSY') { throw }
+            $unverified += $window.Id
             Write-Log ("MANAGER_PROJECT_UNVERIFIED id={0} message={1}" -f $window.Id, $_.Exception.Message)
         }
     }
+    if ($RequireUnique -and $managers.Count -gt 1) {
+        throw 'KICAD_MANAGER_AMBIGUOUS: Multiple managers host this project. No PCB was opened.'
+    }
+    if ($RequireUnique -and $unverified.Count -gt 0) {
+        throw ('KICAD_MANAGER_UNVERIFIED: Cannot exclude an existing project manager (PID ' + ($unverified -join ',') + '). No new manager was launched.')
+    }
+    if ($managers.Count -gt 0) { return $managers[0] }
     return $null
 }
 
 function Ensure-KiCadProjectOpen {
+    param([switch]$RequireUnique)
     $projectPath = Get-KiCadProjectFile
     if (-not $projectPath) {
         throw "Cannot open the schematic through KiCad Manager: project file not found."
     }
-    $manager = Get-KiCadProjectManagerWindow
+    $manager = Get-KiCadProjectManagerWindow -RequireUnique:$RequireUnique
     if ($null -ne $manager) {
         Write-Log ("OPEN_PROJECT reuse_manager id={0} hwnd={1}" -f $manager.Id, $manager.MainWindowHandle)
         return $manager
@@ -737,10 +753,14 @@ function Ensure-KiCadProjectOpen {
     }
 
     Write-Log "OPEN_PROJECT $projectPath"
-    Start-Process -FilePath $KicadExe -ArgumentList @('"' + $projectPath + '"')
+    Start-Process -FilePath $KicadExe -ArgumentList @('"' + $projectPath + '"') -WindowStyle Hidden
     $deadline = (Get-Date).AddMilliseconds(8000)
     do {
-        $manager = Get-KiCadProjectManagerWindow
+        try { $manager = Get-KiCadProjectManagerWindow -RequireUnique:$RequireUnique }
+        catch {
+            if ($_.Exception.Message -notmatch 'KICAD_MANAGER_UNVERIFIED') { throw }
+            $manager = $null
+        }
         if ($null -ne $manager) { return $manager }
         Start-Sleep -Milliseconds 150
     } while ((Get-Date) -lt $deadline)
@@ -748,7 +768,7 @@ function Ensure-KiCadProjectOpen {
 }
 
 function Find-KiCadManagerSchematicCommand {
-    param([IntPtr]$Menu)
+    param([IntPtr]$Menu, [switch]$Pcb)
 
     $simplified = -join ([char]0x539F, [char]0x7406, [char]0x56FE, [char]0x7F16, [char]0x8F91, [char]0x5668)
     $traditional = -join ([char]0x539F, [char]0x7406, [char]0x5716, [char]0x7DE8, [char]0x8F2F, [char]0x5668)
@@ -757,14 +777,19 @@ function Find-KiCadManagerSchematicCommand {
         if (($state -band 3) -ne 0) { continue }
         $submenu = [NativeMethods]::GetSubMenu($Menu, $index)
         if ($submenu -ne [IntPtr]::Zero) {
-            $command = Find-KiCadManagerSchematicCommand -Menu $submenu
+            $command = Find-KiCadManagerSchematicCommand -Menu $submenu -Pcb:$Pcb
             if ($null -ne $command) { return $command }
             continue
         }
         $text = New-Object System.Text.StringBuilder 512
         [NativeMethods]::GetMenuString($Menu, $index, $text, 512, 0x400) | Out-Null
         $label = ($text.ToString().Split("`t")[0] -replace '&', '').Trim()
-        if ($label -notin @('Schematic Editor', $simplified, $traditional)) { continue }
+        $labels = @('Schematic Editor', $simplified, $traditional)
+        if ($Pcb) {
+            $labels = @('PCB Editor', ('PCB ' + (-join ([char]0x7F16, [char]0x8F91, [char]0x5668))),
+                ('PCB ' + (-join ([char]0x7DE8, [char]0x8F2F, [char]0x5668))))
+        }
+        if ($label -notin $labels) { continue }
         $command = [NativeMethods]::GetMenuItemID($Menu, $index)
         if ($command -gt 0 -and $command -ne [uint32]::MaxValue) { return $command }
     }
@@ -1753,6 +1778,28 @@ try {
     }
 
     Write-Log "START raw=$UriOrRef hotkey=$SearchHotkey dryRun=$DryRun mode=$Mode"
+    if ($OpenPcb) {
+        $root = Get-ProjectRoot
+        $projects = @(Get-ChildItem -LiteralPath $root -Filter '*.kicad_pro' -File)
+        $boards = @(Get-ChildItem -LiteralPath $root -Filter '*.kicad_pcb' -File)
+        if ($projects.Count -ne 1 -or $boards.Count -ne 1 -or $projects[0].BaseName -ne $boards[0].BaseName) {
+            throw 'Cannot uniquely identify the requested PCB and project. No editor was opened.'
+        }
+        Ensure-NativeMethods
+        $manager = Ensure-KiCadProjectOpen -RequireUnique
+        Assert-KiCadWindowResponsive -Target $manager -Phase 'open_pcb'
+        if ((Get-HostedProjectStatus -Window $manager) -ne 'match') {
+            throw 'KiCad Manager no longer belongs to the requested project. No PCB was opened.'
+        }
+        $command = Find-KiCadManagerSchematicCommand -Menu ([NativeMethods]::GetMenu($manager.MainWindowHandle)) -Pcb
+        if ($null -eq $command) { throw 'KiCad Manager PCB Editor command is missing or disabled. No standalone editor was launched.' }
+        Write-Log ("OPEN_PCB via_manager id={0} command={1} project={2}" -f $manager.Id, $command, $projects[0].FullName)
+        if (-not [NativeMethods]::PostMessage($manager.MainWindowHandle, 0x0111, [IntPtr]([long]$command), [IntPtr]::Zero)) {
+            throw 'Could not dispatch PCB Editor command to the verified KiCad Manager.'
+        }
+        Write-Output 'PcbOpenRequested=1'
+        exit 0
+    }
     Add-Type -AssemblyName System.Web
     $ref = Get-DesignatorFromInput $UriOrRef
     $page = Get-PageFromInput $UriOrRef

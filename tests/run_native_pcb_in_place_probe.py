@@ -415,7 +415,10 @@ def run_probe(report, extra_checks=None):
                 if not opened:
                     for hwnd, title in windows(process.pid):
                         if title.startswith('Probe') and 'KiCad' in title:
-                            ctypes.windll.user32.PostMessageW(hwnd, 0x0111, 20012, 0)
+                            from part_selection_pcb_connection import launch_editor
+                            started=time.perf_counter()
+                            launch_editor(root / 'Probe.kicad_pcb')
+                            results['manager_open_seconds']=time.perf_counter()-started
                             opened = True
                 time.sleep(1)
             if len(documents) != 1:
@@ -580,18 +583,25 @@ def run_probe(report, extra_checks=None):
             saved = (root / 'Probe.kicad_pcb').read_text(encoding='utf-8')
             assert 'Standard_R1' in saved and 'prior unsaved edit' in saved
             results['checks']['fixture_save'] = True
-            close_fixture(process)
-            process = None
+            for hwnd,title in windows(process.pid):
+                if 'PCB' in title and 'Probe' in title:
+                    ctypes.windll.user32.PostMessageW(hwnd,0x0010,0,0)
+            for _ in range(60):
+                if not any('PCB' in title and 'Probe' in title for _,title in windows(process.pid)):
+                    break
+                time.sleep(.25)
+            else:
+                raise RuntimeError('Fixture PCB did not close normally')
             results['stage'] = 'reopen'
-            def launch_owned(target):
-                nonlocal process
-                assert Path(target).resolve() == (root/'Probe.kicad_pcb').resolve()
-                process = subprocess.Popen([str(native.parent/'pcbnew.exe'),str(target)],env=env)
-                process.probe_started = time.time()-1
-                return process
-            session.connection.launch = launch_owned
-            connection = session.connection.ensure(open_if_closed=True)
+            events=[]
+            started=time.perf_counter()
+            connection = session.connection.ensure(open_if_closed=True,
+                progress=lambda stage,message:events.append({'stage':stage,'message':message,'seconds':time.perf_counter()-started}))
             assert connection['state']=='connected', connection
+            assert process.poll() is None
+            assert any('PCB' in title for _,title in windows(process.pid)), 'PCB not hosted by original manager'
+            results['manager_reopen_progress']=events
+            results['checks']['manager_hosted_open_and_reopen']=True
             results['checks']['absent_only_native_auto_open'] = True
             reopened = None
             for _ in range(25):

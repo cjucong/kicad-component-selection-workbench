@@ -148,6 +148,10 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `test_pcb_session.py` 另覆盖从原理图入口按需连接 PCB、PCB 晚于工作台打开、多工程/同工程重复编辑器、独立服务端令牌及本机接口发现。真实探测脚本的工作台阶段不传入 PCB 启动接口，由正式连接逻辑发现并核验一次性工程的实时 PCB。
 
+`test_pcb_connection.py` 另覆盖经工程管理器启动、启动等待不重复 CIM 扫描、正常关闭后再开与连接超时后的防重复启动。`test_design_sync.py` 验证原生连接等待期间异步预检可轮询及阶段计时；两个 Chromium 同步测试覆盖动态进度、耗时展开和迟到预检响应。真实探测使用正式管理器入口打开 PCB，保存后只关闭 PCB，再由正式连接逻辑复用同一管理器重开，核验编辑器归属及进度事件；不会以测试脚本直接启动 pcbnew.exe 代替此项验收。
+
+管理器专项回归还覆盖身份不明和同工程多管理器拒绝自动打开；超时后仅在重新完整核实目标已关闭时允许重试。只读预检支持取消排队和合作式停止，不允许用预检取消接口中断写入事务；浏览器关闭/切换对齐方式/迟到启动响应都需取消旧任务。逐器件进度使用独立阶段键，避免把整批耗时误标为最后一个器件。
+
 `test_pcb_schematic_identity.py` 覆盖复制工程遗留根 UUID、PCB 省略根 UUID、实际 Sheetfile 层级（含子目录）、无关页面/错误页面链/其他工程实例拒绝、缺页和循环诊断。真实 PCB 探测夹具采用三级页面、历史根实例记录和省略根 UUID 的 PCB 路径，避免只测手工拼出的平面根路径。
 
 `test_pcb_in_place_geometry.py`、`test_pcb_session.py`、`test_pcb_transaction.py`、`test_pcb_update.py` 与 `test_pcb_updates_ui.py` 覆盖严格编号配准、工程身份、批次边界、备份失败、暂存/回读失败、未知结果不重放、源变化及确认状态隔离。`run_pcb_updates_smoke.py` 为可复用离线 Chromium 交互检查；设置 `PCB_SCREENSHOT` 为工程外绝对文件名前缀可保留截图。

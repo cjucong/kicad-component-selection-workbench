@@ -162,14 +162,18 @@ class PcbUpdates:
         table_hash = source['design']['versions']['hashes'].get(str(Path(self.app.project_root)/'fp-lib-table'))
         return (ref, original['uuid'], table_hash, json.dumps(record.get('footprint_change'), sort_keys=True))
 
-    def preview(self, refs: list[str], bom: str, *, alignment='rigid', source=None) -> dict:
+    def preview(self, refs: list[str], bom: str, *, alignment='rigid', source=None, progress=None) -> dict:
+        notify = progress or (lambda *args: None)
+        options = {'progress':progress} if progress else {}
         if alignment not in ('rigid', 'center'):
             raise ValueError('未知的封装对齐方式')
         if not refs or len(refs) > 10000 or len(set(refs)) != len(refs):
             raise ValueError('请选择 1 至 10000 个不重复的位号')
         with self.app.selection_save_lock:
             source = self._source(refs, source)
-        snapshot = self.session.snapshot(self.app.project_root, refs)
+        notify('connecting', '正在发现并连接当前工程 PCB')
+        snapshot = self.session.snapshot(self.app.project_root, refs, **options)
+        notify('identity', '正在核对原理图实例与 PCB 关联')
         copper_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
             'source', {}).get('instance_geometry_hash')]
         copper = board_copper_hashes(snapshot['text'], copper_refs) if copper_refs else {}
@@ -179,7 +183,8 @@ class PcbUpdates:
                                              include_instance=True) if instance_refs else {}
         replacements, targets, items = [], [], []
         libraries = {}
-        for ref in refs:
+        for index, ref in enumerate(refs):
+            notify('parts:'+ref, f'正在核对 PCB 器件 {index+1}/{len(refs)}：{ref}')
             original = snapshot['parts'][ref]
             if original.get('symbol_path') not in source['identity']['paths'][ref]:
                 raise ValueError(ref + ' 原理图实例与 PCB 关联不一致，请先核对 UUID / 重新关联，不能只凭同位号替换')
@@ -264,7 +269,10 @@ class PcbUpdates:
                 'alignment': alignment,
                 'basis': '当前 PCB 焊盘位置，不是历史位置恢复', 'saved': False}
 
-    def apply(self, preview_id: str, acknowledged: bool, *, schematic_close_verified=False) -> dict:
+    def apply(self, preview_id: str, acknowledged: bool, *, schematic_close_verified=False, progress=None) -> dict:
+        notify = progress or (lambda *args: None)
+        options = {'progress':progress} if progress else {}
+        notify('revalidate', '正在重新核验工程、库文件和 PCB 版本')
         with self.lock, self.app.selection_save_lock:
             state = self.previews.get(preview_id)
             if not state or time.monotonic() - state['time'] > 600:
@@ -283,7 +291,7 @@ class PcbUpdates:
             for target in state['targets']:
                 if hashlib.sha256(Path(target['path']).read_bytes()).hexdigest() != target['hash']:
                     raise ValueError('目标封装库已改变，请重新预检')
-            if self.session.snapshot(self.app.project_root, state['refs']) != state['snapshot']:
+            if self.session.snapshot(self.app.project_root, state['refs'], **options) != state['snapshot']:
                 raise ValueError('PCB 在预检后发生变化，请重新预检')
             state['started'] = True
             if all(item['kind'] == 'none' for item in state['items']):
@@ -291,7 +299,7 @@ class PcbUpdates:
                 return deepcopy(state['result'])
             directory = runtime_directory(self.app.project_root) / ('pcb-update-' + preview_id)
             result = self.session.apply(state['snapshot'], state['replacements'], directory,
-                                        schematic_close_verified=schematic_close_verified)
+                                        schematic_close_verified=schematic_close_verified, **options)
             for ref, part in result.get('snapshot', {}).get('parts', {}).items():
                 if part['footprint'] == state['source']['targets'][ref]:
                     record = state['source']['records'][ref]
