@@ -122,3 +122,26 @@ def test_windows_socket_discovery_only_accepts_kicad_api_pipes(monkeypatch):
     assert r'ipc://C:\Temp\kicad\api.sock' in paths
     assert r'ipc://C:\Temp\kicad\api-123.sock' in paths
     assert not any('untrusted' in path or 'other.sock' in path or 'unrelated' in path for path in paths)
+
+
+def test_discovery_keeps_errors_and_connection_state(monkeypatch, scratch_project):
+    fake_api(monkeypatch, {'ipc://busy':(TimeoutError('editor busy'), '')})
+    result = sessions.PcbSession(scratch_project).discover()
+    assert result['state'] == 'unknown'
+    assert result['errors'][0]['socket'] == 'ipc://busy'
+    assert 'busy' in result['errors'][0]['reason']
+
+
+def test_injected_connection_is_used_and_rechecks_each_board_access(monkeypatch, scratch_project):
+    from unittest.mock import Mock
+    target = doc(scratch_project)
+    fake_api(monkeypatch, {})
+    client = Obj(_client=Obj(_kicad_token='verified'))
+    connection = Obj(ensure=Mock(side_effect=[
+        {'state':'connected','socket':'ipc://target','client':client,'document':target},
+        {'state':'disconnected','reason':'session exited'}]))
+    session = sessions.PcbSession(scratch_project, connection=connection)
+    assert session._board()[1] is target
+    with pytest.raises(ValueError, match='session exited'):
+        session._board()
+    assert connection.ensure.call_count == 2

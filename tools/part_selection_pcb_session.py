@@ -241,17 +241,20 @@ def pcb_socket_candidates(inherited):
 
 
 class PcbSession:
-    def __init__(self, root, socket=None, library_reader=None):
+    def __init__(self, root, socket=None, library_reader=None, connection=None):
         self.root = Path(root).resolve()
         self.socket = socket or os.environ.get('KICAD_API_SOCKET', '')
         self.library_reader = library_reader
         self.lock = threading.RLock()
+        if connection is None:
+            from part_selection_pcb_connection import PcbConnection
+            connection = PcbConnection(self.root, discover=self.discover)
+        self.connection = connection
 
-    def _board(self):
+    def discover(self):
         from kipy import KiCad
-        from kipy.board import Board
         from kipy.proto.common.types import DocumentType
-        matches = {}
+        matches, errors = {}, []
         for socket in pcb_socket_candidates(self.socket):
             try:
                 # A token inherited from the schematic belongs to that server,
@@ -260,22 +263,42 @@ class PcbSession:
                                kicad_token='', timeout_ms=600)
                 documents = [doc for doc in client.get_open_documents(DocumentType.DOCTYPE_PCB)
                              if doc.project.path and Path(doc.project.path).resolve() == self.root]
-            except Exception:
+            except Exception as exc:
+                errors.append({'socket':socket,'type':type(exc).__name__,'reason':str(exc)[:400]})
                 continue
             if not documents:
                 continue
-            doc = select_document(documents, self.root)
+            try:
+                doc = select_document(documents, self.root)
+            except ValueError as exc:
+                return {'state':'ambiguous','reason':str(exc),'errors':errors}
             token = client._client._kicad_token
             if not token:
-                raise ValueError('KiCad 未返回可核验的会话身份，禁止写入 PCB')
+                return {'state':'unknown','reason':'KiCad 未返回可核验的会话身份，禁止写入 PCB',
+                        'errors':errors, 'identity_unverified':True}
             identity = (token, str((self.root / doc.board_filename).resolve()))
             matches.setdefault(identity, (socket, client, doc))
         if not matches:
-            raise ValueError('未找到当前工程可连接的 PCB 编辑器。请打开当前工程的 PCB 并启用 KiCad IPC，再点击重试；无需关闭或更换工作台入口')
+            return {'state':'unknown','errors':errors,
+                    'reason':'未找到当前工程可连接的 PCB 编辑器。请打开当前工程的 PCB 并启用 KiCad IPC，再点击重试；无需关闭或更换工作台入口'}
         if len(matches) != 1:
-            raise ValueError('检测到多个属于当前工程的 PCB 编辑器，无法唯一确定目标；请只保留一个后重试')
+            return {'state':'ambiguous','errors':errors,
+                    'reason':'检测到多个属于当前工程的 PCB 编辑器，无法唯一确定目标；请只保留一个后重试'}
         socket, client, doc = next(iter(matches.values()))
-        self.socket = socket
+        return {'state':'connected','socket':socket,'client':client,'document':doc,
+                'project':str(self.root),'file':str((self.root / doc.board_filename).resolve()),
+                'session':fingerprint([socket, str(doc), client._client._kicad_token]),'errors':errors}
+
+    def _board(self):
+        from kipy.board import Board
+        result = self.connection.ensure(open_if_closed=True)
+        if result['state'] != 'connected':
+            raise ValueError(result.get('reason') or 'PCB 无法连接，请打开当前工程 PCB 并启用 IPC 后重试')
+        client, doc = result['client'], result['document']
+        select_document([doc], self.root)
+        if not client._client._kicad_token:
+            raise ValueError('KiCad 未返回可核验的会话身份，禁止写入 PCB')
+        self.socket = result['socket']
         client._client._timeout_ms = 4000
         return client, Board(client._client, doc), doc
 
