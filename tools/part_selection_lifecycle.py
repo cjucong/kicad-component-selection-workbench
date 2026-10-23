@@ -105,6 +105,7 @@ class DesktopBridge:
         lifecycle = self._lifecycle
         if not lifecycle.lock.acquire(blocking=False):
             return {'ok':False,'error':'工作台正在退出或处理更新，请稍候'}
+        reserved = False
         try:
             if lifecycle.window.get_current_url()!=lifecycle.url or lifecycle.allow_close:
                 raise ValueError('仅允许当前工作台管理插件更新')
@@ -113,6 +114,17 @@ class DesktopBridge:
                 raise ValueError('当前宿主不支持更新，请重新安装插件')
             if action=='status':
                 return updater.status()
+            if lifecycle.update_busy:
+                raise ValueError('正在检查或下载插件更新，请稍候；其他工具仍可使用')
+            if action not in ('check','preferences','prepare'):
+                raise ValueError('不支持的更新操作')
+            lifecycle.update_busy = reserved = True
+        except Exception as exc:
+            return {'ok':False,'error':str(exc)}
+        finally:
+            lifecycle.lock.release()
+        # Network I/O must not own the native-window lifecycle lock.
+        try:
             if action=='check':
                 if value is not None and type(value) is not bool:
                     raise ValueError('检查更新参数无效')
@@ -121,11 +133,12 @@ class DesktopBridge:
                 return updater.preferences(value)
             if action=='prepare':
                 return updater.prepare()
-            raise ValueError('不支持的更新操作')
         except Exception as exc:
             return {'ok':False,'error':str(exc)}
         finally:
-            lifecycle.lock.release()
+            if reserved:
+                with lifecycle.lock:
+                    lifecycle.update_busy = False
 
 
 class DesktopLifecycle:
@@ -138,6 +151,7 @@ class DesktopLifecycle:
         self.shutdown_requested = False
         self.lock = threading.Lock()
         self.updater = None
+        self.update_busy = False
         self.install_update = False
         self.candidates = None
         self.tools = None
@@ -201,6 +215,8 @@ class DesktopLifecycle:
         try:
             if type(restart) is not bool or type(update) is not bool or self.window.get_current_url()!=self.url:
                 raise ValueError('仅允许当前工作台请求退出')
+            if self.update_busy:
+                raise ValueError('正在检查或下载插件更新，请完成后再关闭或重启；窗口与编辑内容已保留')
             if update and (not self.updater or not self.updater.pending):
                 raise ValueError('请先下载并校验更新')
             install_update = bool(self.updater and self.updater.pending and (

@@ -112,6 +112,29 @@ def run(report):
                     assert tools.child_action(kind,'close')['ok'], kind
                     assert tools.entries[kind]['request'] is None
                     result['checks'][kind]=True
+                entered, release = threading.Event(), threading.Event()
+                def slow_check(**kwargs):
+                    entered.set()
+                    if not release.wait(25):
+                        raise AssertionError('Native update concurrency probe timed out')
+                    return {'ok':True}
+                lifecycle.updater.check = slow_check
+                lifecycle.updater.pending = None
+                main.evaluate_js("window.pywebview.api.plugin_update('check').then(r=>window.nativeUpdateProbe=r); true")
+                try:
+                    assert entered.wait(10), 'Actual native update bridge did not start'
+                    response = tools.main_action('open',{'kind':'settings','request_id':uuid4().hex,'payload':{}})
+                    assert response['ok'], response
+                    child = tools.entries['settings']['window']
+                    wait(child,'document.querySelector("#pathSettingsDialog").open')
+                    stopped = lifecycle.finish_exit()
+                    assert not stopped['ok'] and '更新' in stopped['error'], stopped
+                    assert tools.child_action('settings','close')['ok']
+                finally:
+                    release.set()
+                wait(main,'window.nativeUpdateProbe?.ok === true')
+                assert lifecycle.update_busy is False
+                result['checks']['native_update_network_does_not_block_tools']=True
                 tools.check_exit(); tools.cancel_exit()
                 result['checks']['native_drag_outside_and_minimal_bridge']=True
                 result['passed']=True

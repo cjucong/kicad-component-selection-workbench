@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import sys
 import zipfile
+import ssl
+from urllib.error import URLError
+from unittest.mock import Mock
 
 import pytest
 
@@ -61,6 +64,33 @@ def test_previous_public_install_receives_current_release(installed, monkeypatch
 
 def test_source_checkout_cannot_be_replaced(scratch_project):
     assert not PluginUpdater(scratch_project, scratch_project.parent / 'updates').status()['installed']
+
+
+def test_tls_eof_retries_once_without_disabling_verification(installed, monkeypatch):
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.geturl.return_value = f'https://github.com/{REPOSITORY}/releases/latest/download/workbench-update.json'
+    response.read.return_value = b'{}'
+    opening = Mock(side_effect=[URLError(ssl.SSLEOFError(8, 'UNEXPECTED_EOF_WHILE_READING')), response])
+    monkeypatch.setattr('updater.urlopen', opening)
+    assert installed._request(response.geturl(), 1024) == b'{}'
+    assert opening.call_count == 2
+    assert all('context' not in call.kwargs for call in opening.call_args_list)
+
+
+@pytest.mark.parametrize('failure', [ssl.SSLEOFError(8, 'UNEXPECTED_EOF_WHILE_READING'),
+    ssl.SSLCertVerificationError(1, 'CERTIFICATE_VERIFY_FAILED'), TimeoutError('timed out')])
+def test_network_failure_is_readable_bounded_and_keeps_install(installed, monkeypatch, failure):
+    opening = Mock(side_effect=URLError(failure))
+    monkeypatch.setattr('updater.urlopen', opening)
+    with pytest.raises(ValueError, match='连接|证书|超时'):
+        installed.check()
+    assert opening.call_count == (2 if isinstance(failure, ssl.SSLEOFError) else 1)
+    assert '当前版本不受影响' in installed.status()['last_error']
+    assert 'urlopen error' not in installed.status()['last_error']
+    assert not installed.pending and not installed.last_checked
+    assert (installed.target / 'desktop.py').read_text() == '# existing desktop'
 
 
 def test_release_cannot_download_from_an_unrelated_site(installed, monkeypatch):

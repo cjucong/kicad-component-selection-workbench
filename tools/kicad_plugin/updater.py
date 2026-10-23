@@ -3,15 +3,17 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import ssl
 import threading
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import zipfile
@@ -117,16 +119,32 @@ class PluginUpdater:
     def _request(self, url, limit):
         request = Request(url, headers={'Accept':'application/octet-stream' if url.endswith('.zip') else 'application/json',
             'User-Agent':'KiCad-Component-Selection-Workbench/'+VERSION})
-        with urlopen(request, timeout=20) as response:
-            final = urlsplit(response.geturl())
-            if final.scheme != 'https' or final.hostname not in (
-                    'api.github.com', 'github.com', 'release-assets.githubusercontent.com',
-                    'objects.githubusercontent.com'):
-                raise ValueError('更新响应重定向到未认可的下载地址')
-            data = response.read(limit+1)
-        if len(data)>limit:
-            raise ValueError('更新数据超过大小限制')
-        return data
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=20) as response:
+                    final = urlsplit(response.geturl())
+                    if final.scheme != 'https' or final.hostname not in (
+                            'api.github.com', 'github.com', 'release-assets.githubusercontent.com',
+                            'objects.githubusercontent.com'):
+                        raise ValueError('更新响应重定向到未认可的下载地址')
+                    data = response.read(limit+1)
+                if len(data)>limit:
+                    raise ValueError('更新数据超过大小限制')
+                return data
+            except HTTPError:
+                raise  # Preserve 404 compatibility and persisted 403/429 cooldowns.
+            except (URLError, OSError) as exc:
+                reason = exc.reason if isinstance(exc, URLError) else exc
+                logging.warning('Plugin update HTTPS request failed (attempt %s): %s', attempt+1, exc)
+                if isinstance(reason, ssl.SSLEOFError) and attempt == 0:
+                    continue  # Retry a transient TLS disconnect once, with normal verification.
+                if isinstance(reason, ssl.SSLCertVerificationError):
+                    message = 'GitHub HTTPS 证书校验失败，请检查系统时间、代理或 HTTPS 拦截设置'
+                elif isinstance(reason, TimeoutError):
+                    message = '连接 GitHub 超时，请检查网络或代理后重试'
+                else:
+                    message = '与 GitHub 的安全连接失败或被中断，请检查网络、代理或 VPN 后重试'
+                raise ValueError(message+'；当前版本不受影响') from exc
 
     def _json(self, url):
         return json.loads(self._request(url, 2 * 1024 * 1024))

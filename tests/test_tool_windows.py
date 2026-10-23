@@ -1,6 +1,7 @@
 """Native window ownership contracts without starting a desktop GUI."""
 from types import SimpleNamespace
 from unittest.mock import Mock
+import threading
 
 import pytest
 
@@ -112,3 +113,50 @@ def test_native_close_does_not_discard_dirty_form():
     assert child.bridge.tool_window('minimize')['ok']
     assert owner.main_action('restore',{'kind':'footprint'})['ok']
     child.show.assert_called()
+
+
+@pytest.mark.parametrize('operation', ['check', 'prepare'])
+def test_slow_update_does_not_block_tools_but_still_protects_exit(operation):
+    owner, lifecycle, children, _ = windows()
+    entered, release = threading.Event(), threading.Event()
+    lifecycle.updater = Mock(pending=None)
+    lifecycle.updater.status.return_value = {'ok':True}
+    def slow(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return {'ok':True}
+    getattr(lifecycle.updater, operation).side_effect = slow
+    bridge = DesktopBridge(lifecycle)
+    results = []
+    worker = threading.Thread(target=lambda:results.append(bridge.plugin_update(operation)))
+    worker.start()
+    try:
+        assert entered.wait(2)
+        assert bridge.tool_window('open', request(refs='R1'))['ok']
+        assert bridge.tool_window('open', request(kind='settings', rid='settings'))['ok']
+        assert bridge.plugin_update('status')['ok']
+        assert not bridge.plugin_update('preferences', 'auto')['ok']
+        lifecycle.updater.preferences.assert_not_called()
+        lifecycle._stop_backend = Mock()
+        result = lifecycle.finish_exit()
+        assert not result['ok'] and '更新' in result['error']
+        lifecycle._stop_backend.assert_not_called()
+    finally:
+        release.set()
+        worker.join(3)
+    assert not worker.is_alive() and results == [{'ok':True}]
+    lifecycle.updater.pending = None
+    assert lifecycle.finish_exit()['ok']
+
+
+def test_update_releases_busy_state_on_failure_and_cannot_start_after_exit():
+    _, lifecycle, _, _ = windows()
+    lifecycle.updater = Mock(pending=None)
+    lifecycle.updater.preferences.return_value = {'ok':True}
+    lifecycle.updater.check.side_effect = OSError('network failure')
+    bridge = DesktopBridge(lifecycle)
+    assert not bridge.plugin_update('check')['ok']
+    assert bridge.plugin_update('preferences', 'off')['ok']
+    lifecycle.allow_close = True
+    assert not bridge.plugin_update('prepare')['ok']
+    lifecycle.updater.prepare.assert_not_called()
