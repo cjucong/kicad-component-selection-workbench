@@ -2,6 +2,8 @@
 
 本目录保留可复用测试和稳定夹具，不含生产 CAD、BOM、人工选料记录或 Git 数据。电路连通性、FPGA、工程目录检查和 U46 审核测试由原工程维护。
 
+撤回/关闭回归：`test_workbench_undo.py` 验证跨同步旧快照回退与新编辑基线，`test_row_footprint.py` 验证真实行改名后只撤回封装记录、不改 C 编码或 CAD；`test_tool_desktop_ui.py` 覆盖十种子窗口 Esc、未保存保护、输入法及内层对话框，`test_footprint_overlay_ui.py` 的 escape 场景验证只关闭最上层及对比返回预检。`run_tool_windows_smoke.py` 还验证聚焦 C 编码时刷新改名不会误发保存请求。
+
 更新回归包含 `test_tool_windows.py` 的网络阻塞并发场景（工具可打开，退出和重复更新受保护），以及 `test_plugin_updates.py` 的 TLS 中断重试、证书拒绝、超时提示。真实 WebView2 的 `run_native_tool_windows_probe.py` 还通过实际桥接挂起更新检查并打开设置窗口；网络延迟为受控测试，不代表真实下载验证。
 
 ## 运行

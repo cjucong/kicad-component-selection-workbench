@@ -105,7 +105,22 @@ def run(report):
                     elif kind=='footprint':
                         wait(child,'!!document.querySelector("[data-fp-close]")')
                         capture(child,report/'footprint-native.png')
-                        child.evaluate_js('document.querySelector("[data-fp-close]").click()')
+                        child.evaluate_js('window.rowFootprintSaving=true; true')
+                        assert not tools.child_action(kind,'close')['ok'], 'Actual publication must block close'
+                        child.evaluate_js('window.rowFootprintSaving=false; true')
+                        assert tools.child_action(kind,'close')['ok'], 'Read-only footprint preview must not block close'
+                        assert tools.entries[kind]['request'] is None
+                        response = tools.main_action('open',{'kind':kind,'request_id':uuid4().hex,'payload':payload})
+                        assert response['ok'], response
+                        wait(child,'!!document.querySelector(".fp-overlay [data-fp-close]")')
+                        child.evaluate_js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true})); true')
+                        for _ in range(100):
+                            if tools.entries[kind]['request'] is None: break
+                            time.sleep(.1)
+                        assert tools.entries[kind]['request'] is None, 'Escape did not close the native footprint utility'
+                        result['checks']['footprint_escape_and_native_close']=True
+                        result['checks'][kind]=True
+                        continue
                     elif kind=='candidate':
                         wait(child,'!!document.querySelector("#candidateKeyword")')
                     wait(child,'window.nativeToolCanReplace() === true')

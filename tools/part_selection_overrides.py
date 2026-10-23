@@ -220,6 +220,12 @@ def save_overrides(path: Path, overrides: dict[str, dict[str, Any]]) -> None:
 def merge_override_record(current: dict[str, Any], update: dict[str, Any], now: str,
                           *, capture_undo: bool = False) -> dict[str, Any]:
     current = dict(current)
+    snapshot = current.get("workbench_undo")
+    if capture_undo and isinstance(snapshot, dict):
+        baseline = snapshot.get("record")
+        if not isinstance(baseline, dict) or baseline.get("schematic_synced_at", "") != current.get("schematic_synced_at", ""):
+            # A pre-sync snapshot cannot be the baseline of a new edit.
+            current.pop("workbench_undo", None)
     if capture_undo and "workbench_undo" not in current:
         current["workbench_undo"] = {"record": deepcopy(current), "created_at": now}
     if update.get("clear_workbench_undo"):

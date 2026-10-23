@@ -51,6 +51,33 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='escape') {
+   await page.evaluate(()=>{
+    window.outerResult=undefined;window.innerResult=undefined;
+    window.openFootprintManager({load:async()=>new Promise(()=>{})}).then(value=>outerResult=value);
+    window.resolveFootprintConflict({footprint:'Local:A',name:'A',token:'test'},{}).then(value=>innerResult=value);
+   });
+   assert.equal(await page.locator('.fp-overlay').count(),2);
+   await page.getByLabel('新封装名称').evaluate(el=>el.dispatchEvent(new KeyboardEvent('keydown',
+     {key:'Escape',isComposing:true,bubbles:true,cancelable:true})));
+   assert.equal(await page.locator('.fp-overlay').count(),2,'IME Escape must not dismiss a footprint popup');
+   await page.keyboard.press('Escape');
+   await page.waitForFunction(()=>innerResult===null);
+   assert.equal(await page.locator('.fp-overlay').count(),1,'Only the top popup closes');
+   assert.equal(await page.evaluate(()=>outerResult===undefined),true);
+   await page.keyboard.press('Escape');
+   await page.waitForFunction(()=>outerResult===null);
+   await page.evaluate(()=>{
+    const dialog=document.createElement('dialog');document.body.append(dialog);dialog.showModal();
+    const mount=document.createElement('div');dialog.append(mount);window.result=undefined;
+    chooseFootprint(structuredClone(preview),{mount,readonly:true,loadComparison:async()=>sample('Local:A')})
+      .then(value=>result=value);
+   });
+   await page.keyboard.press('Escape');
+   await page.waitForFunction(()=>result===null);
+   assert.equal(await page.evaluate(()=>document.querySelector('dialog').open),true,'Comparison returns to its owner');
+   await page.evaluate(()=>document.querySelector('dialog').remove());
+  }
   if(check==='all'||check==='pane-radios') {
    await page.evaluate(()=>{
     window.libraryCompatible=true;window.result=undefined;

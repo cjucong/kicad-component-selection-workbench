@@ -24,6 +24,7 @@
     const line=document.createElement('p'); line.dataset.toolStatus=''; line.role='status';
     line.textContent='正在读取…'; shell.append(line); document.body.append(shell);
   }
+  window.addEventListener('workbench-tool-error', event => status(event.detail, true));
   async function rowFor(payload) {
     await loadBomOptions();
     const bom = payload.bom || '__schematic__';
@@ -35,11 +36,15 @@
     if (!tr || loadedRowsBom!==bom) throw new Error('该行已拆分或合并，请从当前分组重新打开');
     return tr;
   }
-  function canExit() {
-    return !loading && !writing && !window.pathSettingsBusy && !window.localInventoryBusy &&
-      !window.rowFootprintBusy && !window.pluginUpdateBusy &&
+  function canExit(cancelPreview = false) {
+    const cancelableFootprintPreview = kind === 'footprint' && window.rowFootprintBusy &&
+      !window.rowFootprintSaving && typeof window.cancelRowFootprintPreview === 'function';
+    const allowed = (cancelableFootprintPreview || !loading) && !writing && !window.pathSettingsBusy && !window.localInventoryBusy &&
+      !window.rowFootprintSaving && !window.pluginUpdateBusy &&
       !window.hasUnsavedPathSettings?.() && !window.hasUnsavedInventory?.() &&
       !window.hasUnsavedValueParameters?.() && !document.querySelector('[data-composing="1"]');
+    if (allowed && cancelPreview && cancelableFootprintPreview) return window.cancelRowFootprintPreview();
+    return allowed;
   }
   async function post(url,payload) {
     const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -51,7 +56,7 @@
     const refs=payload.refs || payload.ref, preview=await post('/api/undo_workbench',{refs});
     if(!preview.available) {status('该行没有可撤回的未同步修改');return;}
     status(preview.mode==='snapshot'?'恢复本轮工作台修改前记录，不修改原理图、PCB 或封装库。':
-      '旧记录缺少修改前快照，将采用当前已保存原理图字段；不会猜测历史确认状态。');
+      '修改前快照缺失或已跨越同步，将采用当前已保存原理图字段；不会撤回已同步历史或猜测历史确认状态。');
     const table=document.createElement('table');
     for(const item of preview.changes) {
       const tr=document.createElement('tr');
@@ -74,6 +79,7 @@
   }
   async function mount(name,payload) {
     showShell(name); loading=true;
+    let footprintFinished=false;
     try {
       if(name==='settings' || name==='field-mapping') {
         await loadBomOptions(); await window.openPathSettings();
@@ -92,16 +98,22 @@
       else {
         const tr=await rowFor(payload);
         if(name==='footprint') {
-          // Keep the loading guard through the workflow; the in-page Cancel stays usable.
-          await window.manageRowFootprint(tr);
+          // Preview cancellation is safe; actual publication keeps its separate guard.
+          const result = await window.manageRowFootprint(tr);
+          footprintFinished=result?.finished === true;
         } else await window.openValueParameters(tr.dataset.refs);
       }
       if(name!=='undo') status('');
     } catch(error) {status(error.message,true);}
-    finally {loading=false;}
+    finally {
+      loading=false;
+      if(child && footprintFinished && window.nativeToolMounted) {
+        void window.closeNativeTool().catch(error=>status(error.message,true));
+      }
+    }
   }
   for(const name of Object.keys(titles)) window.registerWorkbenchTool?.(name,{
-    mount:payload=>mount(name,payload),canReplace:canExit,prepareExit:canExit,cancelExit:()=>{},
+    mount:payload=>mount(name,payload),canReplace:()=>!loading && canExit(),prepareExit:()=>canExit(true),cancelExit:()=>{},
     unmount:()=>document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close())
   });
   if(child && titles[kind]) {

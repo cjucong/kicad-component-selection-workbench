@@ -68,6 +68,37 @@ class WorkbenchUndoTest(unittest.TestCase):
         self.commit(self.preview())
         self.assertEqual(load_overrides(self.app.overrides_path), {"U2": self.initial["U2"]})
 
+    def test_stale_snapshot_offers_saved_schematic_preview_not_synced_history(self):
+        records = json.loads(json.dumps(self.initial))
+        records["R1"]["workbench_undo"] = {"record": {
+            **self.initial["R1"], "schematic_synced_at": "2019-01-01",
+            "field_overrides": {"value": "obsolete"}}, "created_at": "2019-01-02"}
+        records["R1"]["field_overrides"]["footprint"] = "Lib:Renamed"
+        save_overrides(self.app.overrides_path, records)
+        before = self.app.overrides_path.read_bytes()
+        preview = self.preview()
+        self.assertEqual(preview["mode"], "schematic")
+        self.assertTrue(preview["available"])
+        self.assertEqual(self.app.overrides_path.read_bytes(), before)
+        self.assertFalse(any(item["new"] == "obsolete" for item in preview["changes"]))
+        self.commit(preview)
+        restored = load_overrides(self.app.overrides_path)["R1"]
+        self.assertEqual(restored["field_overrides"]["footprint"], "Lib:0603")
+        self.assertEqual(restored["schematic_synced_at"], self.initial["R1"]["schematic_synced_at"])
+        self.assertNotIn("workbench_undo", restored)
+
+    def test_fresh_edit_replaces_snapshot_from_previous_sync_epoch(self):
+        records = json.loads(json.dumps(self.initial))
+        records["R1"]["workbench_undo"] = {"record": {
+            **self.initial["R1"], "schematic_synced_at": "2019-01-01"},
+            "created_at": "2019-01-02"}
+        save_overrides(self.app.overrides_path, records)
+        self.edit(footprint="Lib:Renamed")
+        preview = self.preview()
+        self.assertEqual(preview["mode"], "snapshot")
+        self.commit(preview)
+        self.assertEqual(load_overrides(self.app.overrides_path), self.initial)
+
     def test_stale_preview_is_rejected_without_writing(self):
         self.edit(value="22k")
         preview = self.preview()

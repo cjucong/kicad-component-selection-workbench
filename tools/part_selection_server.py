@@ -1932,17 +1932,19 @@ class PartSelectionApp:
             for ref in refs:
                 record = current.get(ref, {})
                 snapshot = record.get("workbench_undo")
-                if isinstance(snapshot, dict) and isinstance(snapshot.get("record"), dict):
+                if (isinstance(snapshot, dict) and isinstance(snapshot.get("record"), dict)
+                        and snapshot["record"].get("schematic_synced_at", "") == record.get("schematic_synced_at", "")):
                     target = deepcopy(snapshot["record"])
-                    if target.get("schematic_synced_at", "") != record.get("schematic_synced_at", ""):
-                        raise ValueError("该行已经同步过原理图，不能撤回此前的修改")
                     modes.add("snapshot")
                 else:
-                    # Legacy records have no pre-edit history: use only verifiable saved CAD fields.
+                    # Missing or pre-sync history: preview only verifiable saved CAD fields.
                     modes.add("schematic")
                     saved = actual[ref]
                     code = normalize_lcsc_c_code(saved.get("lcsc_c_code"))
                     target = deepcopy(record)
+                    target.pop("workbench_undo", None)
+                    target.pop("footprint_change", None)
+                    target.pop("pcb_update_required", None)
                     target.update(accepted_c_code=code, manual_c_code=code, stock_c_code=code,
                                   decision="AcceptManual" if code else "ClearSelection", status="")
                     target["field_overrides"] = {key: str(saved.get(key, "")) for key in (*EDITABLE_FIELDS, "description")}
@@ -6623,6 +6625,7 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
           active.value = replacement.value;
           for (const attribute of [...active.attributes]) active.removeAttribute(attribute.name);
           for (const attribute of [...replacement.attributes]) active.setAttribute(attribute.name, attribute.value);
+          active.dataset.savedValue = active.value;
           replacement.replaceWith(active);
         }}
         old?.replaceWith(cell);
@@ -8033,7 +8036,8 @@ async function persistRowInput(entry) {{
   if (field === "replacement_c_code") window.refreshSpecificationWarnings?.(true);
   if (document.body.contains(tr) && !Array.from(tr.querySelectorAll("textarea[data-field], input[data-field]")).some(el => el.value !== el.dataset.savedValue)) tr.classList.remove("changed");
   const merged = (data.merged_into || []).map(item => item.target_refs.join(",") + (item.c_code ? "（" + item.c_code + "）" : "（订货料）")).join("、");
-  setState(merged ? `已合并到 ${{merged}}，沿用目标行选型；请核对并同步原理图` : `已自动保存 ${{refs}} 的 ${{field}}`, "saved");
+  const label = {{replacement_c_code:"C 编码", comment:"Comment", value:"Value", footprint:"封装", note:"备注"}}[field] || field;
+  setState(merged ? `已合并到 ${{merged}}，沿用目标行选型；请核对并同步原理图` : `已自动保存 ${{refs}} 的 ${{label}}`, "saved");
   if (field === "replacement_c_code" && value && input.value.trim().toUpperCase() === value.toUpperCase()) {{
     void refreshRowStock(tr, value).catch(error => setState(error.message, "error"));
   }}

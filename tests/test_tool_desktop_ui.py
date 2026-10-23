@@ -2,6 +2,63 @@
 import os
 from pathlib import Path
 import subprocess
+import pytest
+
+
+@pytest.mark.parametrize("kind", ["settings", "inventory", "field-mapping", "list-view",
+    "value-parameters", "undo", "footprint", "plugin-update", "design-sync", "candidate"])
+def test_escape_uses_guarded_close_and_respects_inner_popup_and_ime(kind):
+    script = r'''
+const {chromium}=require("playwright"),assert=require("node:assert/strict");
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage(),kind=process.env.TOOL_KIND;
+  await page.route("http://tools.test/**",r=>r.fulfill({contentType:"text/html",body:"<main><input></main>"}));
+  await page.goto("http://tools.test/?view="+(kind==="candidate"?"candidate":"tool&tool="+kind));
+  await page.evaluate(()=>{
+   window.dirty=false;window.closes=0;window.failures=0;
+   window.receiveNativeCandidateRequest=()=>({ok:true});
+   window.prepareNativeCandidateExit=()=>!dirty;
+   window.pywebview={api:{tool_window:async name=>{
+    if(name==="close") {if(!prepareNativeToolExit()) return {ok:false,error:"unsaved"};closes++;cancelNativeToolExit();}
+    return {ok:true};
+   }}};
+   window.addEventListener("workbench-tool-error",()=>failures++);
+  });
+  await page.addScriptTag({path:process.env.TOOL_JS});
+  await page.evaluate(kind=>{
+   registerWorkbenchTool(kind,{mount(){},prepareExit:()=>!dirty,cancelExit(){}});
+   assertOpened=receiveNativeToolRequest({kind,request_id:"one",payload:{},host:"fixture",project:"fixture"});
+  },kind);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(()=>closes===1);
+  await page.evaluate(()=>dirty=true);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(()=>failures===1);
+  assert.equal(await page.evaluate(()=>closes),1);
+  await page.evaluate(()=>{dirty=false;document.querySelector("input").value="retained";
+   window.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",isComposing:true,bubbles:true,cancelable:true}));
+   document.querySelector("input").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",keyCode:229,bubbles:true,cancelable:true}));
+  });
+  assert.equal(await page.evaluate(()=>closes),1);
+  await page.evaluate(()=>{const d=document.createElement("dialog");d.innerHTML="<input>";
+   document.body.append(d);d.showModal();});
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(()=>!document.querySelector("dialog").open);
+  assert.equal(await page.evaluate(()=>closes),1,"Esc closed both the dialog and its owner");
+  await page.evaluate(()=>document.querySelector("input").addEventListener("keydown",e=>{
+   if(e.key==="Escape")e.preventDefault();},{once:true}));
+  await page.locator("main input").focus();await page.keyboard.press("Escape");
+  assert.equal(await page.evaluate(()=>closes),1);
+  assert.equal(await page.locator("main input").inputValue(),"retained");
+ } finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+    env = dict(os.environ, TOOL_JS=str(Path(__file__).resolve().parents[1] / "tools/web/tool-desktop.js"),
+               TOOL_KIND=kind)
+    result = subprocess.run(["node", "-e", script], env=env, capture_output=True, text=True, timeout=40)
+    assert result.returncode == 0, result.stderr
 
 
 def test_tool_renderer_keeps_state_rejects_cross_host_and_retains_dirty_form():

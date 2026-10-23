@@ -139,6 +139,18 @@
     current = null; mounted = null;
   };
   if (isChild) {
+    let closing = false;
+    window.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
+          document.querySelector('[data-composing="1"],dialog[open],.fp-overlay')) return;
+      event.preventDefault();
+      if (closing) return;
+      closing = true;
+      // Use the same guarded host close as the title-bar button.
+      window.closeNativeTool().catch(error => {
+        window.dispatchEvent(new CustomEvent('workbench-tool-error', {detail:error.message}));
+      }).finally(() => { closing = false; });
+    });
     const ready = () => action('ready').catch(error => {
       window.dispatchEvent(new CustomEvent('workbench-tool-error', {detail:error.message}));
     });

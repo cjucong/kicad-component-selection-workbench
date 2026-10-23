@@ -1,4 +1,11 @@
 /* Real KiCad previews are loaded as images, never inserted as executable SVG markup. */
+function ownsFootprintKeyboard(event, overlay) {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
+      document.querySelector('[data-composing="1"]')) return false;
+  const top = [...document.querySelectorAll('.fp-overlay')].filter(el => el.getClientRects().length).at(-1);
+  return top ? top === overlay : overlay.getClientRects().length > 0;
+}
+
 window.resolveFootprintConflict = function resolveFootprintConflict(conflict, choice) {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
@@ -37,6 +44,7 @@ window.resolveFootprintConflict = function resolveFootprintConflict(conflict, ch
       resolve(value);
     }
     function keyboard(event) {
+      if (!ownsFootprintKeyboard(event, overlay)) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(null); }
       if (event.key === 'Tab') {
         const elements = [...overlay.querySelectorAll('button,input')].filter(e => !e.disabled && e.getClientRects().length);
@@ -105,6 +113,7 @@ window.chooseLibraryFootprint = function chooseLibraryFootprint(preview, options
     }
     const cancel = () => close(null);
     function keyboard(event) {
+      if (!ownsFootprintKeyboard(event, overlay)) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); cancel(); }
     }
     q('[data-fp-name]').oninput = refresh;
@@ -386,6 +395,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     }
     const cancel = () => close(null);
     function keyboard(event) {
+      if (!ownsFootprintKeyboard(event, overlay)) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(null); }
       if (event.key === 'Tab') {
         const elements = [...overlay.querySelectorAll('button,input,select')].filter(e => !e.disabled && e.getClientRects().length);
@@ -422,7 +432,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
         acknowledged: q('[data-fp-ack]').checked});
     };
     (options.mount || document.body).append(overlay);
-    if (!options.mount) document.addEventListener('keydown', keyboard, true);
+    if (!options.mount || options.readonly) document.addEventListener('keydown', keyboard, true);
     options.signal?.addEventListener('abort', cancel, {once:true});
     if (options.signal?.aborted) { cancel(); return; }
     const original = preview.existing.find(entry => entry.id === preview.default_reference_id)
@@ -536,6 +546,7 @@ window.openFootprintManager = function openFootprintManager(options) {
       load(mode);
     }
     function keyboard(event) {
+      if (!ownsFootprintKeyboard(event, overlay)) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(null); }
       if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); q('[data-fp-back]').click(); }
       if (event.altKey && event.key === 'ArrowRight') { event.preventDefault(); q('[data-fp-forward]').click(); }
@@ -560,6 +571,14 @@ window.openFootprintManager = function openFootprintManager(options) {
 window.manageRowFootprint = async function manageRowFootprint(tr) {
   if (window.rowFootprintBusy) return;
   window.rowFootprintBusy = true;
+  window.rowFootprintSaving = false;
+  window.cancelRowFootprintPreview = () => {
+    const overlay = [...document.querySelectorAll('.fp-overlay')].filter(el => el.getClientRects().length).at(-1);
+    const close = overlay?.querySelector('[data-fp-close]');
+    if (!close) return false;
+    close.click();
+    return true;
+  };
   let saving = false;
   const anchor = rowAnchor(tr), expectedBom = loadedRowsBom;
   const request = async (url, payload) => {
@@ -596,8 +615,9 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
     };
     let choice;
     try { choice = await window.openFootprintManager({load}); } finally { closed = true; }
-    if (!choice) return;
+    if (!choice) return {finished:true};
     saving = true;
+    window.rowFootprintSaving = true;
     while (choice) {
       const data = await request('/api/row_footprint', {footprint_choice:choice});
       if (data.footprint_conflict) {
@@ -609,7 +629,13 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
       setState('封装修改已保存，请同步原理图；C 编码、Value、Comment 和物料参数未改动', 'saved');
       break;
     }
+    return {finished:true};
   } catch (error) {
     setState((saving ? '封装保存失败：' : '封装预览失败：') + error.message, 'error');
-  } finally { window.rowFootprintBusy = false; }
+    return {finished:false};
+  } finally {
+    window.rowFootprintSaving = false;
+    window.rowFootprintBusy = false;
+    delete window.cancelRowFootprintPreview;
+  }
 };

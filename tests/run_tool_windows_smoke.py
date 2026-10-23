@@ -92,6 +92,19 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     'Utility save replaced an unrelated row');
   assert.equal(await page.evaluate(()=>document.activeElement===retainedInput),true,
     'Utility save lost the focused editor');
+  const unintended=[];
+  page.on('request',request=>{
+    if(request.method()==='POST' && /\/api\/(override|field_override)$/.test(request.url())) unintended.push(request.postDataJSON());
+  });
+  await page.locator('#rows tr[data-refs="R1"] [data-field="replacement_c_code"]').focus();
+  await page.evaluate(()=>{
+    const rows=structuredClone(currentRows);
+    rows.find(row=>row.refs==='R1').footprint='Local:Renamed';
+    renderRows(rows,{patch:true});
+  });
+  await page.evaluate(()=>flushRowEdits());
+  assert.deepEqual(unintended,[],'Refreshing a renamed footprint saved a focused C-code editor');
+  assert.equal(await page.locator('#rows tr[data-refs="R1"] [data-field="replacement_c_code"]').evaluate(el=>el.dataset.savedValue===el.value),true);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({ok:true,settings:true,dirty_protection:true,inventory:true,mapping:true,list:true,update:true}));
  } finally {await browser.close();}

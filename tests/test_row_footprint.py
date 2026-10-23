@@ -106,6 +106,29 @@ def test_reselecting_same_library_geometry_keeps_confirmation(footprint_app):
     assert load_overrides(app.overrides_path)['R1']['review_status'] == 'Confirmed'
 
 
+def test_post_sync_rename_undo_preserves_selection_and_does_not_write_cad(footprint_app):
+    app = footprint_app
+    records = load_overrides(app.overrides_path)
+    records['R1']['schematic_synced_at'] = '2026-10-23T16:00:00'
+    records['R1']['workbench_undo'] = {'record': {
+        **deepcopy(records['R1']), 'schematic_synced_at': '2026-10-22T12:00:00'},
+        'created_at': '2026-10-22T13:00:00'}
+    save_overrides(app.overrides_path, records)
+    expected = deepcopy(records['R1'])
+    expected.pop('workbench_undo')
+    schematic = (app.project_root/'test.kicad_sch').read_bytes()
+    preview = prepare(app, 'rename')
+    app.footprint_choices.library_detail(preview['preview_id'], 'Local:Original')
+    app.row_footprint({'footprint_choice': choice(preview, 'rename')})
+    undo = app.undo_workbench_changes({'refs': 'R1'})
+    assert undo['mode'] == 'snapshot'
+    assert [item['field'] for item in undo['changes']] == ['footprint']
+    app.undo_workbench_changes({'refs': 'R1', 'confirm': True, 'revision': undo['revision']})
+    assert load_overrides(app.overrides_path)['R1'] == expected
+    assert (app.project_root/'test.kicad_sch').read_bytes() == schematic
+    assert (app.project_root/'Local.pretty/Renamed.kicad_mod').exists()
+
+
 @pytest.mark.parametrize('change', ['record','schematic'])
 def test_stale_preview_cannot_publish(footprint_app, change):
     app = footprint_app
