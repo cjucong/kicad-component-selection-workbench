@@ -270,11 +270,14 @@ def test_native_process_lifetime_identity_is_queried(installed):
     import os
     import subprocess
     import time
+    before = time.time()
     process = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(60)'],
                                creationflags=subprocess.CREATE_NO_WINDOW)
     try:
         alive, started = installed._process_info(process.pid)
-        assert alive is True and 0 < started <= time.time()
+        # FILETIME and Python's wall clock may differ by a Windows clock tick.
+        assert alive is True and before - .1 <= started <= time.time() + .1
+        assert installed._process_info(process.pid) == (True, started)
         active = installed.home / 'active' / f'{process.pid}.json'
         active.parent.mkdir(parents=True)
         active.write_text(json.dumps({'pid':process.pid,'started':started,'project':'NativeTestBoard'}))
