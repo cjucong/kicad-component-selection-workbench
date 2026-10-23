@@ -3868,6 +3868,8 @@ def make_handler(app: PartSelectionApp):
                     return
             except Exception as exc:
                 error_payload = {"ok": False, "error": str(exc)}
+                if getattr(exc, 'retryable', False):
+                    error_payload['retryable'] = True
                 sync_attempt_id = getattr(exc, "sync_attempt_id", "")
                 runtime_log = getattr(exc, "runtime_log", "")
                 if sync_attempt_id:

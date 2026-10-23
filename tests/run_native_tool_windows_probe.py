@@ -11,9 +11,10 @@ from uuid import uuid4
 from http.server import ThreadingHTTPServer
 
 from _scratch import temporary_project
-from part_selection_lifecycle import DesktopBridge, DesktopLifecycle
+from part_selection_lifecycle import DesktopBridge, DesktopLifecycle, ServiceLifecycle
 from part_selection_server import PartSelectionApp, make_handler
 from part_selection_tool_windows import ToolWindows
+from test_footprint_choices import module
 
 
 def wait(window, expression, timeout=25):
@@ -45,9 +46,18 @@ def run(report):
     result = {'passed':False,'checks':{},'timings_ms':{}}
     with temporary_project(prefix='native-tools-') as directory:
         root = Path(directory)
+        pretty = root/'Local.pretty'
+        pretty.mkdir()
+        for name, width in [('R', .8), ('Other', .9)]:
+            (pretty/(name+'.kicad_mod')).write_text(module(name, width), encoding='utf-8')
+        (root/'fp-lib-table').write_text('(fp_lib_table (version 7) (lib (name "Local") '
+            '(type "KiCad") (uri "${KIPRJMOD}/Local.pretty")))', encoding='utf-8')
         (root/'example.kicad_sch').write_text('(kicad_sch (symbol (property "Reference" "R1") '
             '(property "Value" "10k") (property "Comment" "resistor") '
-            '(property "LCSC" "C101") (property "Footprint" "Local:R")))',encoding='utf-8')
+            '(property "Footprint" "Local:R")) (symbol (property "Reference" "R2") '
+            '(property "Value" "20k") (property "Comment" "resistor") '
+            '(property "Footprint" "Local:R")))',encoding='utf-8')
+        schematic_before = (root/'example.kicad_sch').read_bytes()
         config = root/'settings.json'
         config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
         app = PartSelectionApp(config)
@@ -56,9 +66,15 @@ def run(report):
             'param_detail':'阻值: 10k; 精度: ±1%; 最大工作电压: 50V'}})
         app.save_field_override({'refs':'R1','bom':'__schematic__','field_overrides':{'value':'22k'}})
         server = ThreadingHTTPServer(('127.0.0.1',0),make_handler(app))
-        thread = threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        def serve():
+            try:
+                server.serve_forever(poll_interval=.05)
+            finally:
+                server.server_close()
+        thread = threading.Thread(target=serve,daemon=True); thread.start()
         url = f'http://127.0.0.1:{server.server_port}/'
         lifecycle = DesktopLifecycle(url,uuid4().hex)
+        app.lifecycle = ServiceLifecycle(app, server, lifecycle.token)
         lifecycle.project_id = str(root)
         # No network updater or actual install is invoked by this native UI probe.
         lifecycle.updater = SimpleNamespace(status=lambda:{'ok':True,'current_version':'native-probe',
@@ -66,11 +82,12 @@ def run(report):
         main = webview.create_window('Native tool fixture',url,width=800,height=640,x=50,y=50,
                                      js_api=DesktopBridge(lifecycle))
         lifecycle.window = main
+        main.events.closing += lifecycle.on_closing
         lifecycle.tools = ToolWindows(lifecycle,webview.create_window)
         def worker():
             tools = lifecycle.tools
             try:
-                wait(main,'typeof window.openNativeTool === "function" && !!window.pywebview?.api?.tool_window && currentRows.length===1')
+                wait(main,'typeof window.openNativeTool === "function" && !!window.pywebview?.api?.tool_window && currentRows.length===2')
                 for kind in ['settings','inventory','field-mapping','list-view','value-parameters','undo','footprint','plugin-update','design-sync','candidate']:
                     payload = {'refs':'R1','bom':'__schematic__'} if kind in ['value-parameters','undo','footprint','design-sync','candidate'] else {}
                     if kind=='design-sync': payload['destination']='schematic'
@@ -89,6 +106,7 @@ def run(report):
                     if kind=='settings':
                         wait(child,'document.querySelector("#pathSettingsDialog").open')
                         child.evaluate_js('document.querySelector("[name=jump_cursor_behavior]").value="stay"')
+                        child.evaluate_js('window.confirm=()=>false; window.hasUnsavedPathSettings=()=>true; true')
                         try: tools.check_exit()
                         except ValueError: pass
                         else: raise AssertionError('Unsaved settings did not block host exit')
@@ -98,26 +116,61 @@ def run(report):
                         assert child.evaluate_js('document.querySelector("[name=jump_cursor_behavior]").value')=='stay'
                         capture(child,report/'settings-native.png')
                         child.evaluate_js('document.querySelector("[name=jump_cursor_behavior]").value="return"')
+                        child.evaluate_js('window.hasUnsavedPathSettings=()=>false; true')
                         result['checks']['dirty_exit_block_and_state_restore']=True
                     elif kind=='list-view':
                         wait(child,'!!document.querySelector("#columnList [data-column-toggle]")')
                         capture(child,report/'list-native.png')
                     elif kind=='footprint':
-                        wait(child,'!!document.querySelector("[data-fp-close]")')
+                        wait(child,"[...document.querySelectorAll('[data-fp-items] option')].some(o=>o.value==='Local:Other')")
+                        child.evaluate_js('const s=document.querySelector("[data-fp-items]"); s.value="Local:Other"; s.dispatchEvent(new Event("change",{bubbles:true})); true')
+                        wait(child,'!!document.querySelector("[data-fp-page=library] .fp-scene:not([hidden])")')
                         capture(child,report/'footprint-native.png')
+                        child.evaluate_js('document.querySelector("[data-fp-page=library] [data-fp-ack]").click(); true')
+                        wait(child,'document.querySelector("[data-fp-page=library] .fp-apply").disabled===false')
+                        child.evaluate_js('document.querySelector("[data-fp-page=library] .fp-apply").click(); true')
+                        for _ in range(200):
+                            if kind not in tools.entries: break
+                            time.sleep(.1)
+                        assert kind not in tools.entries, 'Apply did not close the footprint window'
+                        from part_selection_overrides import load_overrides
+                        assert load_overrides(app.overrides_path)['R1']['field_overrides']['footprint']=='Local:Other'
+                        response = tools.main_action('open',{'kind':kind,'request_id':uuid4().hex,'payload':payload})
+                        assert response['ok'], response
+                        child = tools.entries[kind]['window']
+                        wait(child,'!!document.querySelector("[data-fp-tab=rename]")')
+                        child.evaluate_js('document.querySelector("[data-fp-tab=rename]").click(); true')
+                        wait(child,'!!document.querySelector("[data-fp-before]")')
+                        child.evaluate_js('const n=document.querySelector("[data-fp-page=rename] [data-fp-name]"); n.value="Local:Renamed"; n.dispatchEvent(new Event("input",{bubbles:true})); true')
+                        wait(child,'document.querySelector("[data-fp-page=rename] .fp-apply").disabled===false')
+                        child.evaluate_js('document.querySelector("[data-fp-back]").click(); document.querySelector("[data-fp-forward]").click(); true')
+                        assert child.evaluate_js('document.querySelector("[data-fp-page=rename] [data-fp-name]").value')=='Local:Renamed'
+                        capture(child,report/'rename-native.png')
+                        child.evaluate_js('document.querySelector("[data-fp-page=rename] .fp-apply").click(); true')
+                        for _ in range(200):
+                            if kind not in tools.entries: break
+                            time.sleep(.1)
+                        assert kind not in tools.entries
+                        assert load_overrides(app.overrides_path)['R1']['field_overrides']['footprint']=='Local:Renamed'
+                        assert (pretty/'Renamed.kicad_mod').exists()
+                        result['checks']['native_library_apply_rename_and_navigation']=True
+                        assert tools.main_action('open',{'kind':kind,'request_id':uuid4().hex,'payload':payload})['ok']
+                        child = tools.entries[kind]['window']
+                        wait(child,'!!document.querySelector("[data-fp-close]")')
                         child.evaluate_js('window.rowFootprintSaving=true; true')
                         assert not tools.child_action(kind,'close')['ok'], 'Actual publication must block close'
                         child.evaluate_js('window.rowFootprintSaving=false; true')
                         assert tools.child_action(kind,'close')['ok'], 'Read-only footprint preview must not block close'
-                        assert tools.entries[kind]['request'] is None
+                        assert kind not in tools.entries
                         response = tools.main_action('open',{'kind':kind,'request_id':uuid4().hex,'payload':payload})
                         assert response['ok'], response
+                        child = tools.entries[kind]['window']
                         wait(child,'!!document.querySelector(".fp-overlay [data-fp-close]")')
                         child.evaluate_js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true})); true')
                         for _ in range(100):
-                            if tools.entries[kind]['request'] is None: break
+                            if kind not in tools.entries: break
                             time.sleep(.1)
-                        assert tools.entries[kind]['request'] is None, 'Escape did not close the native footprint utility'
+                        assert kind not in tools.entries, 'Escape did not close the native footprint utility'
                         result['checks']['footprint_escape_and_native_close']=True
                         result['checks'][kind]=True
                         continue
@@ -151,18 +204,44 @@ def run(report):
                 assert lifecycle.update_busy is False
                 result['checks']['native_update_network_does_not_block_tools']=True
                 tools.check_exit(); tools.cancel_exit()
+                for ref in ('R1','R2'):
+                    assert tools.main_action('open',{'kind':'footprint','request_id':uuid4().hex,
+                        'payload':{'refs':ref,'bom':'__schematic__'}})['ok']
+                entries=[entry for entry in tools.entries.values() if entry['kind']=='footprint']
+                assert len(entries)==2
+                for entry in entries:
+                    wait(entry['window'],'!!document.querySelector("[data-fp-tab=library]")')
+                assert tools.main_action('open',{'kind':'footprint','request_id':uuid4().hex,
+                    'payload':{'refs':'R1','bom':'__schematic__'}})['ok']
+                assert len([e for e in tools.entries.values() if e['kind']=='footprint'])==2
+                tools.check_exit()
+                assert (root/'example.kicad_sch').read_bytes()==schematic_before
+                result['checks']['multi_row_windows_and_host_cancel']=True
+                tools.cancel_exit()
+                main.evaluate_js('window.requestDesktopExit(false); true')
+                for _ in range(200):
+                    if lifecycle.allow_close and all(entry['closed'] for entry in tools.entries.values()): break
+                    time.sleep(.1)
+                assert lifecycle.allow_close, 'Main window exit did not close its children/backend'
+                assert all(entry['closed'] for entry in tools.entries.values())
+                thread.join(5)
+                assert not thread.is_alive(), 'Owned backend did not exit'
+                result['checks']['main_exit_closes_children_and_backend']=True
                 result['checks']['native_drag_outside_and_minimal_bridge']=True
                 result['passed']=True
             except Exception as error:
                 result['error']=repr(error)
                 (report/'error.log').write_text(traceback.format_exc(),encoding='utf-8')
             finally:
-                tools.dispose(); main.destroy()
+                if not lifecycle.allow_close:
+                    lifecycle.allow_close=True
+                    tools.dispose(); main.destroy()
         try:
             webview.start(worker,gui='edgechromium',private_mode=True,
                           storage_path=str(root.parent/'webview'))
         finally:
-            server.shutdown();server.server_close();thread.join(timeout=5)
+            if thread.is_alive(): server.shutdown()
+            server.server_close();thread.join(timeout=5)
             app.design_sync.close();app.search_jobs.close();app.selection_jobs.close()
             (report/'native-tools.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
     return result

@@ -568,8 +568,8 @@ window.openFootprintManager = function openFootprintManager(options) {
   });
 };
 
-window.manageRowFootprint = async function manageRowFootprint(tr) {
-  if (window.rowFootprintBusy) return;
+window.manageRowFootprint = async function manageRowFootprint(row) {
+  if (window.rowFootprintBusy) return {finished:false, error:'封装窗口仍在处理上一项操作，请稍后重试'};
   window.rowFootprintBusy = true;
   window.rowFootprintSaving = false;
   window.cancelRowFootprintPreview = () => {
@@ -580,7 +580,7 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
     return true;
   };
   let saving = false;
-  const anchor = rowAnchor(tr), expectedBom = loadedRowsBom;
+  let anchor, expectedBom;
   const request = async (url, payload) => {
     const response = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     const data = await response.json();
@@ -591,6 +591,8 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
     let closed = false;
     let initial = null;
     const loadInitial = () => initial ||= (async () => {
+      const tr = typeof row === 'function' ? await row() : row;
+      anchor = rowAnchor(tr); expectedBom = loadedRowsBom;
       await flushRowEdits();
       if (closed) throw new Error('封装窗口已关闭');
       const current = [...rowsEl.querySelectorAll('tr[data-refs]')].find(row => row.dataset.refs === anchor.refs);
@@ -632,7 +634,7 @@ window.manageRowFootprint = async function manageRowFootprint(tr) {
     return {finished:true};
   } catch (error) {
     setState((saving ? '封装保存失败：' : '封装预览失败：') + error.message, 'error');
-    return {finished:false};
+    return {finished:false, error:(saving ? '封装保存失败：' : '封装预览失败：') + error.message};
   } finally {
     window.rowFootprintSaving = false;
     window.rowFootprintBusy = false;

@@ -21,8 +21,14 @@
       document.body.inert = true;
       await flushRowEdits();
       setState(restart ? '正在重启工作台…' : '正在退出工作台…', 'status');
-      const result = await window.pywebview.api.finish_exit(Boolean(restart), Boolean(update));
-      if (!result.ok) throw new Error(result.error || '后台未能退出');
+      const deadline = Date.now() + 60000;
+      while (true) {
+        const result = await window.pywebview.api.finish_exit(Boolean(restart), Boolean(update));
+        if (result.ok) break;
+        if (!result.retryable || Date.now() >= deadline) throw new Error(result.error || '后台未能退出');
+        setState('正在等待当前任务结束，随后自动退出…', 'status');
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
     } catch (error) {
       setState(error.message || String(error), 'error');
     } finally {

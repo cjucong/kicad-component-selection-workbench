@@ -118,21 +118,25 @@
       return {ok:true};
     } catch (error) { return {ok:false,error:error.message || String(error)}; }
   };
-  window.prepareNativeToolExit = () => {
+  window.prepareNativeToolExit = (hostExit = false) => {
     if (exiting) return true;
     const canExit = kind === 'candidate' ? window.prepareNativeCandidateExit?.() === true
-      : !handler() || handler().prepareExit?.() === true;
+      : !handler() || handler().prepareExit?.(hostExit) === true;
     if (!canExit) return false;
     exiting = true;
+    window.nativeToolExitPending = true;
     document.body.inert = true;
     return true;
   };
   window.cancelNativeToolExit = () => {
     exiting = false;
+    window.nativeToolExitPending = false;
     document.body.inert = false;
     if (kind === 'candidate') window.cancelNativeCandidateExit?.();
     else handler()?.cancelExit?.();
   };
+  window.nativeToolExitState = () => ({busy:kind === 'candidate'
+    ? window.nativeCandidateCanExit?.() !== true : handler()?.isBusy?.() === true});
   window.nativeToolDidClose = () => {
     window.nativeToolMounted = false;
     handler()?.unmount?.();

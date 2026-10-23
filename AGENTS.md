@@ -30,7 +30,7 @@
 
 - 设计同步使用 B 版目标菜单和独立范围；全部同步必须在原理图成功后重新捕获 PCB 预检、再次确认，重试 PCB 不重放原理图。封装仅改名/换几何/字段/未知分别判断，不能按名称推断。保留 `test_design_sync.py`、`test_design_source.py`、`test_footprint_change_types.py` 及隔离原生探测。
 - 当前 kipy 事务请求未指定目标文档，KiCad 10.0.0 同宿主原理图可能误接 BeginCommit 并崩溃。所有 UI PCB 应用经过 `apply_design_pcb` 安全暂关同工程原理图、重新核验预检、提交后恢复；底层默认拒绝，只有本次安全暂关检查成功才能传入 `schematic_close_verified=True`。不能依赖本机未实现的 GetOpenDocuments(SCHEMATIC)，也不能把接口失败当成没有原理图。未实现并核验带文档的完整事务前，不因客户端 proto 升级就移除此保护。不同工程或身份不明的窗口不得自动关闭；原理图恢复仅 NotifyOnly，搜索由位号链接显式触发。
-- 工具子窗口使用固定注册表和最小桥接，迟到消息绑定工程/请求；草稿或任务忙碌时阻止退出。保存后原位号组局部更新主表，保留未改行 DOM、焦点、列宽与来源。保留 `test_tool_windows.py`、`run_tool_windows_smoke.py` 与真实 WebView2 独立窗口探测。
+- 工具子窗口使用固定种类注册表和最小桥接，迟到消息绑定工程/请求及窗口实例；封装管理按 BOM/位号组独立创建，同一行恢复原窗，不同行不替换草稿。关闭主窗自动取消未应用封装预览并关闭子窗，实际写入和后台请求结束后自动重试退出；其他未保存表单需明确确认放弃。关闭重开不得复用失效桥接或挂载任务。保存后原位号组局部更新主表，保留未改行 DOM、焦点、列宽与来源。保留 `test_tool_windows.py`、`run_tool_windows_smoke.py` 与真实 WebView2 独立窗口探测。
 
 - KiCad 可能把封装自定义字段、焊盘、图形按类型重新排列。PCB 暂存及发布后回读应只规范化 `definition.items` 对象顺序，以保留重复项数量的完整 protobuf 内容比较，而非原始整串字节相等；不得忽略字段值、UUID、坐标、网络、焊盘几何或其他重复字段顺序。保留 `test_pcb_native_types.py` 的顺序/内容变化正反回归，以及带自定义字段的真实 PCB 夹具；生产错误记录只读重放，不复制生产 CAD 作写入测试。
 

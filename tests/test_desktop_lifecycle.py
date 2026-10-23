@@ -52,7 +52,8 @@ def test_shutdown_does_not_interrupt_other_request(app):
     from part_selection_lifecycle import ServiceLifecycle
     lifecycle = ServiceLifecycle(app, Mock(), 'secret')
     app.settings_gate.active = 2
-    with pytest.raises(ValueError, match='请求'):
+    from part_selection_lifecycle import DesktopExitPending
+    with pytest.raises(DesktopExitPending, match='请求'):
         lifecycle.shutdown('secret')
     assert not app.settings_gate.stopping
 
@@ -91,8 +92,9 @@ def test_http_shutdown_auth_busy_and_real_port_release(app):
         with pytest.raises(HTTPError):
             stop('wrong')
         with patch.object(app.search_jobs, 'busy', return_value=True):
-            with pytest.raises(HTTPError):
+            with pytest.raises(HTTPError) as busy:
                 stop('secret')
+            assert json.load(busy.value)['retryable'] is True
         with stop('secret') as response:
             assert json.load(response)['ok']
         thread.join(timeout=4)

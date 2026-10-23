@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 from urllib.parse import urlencode
+from uuid import uuid4
 
 
 TOOL_TITLES = {
@@ -27,11 +28,11 @@ TOOL_PROPOSALS = {
 
 
 class ToolBridge:
-    def __init__(self, owner, kind):
-        self._owner, self._kind = owner, kind
+    def __init__(self, owner, key, entry):
+        self._owner, self._key, self._entry = owner, key, entry
 
     def tool_window(self, action, value=None):
-        return self._owner.child_action(self._kind, action, value)
+        return self._owner.child_action(self._key, action, value, expected=self._entry)
 
 
 class ToolWindows:
@@ -88,30 +89,40 @@ class ToolWindows:
         if not isinstance(result, dict) or result.get('ok') is not True:
             raise ValueError((result or {}).get('error', '工具页面尚未就绪') if isinstance(result, dict) else '工具页面尚未就绪')
 
-    def _create(self, kind, request):
+    @staticmethod
+    def _row_identity(payload):
+        refs = sorted(set(ref.strip() for ref in (payload.get('refs') or payload.get('ref', '')).split(',') if ref.strip()))
+        return payload.get('bom') or '__schematic__', tuple(refs)
+
+    def _create(self, kind, request, key):
         query = {'view':'candidate'} if kind == 'candidate' else {'view':'tool','tool':kind}
         entry = {'url':self.lifecycle.url + '?' + urlencode(query), 'ready':False,
-                 'request':request, 'minimized':False, 'proposals':{}}
-        window = self.create_window(TOOL_TITLES[kind], entry['url'],
+                 'kind':kind, 'closed':False, 'request':request, 'minimized':False, 'proposals':{}}
+        title = TOOL_TITLES[kind]
+        if kind == 'footprint':
+            title += ' · ' + (request['payload'].get('refs') or request['payload'].get('ref', ''))[:120]
+        window = self.create_window(title, entry['url'],
             width=1180 if kind in ('candidate','footprint','design-sync') else 900,
             height=720, min_size=(540,400), text_select=True, hidden=False,
-            frameless=False, js_api=ToolBridge(self, kind))
+            frameless=False, js_api=ToolBridge(self, key, entry))
         entry['window'] = window
-        self.entries[kind] = entry
+        self.entries[key] = entry
 
         def loaded():
             try:
+                if entry['closed'] or self.entries.get(key) is not entry:
+                    return
                 if self.on_loaded:
                     self.on_loaded(window)
                 entry['ready'] = True
-                self._deliver(kind)
+                self._deliver(key)
             except Exception:
                 logging.exception('Tool window delivery deferred: %s', kind)
 
         def closing():
-            if self.destroying:
+            if self.destroying or entry['closed']:
                 return True
-            threading.Thread(target=lambda:self.child_action(kind,'close'), daemon=True,
+            threading.Thread(target=lambda:self.child_action(key,'close',expected=entry), daemon=True,
                              name='tool-close-' + kind).start()
             return False
 
@@ -142,19 +153,26 @@ class ToolWindows:
                 if action == 'open':
                     request = self.validate_request(value)
                     kind = request['kind']
-                    entry = self.entries.get(kind)
+                    key = kind
+                    if kind == 'footprint':
+                        identity = self._row_identity(request['payload'])
+                        key = next((key for key, item in self.entries.items()
+                            if item['kind'] == kind and item['request'] is not None
+                            and self._row_identity(item['request']['payload']) == identity),
+                            kind if kind not in self.entries else 'footprint-' + uuid4().hex)
+                    entry = self.entries.get(key)
                     if entry is None:
-                        entry = self._create(kind, request)
+                        entry = self._create(kind, request, key)
                     else:
-                        self._entry(kind)
+                        self._entry(key)
                         previous = entry['request']
-                        if previous is None or previous['payload'] != request['payload']:
+                        if previous is None or (kind != 'footprint' and previous['payload'] != request['payload']):
                             if entry['ready'] and entry['window'].evaluate_js('window.nativeToolCanReplace?.() === true') is not True:
                                 raise ValueError('工具窗口有未保存编辑或正在处理，请先完成当前操作')
                             entry['request'] = request
                             entry['proposals'].clear()
                             try:
-                                self._deliver(kind)
+                                self._deliver(key)
                             except Exception:
                                 entry['request'] = previous
                                 raise
@@ -180,10 +198,13 @@ class ToolWindows:
         finally:
             self.lifecycle.lock.release()
 
-    def child_action(self, kind, action, value=None):
+    def child_action(self, key, action, value=None, *, expected=None):
         try:
             with self.lock:
-                entry = self._entry(kind)
+                entry = self._entry(key)
+                if expected is not None and entry is not expected:
+                    raise ValueError('工具窗口请求已过期')
+                kind = entry['kind']
                 if action == 'propose':
                     if (not entry['request'] or not isinstance(value,dict)
                             or set(value) - {'action','request_id','value'}
@@ -204,7 +225,7 @@ class ToolWindows:
                     raise ValueError('子窗口操作不接受额外参数')
                 if action == 'ready':
                     entry['ready'] = True
-                    self._deliver(kind)
+                    self._deliver(key)
                 elif action == 'changed':
                     if entry['request'] is None:
                         raise ValueError('工具请求已关闭')
@@ -219,7 +240,11 @@ class ToolWindows:
                     if action == 'close':
                         entry['request'] = None
                         entry['proposals'].clear()
-                        if entry['ready']:
+                        if kind == 'footprint':
+                            entry['closed'] = True
+                            self.entries.pop(key, None)
+                            entry['window'].destroy()
+                        elif entry['ready']:
                             entry['window'].evaluate_js('window.cancelNativeToolExit?.(); true')
                 else:
                     raise ValueError('不支持的子窗口操作')
@@ -228,18 +253,27 @@ class ToolWindows:
             return {'ok':False,'error':str(exc)}
 
     def check_exit(self):
-        for kind in list(self.entries):
-            entry = self._entry(kind)
+        self._verify_host()
+        for key, entry in list(self.entries.items()):
+            if entry['closed'] or self.entries.get(key) is not entry:
+                continue
+            self._entry(key)
             if entry['ready'] and entry['request'] is not None:
-                if entry['window'].evaluate_js('window.prepareNativeToolExit?.() === true') is not True:
-                    raise ValueError(TOOL_TITLES[kind] + '尚有未保存编辑或任务，请先完成')
+                if entry['window'].evaluate_js('window.prepareNativeToolExit?.(true) === true') is not True:
+                    entry['window'].show()
+                    state = entry['window'].evaluate_js('window.nativeToolExitState?.()')
+                    if isinstance(state, dict) and state.get('busy') is True:
+                        from part_selection_lifecycle import DesktopExitPending
+                        raise DesktopExitPending(TOOL_TITLES[entry['kind']] + '正在写入，完成后自动退出')
+                    raise ValueError(TOOL_TITLES[entry['kind']] + '正在写入或尚未确认放弃编辑；窗口已显示，请处理提示')
 
     def cancel_exit(self):
-        for entry in self.entries.values():
+        for entry in list(self.entries.values()):
             if entry['ready'] and entry['window'].get_current_url() == entry['url']:
                 entry['window'].evaluate_js('window.cancelNativeToolExit?.(); true')
 
     def dispose(self):
         self.destroying = True
-        for entry in self.entries.values():
+        for entry in list(self.entries.values()):
+            entry['closed'] = True
             entry['window'].destroy()

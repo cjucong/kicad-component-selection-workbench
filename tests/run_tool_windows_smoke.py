@@ -65,6 +65,29 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await open('footprint',{refs:'R1',bom:'__schematic__'});
   await page.locator('.fp-workflow').waitFor({state:'visible'});
   await page.locator('[data-fp-close]:visible').last().click();
+  // Failed row loading must remain visible and retryable, never leave blank chrome.
+  await page.route('**/api/boms',route=>route.fulfill({status:503,contentType:'application/json',
+    body:JSON.stringify({error:'fixture source unavailable'})}));
+  await open('footprint',{refs:'R1',bom:'__schematic__'});
+  await page.locator('.fp-load-error').filter({hasText:'fixture source unavailable'}).waitFor();
+  assert.equal(await page.locator('.fp-workflow').isVisible(),true);
+  await page.unroute('**/api/boms');
+  await page.locator('.fp-load-error button').click();
+  await page.locator('.fp-load-error').filter({hasText:'fixture source unavailable'}).waitFor({state:'detached'});
+  await page.locator('[data-fp-close]:visible').last().click();
+  // Cancel while the real source request is pending; its late response cannot revive preview.
+  let delayed; const footprintRequests=[];
+  page.on('request',request=>{if(request.url().endsWith('/api/row_footprint'))footprintRequests.push(request);});
+  await page.route('**/api/boms',route=>{delayed=route;});
+  await open('footprint',{refs:'R1',bom:'__schematic__'});
+  await page.locator('.fp-workflow').waitFor({state:'visible'});
+  while(!delayed) await page.waitForTimeout(20);
+  assert.equal(await page.evaluate(()=>window.prepareNativeToolExit(true)),true);
+  await delayed.continue();
+  await page.unroute('**/api/boms');
+  await page.waitForFunction(()=>!window.rowFootprintBusy);
+  assert.equal(await page.locator('.fp-overlay').count(),0);
+  assert.equal(footprintRequests.length,0,'Canceled source load published a late footprint preview');
   await open('plugin-update');
   await page.getByText('当前版本：test',{exact:true}).waitFor();
   assert.deepEqual(await page.evaluate(()=>Object.keys(window.pywebview.api)),['tool_window']);

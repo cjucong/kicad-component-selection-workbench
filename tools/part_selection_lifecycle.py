@@ -16,6 +16,10 @@ def owner_id(token):
     return hashlib.sha256(token.encode('utf-8')).hexdigest() if token else ''
 
 
+class DesktopExitPending(ValueError):
+    retryable = True
+
+
 class ServiceLifecycle:
     def __init__(self, app, server, token):
         self.app, self.server, self.token = app, server, token
@@ -27,10 +31,12 @@ class ServiceLifecycle:
     def shutdown(self, token):
         if not self.token or not hmac.compare_digest(self.token, str(token)):
             raise ValueError('后台身份不匹配，不能关闭其他窗口或工程的后台')
-        with self.app.settings_gate.editing():
+        with self.app.settings_gate.lock:
+            if self.app.settings_gate.active > 1:
+                raise DesktopExitPending('仍有数据请求正在处理，完成后自动退出')
             design_sync = getattr(self.app, 'design_sync', None)
             if self.app.search_jobs.busy() or self.app.selection_jobs.busy() or (design_sync and design_sync.busy()):
-                raise ValueError('搜索或转换尚未完成，请稍后关闭或重启工作台')
+                raise DesktopExitPending('搜索或转换尚未完成，正在等待任务结束后退出')
             if not self.app.settings_gate.stopping:
                 self.app.settings_gate.stopping = True
                 threading.Thread(target=self.server.shutdown, daemon=True, name='desktop-shutdown').start()
@@ -191,7 +197,9 @@ class DesktopLifecycle:
             except OSError as exc:
                 if hasattr(exc,'read'):
                     try:
-                        raise ValueError(json.loads(exc.read())['error']) from exc
+                        result = json.loads(exc.read())
+                        error = DesktopExitPending if result.get('retryable') is True else ValueError
+                        raise error(result['error']) from exc
                     except (KeyError, json.JSONDecodeError):
                         pass
                 raise ValueError('后台未能确认退出，请稍后重试；窗口与编辑内容已保留') from exc
@@ -255,6 +263,6 @@ class DesktopLifecycle:
                     self.candidates.cancel_exit()
                 except Exception:
                     logging.exception('Could not resume candidate window')
-            return {'ok':False,'error':str(exc)}
+            return {'ok':False,'error':str(exc),'retryable':isinstance(exc,DesktopExitPending)}
         finally:
             self.lock.release()

@@ -229,6 +229,7 @@
   window.registerWorkbenchTool?.('design-sync',{
     mount,canReplace:()=>!current?.busy,
     prepareExit:()=>!current?.busy,
+    isBusy:()=>Boolean(current?.busy),
     unmount:()=>{current?.dispose();current=null;},
     cancelExit:()=>{}
   });

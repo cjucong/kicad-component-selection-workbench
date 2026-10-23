@@ -5,7 +5,7 @@
   const titles = {footprint:'封装管理',settings:'工程设置',inventory:'本地库存',
     'value-parameters':'补充 Value',undo:'撤回修改','list-view':'列表视图',
     'field-mapping':'字段映射','plugin-update':'插件更新'};
-  let shell, loading = false, writing = false;
+  let shell, loading = false, writing = false, mountEpoch = 0;
   function status(message, error = false) {
     if (!shell) return;
     const line = shell.querySelector('[data-tool-status]');
@@ -36,15 +36,25 @@
     if (!tr || loadedRowsBom!==bom) throw new Error('该行已拆分或合并，请从当前分组重新打开');
     return tr;
   }
-  function canExit(cancelPreview = false) {
+  function canExit(cancelPreview = false, hostExit = false) {
     const cancelableFootprintPreview = kind === 'footprint' && window.rowFootprintBusy &&
       !window.rowFootprintSaving && typeof window.cancelRowFootprintPreview === 'function';
-    const allowed = (cancelableFootprintPreview || !loading) && !writing && !window.pathSettingsBusy && !window.localInventoryBusy &&
+    const busy = writing || window.pathSettingsBusy || window.localInventoryBusy ||
+      window.rowFootprintSaving || window.pluginUpdateBusy || document.querySelector('[data-composing="1"]') ||
+      document.querySelector('#valueParametersDialog[data-saving]');
+    if (busy) return false;
+    const dirty = window.hasUnsavedPathSettings?.() || window.hasUnsavedInventory?.() || window.hasUnsavedValueParameters?.();
+    if (dirty && (!hostExit || !window.confirm('放弃尚未应用的工具窗口编辑并退出工作台？已保存记录不会撤回。'))) return false;
+    const allowed = (kind === 'footprint' || cancelableFootprintPreview || !loading) && !writing && !window.pathSettingsBusy && !window.localInventoryBusy &&
       !window.rowFootprintSaving && !window.pluginUpdateBusy &&
-      !window.hasUnsavedPathSettings?.() && !window.hasUnsavedInventory?.() &&
-      !window.hasUnsavedValueParameters?.() && !document.querySelector('[data-composing="1"]');
+      !document.querySelector('[data-composing="1"]');
     if (allowed && cancelPreview && cancelableFootprintPreview) return window.cancelRowFootprintPreview();
     return allowed;
+  }
+  function isBusy() {
+    return Boolean(writing || window.pathSettingsBusy || window.localInventoryBusy ||
+      window.rowFootprintSaving || window.pluginUpdateBusy ||
+      document.querySelector('#valueParametersDialog[data-saving]'));
   }
   async function post(url,payload) {
     const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -78,6 +88,7 @@
     shell.append(table,apply);
   }
   async function mount(name,payload) {
+    const epoch = ++mountEpoch;
     showShell(name); loading=true;
     let footprintFinished=false;
     try {
@@ -96,25 +107,38 @@
         panel.onchange=()=>void window.notifyNativeToolChanged().catch(error=>status(error.message,true));
       } else if(name==='undo') await undo(payload);
       else {
-        const tr=await rowFor(payload);
         if(name==='footprint') {
-          // Preview cancellation is safe; actual publication keeps its separate guard.
-          const result = await window.manageRowFootprint(tr);
+          // Show the cancelable workflow before loading rows or library data.
+          const result = await window.manageRowFootprint(() => rowFor(payload));
+          if (epoch !== mountEpoch) return;
           footprintFinished=result?.finished === true;
-        } else await window.openValueParameters(tr.dataset.refs);
+          if (!footprintFinished) throw new Error(result?.error || '封装操作未完成，请重试');
+        } else {
+          const tr=await rowFor(payload);
+          if (epoch !== mountEpoch) return;
+          await window.openValueParameters(tr.dataset.refs);
+        }
       }
-      if(name!=='undo') status('');
-    } catch(error) {status(error.message,true);}
+      if(epoch === mountEpoch && name!=='undo') status('');
+    } catch(error) {
+      if (epoch !== mountEpoch) return;
+      status(error.message,true);
+      if (name === 'footprint') {
+        const retry=document.createElement('button'); retry.type='button'; retry.textContent='重试';
+        retry.dataset.toolRetry=''; retry.onclick=()=>void mount(name,payload); shell.append(retry);
+      }
+    }
     finally {
+      if (epoch !== mountEpoch) return;
       loading=false;
-      if(child && footprintFinished && window.nativeToolMounted) {
+      if(child && footprintFinished && window.nativeToolMounted && !window.nativeToolExitPending) {
         void window.closeNativeTool().catch(error=>status(error.message,true));
       }
     }
   }
   for(const name of Object.keys(titles)) window.registerWorkbenchTool?.(name,{
-    mount:payload=>mount(name,payload),canReplace:()=>!loading && canExit(),prepareExit:()=>canExit(true),cancelExit:()=>{},
-    unmount:()=>document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close())
+    mount:payload=>mount(name,payload),canReplace:()=>!loading && canExit(),prepareExit:hostExit=>canExit(true,hostExit),isBusy,cancelExit:()=>{},
+    unmount:()=>{mountEpoch++;loading=false;document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());}
   });
   if(child && titles[kind]) {
     document.documentElement.classList.add('native-utility-page');

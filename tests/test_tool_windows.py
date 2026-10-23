@@ -51,14 +51,51 @@ def test_open_shows_before_ready_and_reuses_same_native_window():
     assert len(children) == 1
 
 
-def test_loading_keeps_only_latest_request_for_that_window():
+def test_loading_different_footprint_rows_keeps_independent_requests():
     owner, _, children, _ = windows()
     owner.main_action('open',request(rid='old',refs='R1'))
     owner.main_action('open',request(rid='new',refs='R2'))
     loaded(children[0])
     script = children[0].evaluate_js.call_args.args[0]
-    assert 'R2' in script and '"request_id": "new"' in script
-    assert '"refs": "R1"' not in script
+    assert 'R1' in script and '"request_id": "old"' in script
+    assert len(children) == 2
+    loaded(children[1])
+    assert 'R2' in children[1].evaluate_js.call_args.args[0]
+
+
+def test_busy_footprint_on_one_row_does_not_block_another_row():
+    owner, lifecycle, children, _ = windows()
+    assert owner.main_action('open', request(refs='R1'))['ok']
+    loaded(children[0])
+    children[0].evaluate_js.return_value = False
+    assert owner.main_action('open', request(rid='two', refs='R2'))['ok']
+    assert len(children) == 2
+    loaded(children[1])
+    assert children[0].bridge.tool_window('changed')['ok']
+    assert '"refs": "R1"' in lifecycle.window.evaluate_js.call_args.args[0]
+    assert children[1].bridge.tool_window('changed')['ok']
+    assert '"refs": "R2"' in lifecycle.window.evaluate_js.call_args.args[0]
+    assert not children[0].bridge.tool_window('close')['ok']
+    children[1].evaluate_js.return_value = True
+    assert children[1].bridge.tool_window('close')['ok']
+    children[1].destroy.assert_called_once()
+    children[0].destroy.assert_not_called()
+
+
+def test_closed_footprint_reopens_fresh_without_old_mount_or_callbacks():
+    owner, _, children, _ = windows()
+    owner.main_action('open', request(refs='R1'))
+    original = children[0]
+    loaded(original)
+    original.evaluate_js.return_value = True
+    assert original.bridge.tool_window('close')['ok']
+    assert owner.main_action('open', request(rid='new', refs='R1'))['ok']
+    assert len(children) == 2
+    assert not original.bridge.tool_window('changed')['ok'], 'Closed bridge reached a new window'
+    loaded(original)
+    assert not owner.entries['footprint']['ready'], 'Late load event reached the new window'
+    loaded(children[1])
+    assert '"request_id": "new"' in children[1].evaluate_js.call_args.args[0]
 
 
 @pytest.mark.parametrize('value', [None,{},request(kind='arbitrary'),
