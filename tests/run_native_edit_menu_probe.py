@@ -16,7 +16,7 @@ def run(report):
         <p id="sample">Workbench selected text QA</p>
         <input id="editor" value="Editable text QA" style="font:20px sans-serif;width:400px">
         <input id="destination" value="" style="font:20px sans-serif;width:400px">
-        <dialog><p id="dialogText">Modal selected text QA</p></dialog>
+        <dialog><p id="dialogText">Modal selected text QA</p><div id="dialogBlank" style="height:40px"></div></dialog>
         </body></html>''', text_select=True, width=700, height=400)
 
     def worker():
@@ -76,6 +76,27 @@ def run(report):
                 getSelection().removeAllRanges(); getSelection().addRange(r); true''')
             context('#sample')
             result['checks']['selected_text_right_click_menu'] = True
+            window.evaluate_js('window.editEvents=0;for(const name of ["copy","cut","paste"])document.addEventListener(name,()=>window.editEvents++);true')
+            def blank_click(x=600,y=300):
+                tasks = []
+                def send():
+                    core = window.native.webview.CoreWebView2
+                    for kind in ('mousePressed', 'mouseReleased'):
+                        tasks.append(core.CallDevToolsProtocolMethodAsync('Input.dispatchMouseEvent', json.dumps({
+                            'type':kind,'button':'left','buttons':1 if kind=='mousePressed' else 0,
+                            'clickCount':1,'x':x,'y':y})))
+                window.native.Invoke(Action(send))
+                for task in tasks:
+                    assert task.Wait(5000) and not task.IsFaulted
+                end = time.monotonic() + 2
+                while time.monotonic() < end and menu_visible():
+                    time.sleep(.05)
+                assert not menu_visible(), 'Menu remained visible after clicking page blank space'
+            blank_click()
+            assert window.evaluate_js('window.editEvents') == 0, 'Dismiss must not execute editing commands'
+            result['checks']['blank_click_dismisses_without_command'] = True
+            window.evaluate_js('const r=document.createRange();r.selectNodeContents(document.querySelector("#sample"));getSelection().removeAllRanges();getSelection().addRange(r);true')
+            context('#sample')
             def capture_menu():
                 from System.Drawing import Bitmap, Rectangle
                 from System.Drawing.Imaging import ImageFormat
@@ -96,6 +117,13 @@ def run(report):
                 const r=document.createRange();r.selectNodeContents(document.querySelector('#dialogText'));
                 getSelection().removeAllRanges();getSelection().addRange(r);
                 document.addEventListener('copy',e=>{window.modalCopyEvent=true;e.preventDefault()},{once:true});true''')
+            context('#dialogText')
+            point = window.evaluate_js('JSON.stringify((()=>{const r=document.querySelector("#dialogBlank").getBoundingClientRect();return {x:r.x+10,y:r.y+10}})())')
+            blank_click(**json.loads(point))
+            assert window.evaluate_js('document.querySelector("dialog").open') is True
+            assert window.evaluate_js('window.editEvents') == 1
+            result['checks']['modal_blank_click_dismisses_only_menu'] = True
+            window.evaluate_js('const r=document.createRange();r.selectNodeContents(document.querySelector("#dialogText"));getSelection().removeAllRanges();getSelection().addRange(r);true')
             context('#dialogText'); click('copy')
             wait('window.modalCopyEvent === true')
             assert window.evaluate_js('document.querySelector("dialog").open') is True

@@ -150,6 +150,27 @@ def show_edit_menu(window, context):
     from System.Drawing import Point
     from System.Windows.Forms import ContextMenuStrip, ToolStripMenuItem
 
+    if (not isinstance(context, dict) or type(context.get('generation')) is not int or
+            type(context.get('sequence')) is not int or context['sequence'] < 1):
+        return {'ok': False}
+
+    def accept_request():
+        if (context['generation'] != getattr(window, '_workbench_edit_generation', 0) or
+                context['sequence'] <= getattr(window, '_workbench_edit_sequence', 0)):
+            return False
+        window._workbench_edit_sequence = context['sequence']
+        return True
+
+    if isinstance(context, dict) and context.get('dismiss') is True:
+        def dismiss():
+            if not accept_request():
+                return
+            popup = getattr(window, '_workbench_edit_popup', None)
+            if popup is not None:
+                popup.Close()
+        window.native.Invoke(Action(dismiss))
+        return {'ok': True}
+
     if not isinstance(context, dict) or any(type(context.get(key)) is not bool
                                           for key in ('selected', 'writable')):
         return {'ok': False}
@@ -162,6 +183,8 @@ def show_edit_menu(window, context):
         return {'ok': False}
 
     def show():
+        if not accept_request():
+            return
         view = window.native.webview
         source = str(view.CoreWebView2.Source)
         generation = getattr(window, '_workbench_edit_generation', 0)
@@ -170,6 +193,7 @@ def show_edit_menu(window, context):
             previous.Close()
             previous.Dispose()
         menu = ContextMenuStrip()
+        menu.AutoClose = True
         window._workbench_edit_popup = menu
         commands = [('undo', '撤销', 'Ctrl+Z'), ('redo', '重做', 'Ctrl+Y'),
                     ('cut', '剪切', 'Ctrl+X'), ('copy', '复制', 'Ctrl+C'),
@@ -208,6 +232,7 @@ def enable_browser_shortcuts(window) -> None:
             if not getattr(window, '_workbench_edit_navigation', None) and hasattr(core, 'NavigationStarting'):
                 def invalidate_menu(sender, args):
                     window._workbench_edit_generation = getattr(window, '_workbench_edit_generation', 0) + 1
+                    window._workbench_edit_sequence = 0
                     popup = getattr(window, '_workbench_edit_popup', None)
                     if popup is not None:
                         popup.Close()
@@ -231,6 +256,7 @@ def enable_browser_shortcuts(window) -> None:
             window.expose(workbench_edit)
             window._workbench_edit_bridge = workbench_edit
         script = (CORE / 'web' / 'edit-menu.js').read_text(encoding='utf-8')
+        script = script.replace('/*workbench-generation*/ 0', str(getattr(window, '_workbench_edit_generation', 0)))
         window.native.Invoke(Action(lambda: window.native.webview.CoreWebView2.ExecuteScriptAsync(script)))
     except Exception:
         logging.exception("Could not enable WebView2 browser shortcuts")

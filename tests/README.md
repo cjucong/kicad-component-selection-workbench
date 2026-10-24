@@ -4,6 +4,8 @@
 
 文字编辑菜单：`test_edit_menu.py` 使用实际 Chromium 右键输入验证原生菜单请求、输入选区、只读框、可编辑文本、对话框和位号菜单兼容；合成事件不得请求菜单。`test_kicad_selection_plugin.py` 验证页面仅能打开原生菜单、不能直接执行粘贴，只有原生菜单选择才执行固定编辑命令，导航后拒绝旧菜单。`run_native_edit_menu_probe.py --report <工程外 JSON 路径>` 在真实 WebView2 中用 CDP 右键输入打开原生菜单，通过原生菜单项的 PerformClick 检查复制事件、对话框内操作及撤销/重做/全选，不代表物理鼠标点击。系统剪贴板可用时另验复制/剪切/粘贴内容并恢复原剪贴板。操作系统拒绝访问时必须在报告中保留内容验证缺口，不把菜单/复制事件测试称为剪贴板端到端通过。Esc 由 Windows 原生菜单处理。
 
+菜单收起回归：原生探测通过 CDP 左键点击普通页面及 HTML 弹窗内的空白，核验菜单不可见、无复制/剪切/粘贴事件且底层弹窗保持打开。Chromium 回归覆盖点击/重复点击/窗口调整/失焦通知，宿主单元测试覆盖取消、文档版本及消息乱序，不把消息测试冒充操作系统真实切窗测试。
+
 预览权限回归：`test_footprint_choices.py` 验证编号不兼容/同行铜皮不一致仍可只读预览，但不能发布转换封装；`test_footprint_overlay_ui.py` 覆盖不兼容预览、迟到响应及原生模式单层标题布局。`test_kicad_busy_guard.py` 验证短暂无响应后恢复和持续忙碌时不发送保存/关闭。系统编辑菜单命令过滤由 `test_kicad_selection_plugin.py` 覆盖；原生窗口探测验证真实 WebView2 的编辑菜单/快捷键设置及处理器已安装，不代表操作系统右键点击、剪贴板端到端测试。
 
 分组封装误差回归：`test_footprint_geometry.py` 覆盖单焊盘 0.65000/0.65001 mm、20 纳米绝对欧氏距离边界及编号/非有限值拒绝；`test_footprint_choices.py` 覆盖转换、独立改名和转换页改名，两种基准选择及超限时不发布。`test_footprint_alignment_integration.py` 使用真实 pcbnew 覆盖正背面、非整数放置、旋转和 10 纳米历史差异。`run_native_grouped_footprint_probe.py --report-dir <工程外绝对目录>` 使用桌面 Python/kipy、真实临时 KiCad 工程验证多位号改名/转换、同步原理图、PCB 更新及撤销；仅上游转换输入为合成夹具，不代表真实商城联网转换。复用原生标准库探测的正背面、网络、走线、保存重开和自动清理验证。

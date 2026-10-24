@@ -257,9 +257,9 @@ class SelectionPluginTests(unittest.TestCase):
         class Items(list):
             def Add(self, item): self.append(item)
         class Menu:
-            def __init__(self): self.Items = Items()
+            def __init__(self): self.Items = Items(); self.closed = 0
             def Show(self, *args): pass
-            def Close(self): pass
+            def Close(self): self.closed += 1
             def Dispose(self): pass
         core = SimpleNamespace(Settings=SimpleNamespace(),
             Source='http://127.0.0.1:8765/',
@@ -278,7 +278,7 @@ class SelectionPluginTests(unittest.TestCase):
             for value in ['copy','paste','readClipboard','evaluate','Copy',{},None,
                           {'selected':True,'writable':True,'x':float('nan')}]:
                 self.assertFalse(exposed[0](value)['ok'])
-            context = dict(selected=True,writable=True,x=20,y=20,width=800,height=600)
+            context = dict(selected=True,writable=True,x=20,y=20,width=800,height=600,generation=0,sequence=1)
             self.assertTrue(exposed[0](context)['ok'])
             self.assertEqual(calls, [], 'Opening the popup never accesses the clipboard')
             for item in window._workbench_edit_popup.Items:
@@ -292,9 +292,26 @@ class SelectionPluginTests(unittest.TestCase):
             core.NavigationStarting.handlers[0](core, None)
             window._workbench_edit_popup.Items[4].Click.handlers[0](None, None)
             self.assertEqual(len(calls), 6, 'Same-URL reload invalidates the old native menu')
-            self.assertTrue(exposed[0]({**context,'writable':False})['ok'])
+            self.assertTrue(exposed[0]({**context,'writable':False,'generation':1})['ok'])
             self.assertEqual([item.Enabled for item in window._workbench_edit_popup.Items],
                              [False,False,False,True,False,True])
+            popup = window._workbench_edit_popup
+            self.assertTrue(popup.AutoClose)
+            exposed[0]({'dismiss':True,'generation':1,'sequence':2})
+            self.assertEqual(popup.closed,1)
+            self.assertEqual(len(calls),6,'Dismiss must not execute an edit command')
+            exposed[0]({**context,'generation':1,'sequence':1})
+            self.assertIs(window._workbench_edit_popup,popup,'Late open cannot revive dismissed popup')
+            exposed[0]({**context,'generation':1,'sequence':4})
+            popup = window._workbench_edit_popup
+            exposed[0]({'dismiss':True,'generation':1,'sequence':3})
+            self.assertEqual(popup.closed,0,'Late dismiss cannot close a newer popup')
+            exposed[0]({'dismiss':True,'generation':0,'sequence':1000})
+            self.assertEqual(popup.closed,0,'Previous document cannot dismiss the new menu')
+            exposed[0]({'dismiss':True,'generation':1,'sequence':5})
+            self.assertEqual(popup.closed,1)
+            exposed[0]({**context,'generation':1,'sequence':4})
+            self.assertIs(window._workbench_edit_popup,popup,'Blur cancellation rejects a delayed open')
         self.assertTrue(all(method=='Input.dispatchKeyEvent' and set(args)=={'type','commands'}
                             for method,args in calls))
         self.assertEqual(len(scripts), 2, 'Reload must restore the page menu without duplicating the native bridge')
