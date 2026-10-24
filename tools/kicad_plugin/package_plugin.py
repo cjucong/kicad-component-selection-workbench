@@ -26,6 +26,7 @@ if __package__:
 else:
     from updater import VERSION, REPOSITORY
 CORE_FILES = (
+    "web/edit-menu.js",
     "part_selection_design_sync.py",
     "web/design-sync.js", "web/design-sync.css",
     "web/tool-pages.js", "web/tool-pages.css",

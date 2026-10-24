@@ -246,6 +246,59 @@ class SelectionPluginTests(unittest.TestCase):
             self.assertIn('text_select', options)
             self.assertIs(ast.literal_eval(options['text_select']), True)
 
+    def test_edit_bridge_only_opens_native_menu_and_cannot_execute_commands(self):
+        import desktop
+        exposed, calls, scripts = [], [], []
+        class Event:
+            def __init__(self): self.handlers = []
+            def __iadd__(self, handler): self.handlers.append(handler); return self
+        class Item:
+            def __init__(self, label): self.Text = label; self.Click = Event()
+        class Items(list):
+            def Add(self, item): self.append(item)
+        class Menu:
+            def __init__(self): self.Items = Items()
+            def Show(self, *args): pass
+            def Close(self): pass
+            def Dispose(self): pass
+        core = SimpleNamespace(Settings=SimpleNamespace(),
+            Source='http://127.0.0.1:8765/',
+            NavigationStarting=Event(),
+            CallDevToolsProtocolMethodAsync=lambda method, args:calls.append((method,json.loads(args))),
+            ExecuteScriptAsync=scripts.append)
+        window = SimpleNamespace(native=SimpleNamespace(webview=SimpleNamespace(CoreWebView2=core,
+            ClientSize=SimpleNamespace(Width=800,Height=600)),
+            Invoke=lambda action:action()), expose=exposed.append)
+        with patch.dict(sys.modules, {'System':SimpleNamespace(Action=lambda action:action),
+                'System.Drawing':SimpleNamespace(Point=lambda x,y:(x,y)),
+                'System.Windows.Forms':SimpleNamespace(ContextMenuStrip=Menu,ToolStripMenuItem=Item)}):
+            desktop.enable_browser_shortcuts(window)
+            desktop.enable_browser_shortcuts(window)
+            self.assertEqual(len(exposed), 1)
+            for value in ['copy','paste','readClipboard','evaluate','Copy',{},None,
+                          {'selected':True,'writable':True,'x':float('nan')}]:
+                self.assertFalse(exposed[0](value)['ok'])
+            context = dict(selected=True,writable=True,x=20,y=20,width=800,height=600)
+            self.assertTrue(exposed[0](context)['ok'])
+            self.assertEqual(calls, [], 'Opening the popup never accesses the clipboard')
+            for item in window._workbench_edit_popup.Items:
+                item.Click.handlers[0](item, None)
+            self.assertEqual(len(calls), 6)
+            core.Source = 'https://example.com/'
+            window._workbench_edit_popup.Items[4].Click.handlers[0](None, None)
+            self.assertEqual(len(calls), 6, 'Stale native menu cannot paste after navigation')
+            core.Source = 'http://127.0.0.1:8765/'
+            self.assertEqual(len(core.NavigationStarting.handlers), 1)
+            core.NavigationStarting.handlers[0](core, None)
+            window._workbench_edit_popup.Items[4].Click.handlers[0](None, None)
+            self.assertEqual(len(calls), 6, 'Same-URL reload invalidates the old native menu')
+            self.assertTrue(exposed[0]({**context,'writable':False})['ok'])
+            self.assertEqual([item.Enabled for item in window._workbench_edit_popup.Items],
+                             [False,False,False,True,False,True])
+        self.assertTrue(all(method=='Input.dispatchKeyEvent' and set(args)=={'type','commands'}
+                            for method,args in calls))
+        self.assertEqual(len(scripts), 2, 'Reload must restore the page menu without duplicating the native bridge')
+
     def legacy_plugin(self):
         import package_plugin
         registry = []

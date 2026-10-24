@@ -143,6 +143,60 @@ def schematic_project_from_environment(document) -> Path:
     return root
 
 
+def show_edit_menu(window, context):
+    """Pages can request a popup, never execute clipboard commands themselves."""
+    import math
+    from System import Action
+    from System.Drawing import Point
+    from System.Windows.Forms import ContextMenuStrip, ToolStripMenuItem
+
+    if not isinstance(context, dict) or any(type(context.get(key)) is not bool
+                                          for key in ('selected', 'writable')):
+        return {'ok': False}
+    if any(type(context.get(key)) not in (int, float) or not math.isfinite(context[key])
+           for key in ('x', 'y', 'width', 'height')):
+        return {'ok': False}
+    if not (0 <= context['x'] <= context['width'] <= 100000 and
+            0 <= context['y'] <= context['height'] <= 100000 and
+            context['width'] > 0 and context['height'] > 0):
+        return {'ok': False}
+
+    def show():
+        view = window.native.webview
+        source = str(view.CoreWebView2.Source)
+        generation = getattr(window, '_workbench_edit_generation', 0)
+        previous = getattr(window, '_workbench_edit_popup', None)
+        if previous is not None:
+            previous.Close()
+            previous.Dispose()
+        menu = ContextMenuStrip()
+        window._workbench_edit_popup = menu
+        commands = [('undo', '撤销', 'Ctrl+Z'), ('redo', '重做', 'Ctrl+Y'),
+                    ('cut', '剪切', 'Ctrl+X'), ('copy', '复制', 'Ctrl+C'),
+                    ('paste', '粘贴', 'Ctrl+V'), ('selectAll', '全选', 'Ctrl+A')]
+        for name, label, shortcut in commands:
+            item = ToolStripMenuItem(label)
+            item.ShortcutKeyDisplayString = shortcut
+            item.Enabled = (context['selected'] if name == 'copy' else True if name == 'selectAll'
+                            else context['writable'] and (name != 'cut' or context['selected']))
+
+            def execute(sender, event, command=name):
+                # Only a native menu selection reaches this handler. Refuse a
+                # stale popup after navigation; no page-supplied code is run.
+                if (str(view.CoreWebView2.Source) != source or
+                        getattr(window, '_workbench_edit_generation', 0) != generation):
+                    return
+                view.CoreWebView2.CallDevToolsProtocolMethodAsync('Input.dispatchKeyEvent',
+                    json.dumps({'type': 'rawKeyDown', 'commands': [command]}))
+
+            item.Click += execute
+            menu.Items.Add(item)
+        menu.Show(view, Point(int(context['x'] * view.ClientSize.Width / context['width']),
+                              int(context['y'] * view.ClientSize.Height / context['height'])))
+    window.native.Invoke(Action(show))
+    return {'ok': True}
+
+
 def enable_browser_shortcuts(window) -> None:
     try:
         from System import Action
@@ -151,6 +205,14 @@ def enable_browser_shortcuts(window) -> None:
             core = window.native.webview.CoreWebView2
             core.Settings.AreBrowserAcceleratorKeysEnabled = True
             core.Settings.AreDefaultContextMenusEnabled = True
+            if not getattr(window, '_workbench_edit_navigation', None) and hasattr(core, 'NavigationStarting'):
+                def invalidate_menu(sender, args):
+                    window._workbench_edit_generation = getattr(window, '_workbench_edit_generation', 0) + 1
+                    popup = getattr(window, '_workbench_edit_popup', None)
+                    if popup is not None:
+                        popup.Close()
+                core.NavigationStarting += invalidate_menu
+                window._workbench_edit_navigation = invalidate_menu
             if not getattr(window, '_workbench_edit_menu', None) and hasattr(core, 'ContextMenuRequested'):
                 def edit_menu(sender, args):
                     # Keep WebView2's native edit commands and selection handling;
@@ -163,6 +225,13 @@ def enable_browser_shortcuts(window) -> None:
                 window._workbench_edit_menu = edit_menu
 
         window.native.Invoke(Action(enable))
+        if not getattr(window, '_workbench_edit_bridge', None):
+            def workbench_edit(context):
+                return show_edit_menu(window, context)
+            window.expose(workbench_edit)
+            window._workbench_edit_bridge = workbench_edit
+        script = (CORE / 'web' / 'edit-menu.js').read_text(encoding='utf-8')
+        window.native.Invoke(Action(lambda: window.native.webview.CoreWebView2.ExecuteScriptAsync(script)))
     except Exception:
         logging.exception("Could not enable WebView2 browser shortcuts")
 

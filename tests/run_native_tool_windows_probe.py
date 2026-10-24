@@ -119,7 +119,7 @@ def run(report):
                         if child.native.Left > main.native.Right - 100: break
                         time.sleep(.1)
                     assert child.native.Left > main.native.Right - 100, 'Child cannot leave main bounds'
-                    assert set(child.evaluate_js('Object.keys(window.pywebview.api)'))=={'tool_window'}, 'Child has host privileges'
+                    assert set(child.evaluate_js('Object.keys(window.pywebview.api)'))=={'tool_window','workbench_edit'}, 'Child has host privileges'
                     if kind=='settings':
                         wait(child,'document.querySelector("#pathSettingsDialog").open')
                         child.evaluate_js('document.querySelector("[name=jump_cursor_behavior]").value="stay"')
