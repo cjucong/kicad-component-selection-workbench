@@ -1,5 +1,7 @@
 # 插件回归测试
 
+手动配准回归：`test_footprint_overlay_ui.py` 的 `manual` / `manual-safety` 使用真实 Chromium 指针拖动、旋转中心、角度输入及快速匹配，覆盖全部编号、9 对 5 禁用、无效输入、切行清理、取消重开和标签下方导航。`test_footprint_geometry.py`、`test_footprint_choices.py`、`test_footprint_alignment_integration.py` 验证变换校验、真实封装写入、缓存隔离与编号安全。`run_native_project_cycle_probe.py` 在一次性 KiCad 工程实际发布手动变换封装、同步原理图、更新 PCB、保存重开并核验焊盘、网络、走线及未选对象；仅上游转换输入为合成夹具，不代表商城联网转换或物理鼠标端到端测试。
+
 本目录保留可复用测试和稳定夹具，不含生产 CAD、BOM、人工选料记录或 Git 数据。电路连通性、FPGA、工程目录检查和 U46 审核测试由原工程维护。
 
 文字编辑菜单：`test_edit_menu.py` 使用实际 Chromium 右键输入验证原生菜单请求、输入选区、只读框、可编辑文本、对话框和位号菜单兼容；合成事件不得请求菜单。`test_kicad_selection_plugin.py` 验证页面仅能打开原生菜单、不能直接执行粘贴，只有原生菜单选择才执行固定编辑命令，导航后拒绝旧菜单。`run_native_edit_menu_probe.py --report <工程外 JSON 路径>` 在真实 WebView2 中用 CDP 右键输入打开原生菜单，通过原生菜单项的 PerformClick 检查复制事件、对话框内操作及撤销/重做/全选，不代表物理鼠标点击。系统剪贴板可用时另验复制/剪切/粘贴内容并恢复原剪贴板。操作系统拒绝访问时必须在报告中保留内容验证缺口，不把菜单/复制事件测试称为剪贴板端到端通过。Esc 由 Windows 原生菜单处理。

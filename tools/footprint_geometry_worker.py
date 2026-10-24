@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from part_selection_footprint_geometry import _outside_project, _validate_supported
+from part_selection_footprint_geometry import (
+    _outside_project, _validate_supported, validate_alignment_transform,
+)
 
 
 def _load(pcbnew, path, *, allow_models=False, render_only=False):
@@ -36,6 +37,7 @@ def _inventory(footprint):
 
 
 def _align(pcbnew, payload):
+    transform = validate_alignment_transform({key: payload[key] for key in ('rotation_deg', 'offset_mm')})
     output = Path(payload['output'])
     _outside_project(output)
     if output.resolve() == Path(payload['converted']).resolve():
@@ -46,10 +48,8 @@ def _align(pcbnew, payload):
         if item.GetClass() not in {'PAD','PCB_SHAPE','PCB_TEXT','PCB_TEXTBOX','PCB_FIELD','ZONE'}:
             raise ValueError(f'Unsupported native footprint object: {item.GetClass()}')
     inventory = _inventory(footprint)
-    angle = float(payload['rotation_deg'])
-    dx,dy = map(float,payload['offset_mm'])
-    if not all(map(math.isfinite,(angle,dx,dy))):
-        raise ValueError('Nonfinite native transform')
+    angle = transform['rotation_deg']
+    dx,dy = transform['offset_mm']
     origin = pcbnew.VECTOR2I(0,0)
     move = pcbnew.VECTOR2I(pcbnew.FromMM(dx),pcbnew.FromMM(dy))
     for item in items:
@@ -121,6 +121,18 @@ def _board_references(pcbnew, payload):
 def _pad_one(pcbnew, footprint):
     pads = [pad for pad in footprint.Pads() if pad.GetNumber() == '1']
     return _xy(pcbnew,pads[0].GetPosition()) if len(pads) == 1 else None
+
+
+def _numbered_pads(pcbnew, footprint):
+    return [{'number': str(pad.GetNumber()), 'position_mm': _xy(pcbnew, pad.GetPosition())}
+            for pad in footprint.Pads() if pad.GetNumber()]
+
+
+def _pad_center(pads):
+    if not pads:
+        return None
+    return [(min(pad['position_mm'][axis] for pad in pads) +
+             max(pad['position_mm'][axis] for pad in pads)) / 2 for axis in (0, 1)]
 
 
 def _normalize_svg(source, view_box, color):
@@ -230,6 +242,10 @@ def _render(pcbnew,payload):
               'existing_pad_one': _pad_one(pcbnew,existing),
               'converted_pad_one': _pad_one(pcbnew,converted),
               'existing_layers': {}, 'converted_layers': {}}
+    for side, footprint in (('existing', existing), ('converted', converted)):
+        pads = _numbered_pads(pcbnew, footprint)
+        result[side + '_pads'] = pads
+        result[side + '_center_mm'] = _pad_center(pads)
     work.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='g',dir=work) as directory:
         directory = Path(directory)

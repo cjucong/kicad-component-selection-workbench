@@ -209,6 +209,10 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     const cache = new Map(), layerState = new Map(), urls = new Set();
     let closed = false, sequence = 0, controller = null, detail = null, libraryDetail = null;
     let localOnly = options.manage === true;
+    const adjustment = window.mountFootprintAdjustment?.(overlay, {
+      enabled: !options.library && !options.readonly,
+      changed: () => { q('[data-fp-ack]').checked = false; refresh(); }
+    });
     const selectedEntry = () => options.library ? preview.items.find(e => e.id === q('[data-fp-items]').value)
       : preview.existing.find(e => e.id === q('[data-fp-existing]').value);
     const source = () => q('[name=fp-source]:checked').value;
@@ -223,6 +227,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     function refresh() {
       const entry = selectedEntry(), original = !!entry && originals.has(entry.id);
       const reference = !!entry && references.has(entry.id);
+      adjustment?.setActive(source() === 'converted');
       if (options.readonly) {
         for (const selector of ['.fp-baseline', '.fp-sources', '.fp-destination', '.fp-apply']) q(selector).hidden = true;
         q('.fp-title strong').textContent = 'PCB 原位封装对比';
@@ -253,9 +258,10 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const acknowledged = q('[data-fp-ack]').checked && !!name && !!lib;
       q('.fp-apply').disabled = source() === 'existing' ? !entry || entry.source === 'pcb'
         : !acknowledged || (source() === 'rename' ? !entry || !renameIds.has(entry.id)
-          : localOnly || !reference || !preview.compatible || detail?.alignment?.ok !== true);
+          : localOnly || !reference || !preview.compatible || detail?.alignment?.ok !== true || adjustment?.isValid() === false);
     }
     function clearImages() {
+      adjustment?.clear();
       overlay.querySelectorAll('[data-fp-source-layers], [data-fp-marker-source]').forEach(e => e.replaceChildren());
       urls.forEach(url => URL.revokeObjectURL(url));
       urls.clear();
@@ -324,6 +330,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
         : '仅预览，未配准：' + (alignment.reason || '请检查焊盘编号与原封装');
       q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);
       if (value.local_only || value.library_comparison) q('[data-fp-alignment]').removeAttribute('data-ok');
+      adjustment?.setComparison(value);
       q('.fp-scene').hidden = false;
       q('[data-fp-canvas-status]').hidden = true;
       updateDisplay();
@@ -429,7 +436,8 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       close({preview_id: preview.preview_id, source: source(), existing_id: q('[data-fp-existing]').value,
         target_mode: mode(), target_library: mode() === 'existing' ? q('[data-fp-library]').value : q('[data-fp-new-library]').value.trim(),
         target_folder: q('[data-fp-folder]').value.trim(), name: q('[data-fp-name]').value.trim(),
-        acknowledged: q('[data-fp-ack]').checked});
+        acknowledged: q('[data-fp-ack]').checked,
+        ...(source() === 'converted' ? adjustment?.choice() : {})});
     };
     (options.mount || document.body).append(overlay);
     if (!options.mount || options.readonly) document.addEventListener('keydown', keyboard, true);
@@ -489,13 +497,13 @@ window.openFootprintManager = function openFootprintManager(options) {
     const overlay = document.createElement('div');
     overlay.className = 'fp-overlay';
     overlay.innerHTML = `<section class="fp-dialog fp-workflow" role="dialog" aria-modal="true" aria-label="封装管理">
-      <header class="fp-title"><button type="button" data-fp-back title="返回上一页" aria-label="返回上一页" disabled><svg aria-hidden="true"><use href="#toolbar-icon-arrow-left"></use></svg></button><button type="button" data-fp-forward class="fp-forward" title="前进" aria-label="前进" disabled><svg aria-hidden="true"><use href="#toolbar-icon-arrow-left"></use></svg></button><strong>封装管理</strong><button type="button" data-fp-close title="关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
+      <header class="fp-title"><strong>封装管理</strong><button type="button" data-fp-close title="关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
       <nav class="fp-tabs" role="tablist" aria-label="封装操作"><button type="button" role="tab" data-fp-tab="library">替换库封装</button><button type="button" role="tab" data-fp-tab="convert">替换立创封装</button><button type="button" role="tab" data-fp-tab="rename">库封装改名</button></nav>
+      <nav class="fp-history" aria-label="封装页面历史"><button type="button" data-fp-back title="返回上一页" aria-label="返回上一页" disabled><svg aria-hidden="true"><use href="#toolbar-icon-arrow-left"></use></svg></button><button type="button" data-fp-forward class="fp-forward" title="前进" aria-label="前进" disabled><svg aria-hidden="true"><use href="#toolbar-icon-arrow-left"></use></svg></button></nav>
       <div class="fp-pages"></div></section>`;
     const q = selector => overlay.querySelector(selector), previousFocus = document.activeElement;
     if (document.documentElement.classList.contains('native-utility-page')) {
       overlay.classList.add('fp-native-workflow');
-      q('.fp-tabs').prepend(q('[data-fp-back]'), q('[data-fp-forward]'));
       q('.fp-title').hidden = true;
     }
     const controller = new AbortController(), pages = new Map();

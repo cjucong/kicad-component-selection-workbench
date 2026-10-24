@@ -145,6 +145,46 @@ def estimate_alignment(converted_source: str, reference_source: str, *, method='
         return _failure(f'Invalid footprint geometry: {exc}')
 
 
+def validate_alignment_transform(transform):
+    """Copy a bounded, absolute raw-converted-to-reference KiCad transform."""
+    if not isinstance(transform, dict) or set(transform) != {'rotation_deg', 'offset_mm'}:
+        raise ValueError('Invalid alignment_transform keys')
+    offset = transform['offset_mm']
+    if not isinstance(offset, list) or len(offset) != 2:
+        raise ValueError('alignment_transform.offset_mm must contain two numbers')
+    values = [transform['rotation_deg'], *offset]
+    if any(type(value) not in (int, float) for value in values):
+        raise ValueError('alignment_transform requires finite numbers, not booleans or strings')
+    try:
+        angle, dx, dy = map(float, values)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError('Invalid alignment_transform numbers') from exc
+    if not all(map(math.isfinite, (angle, dx, dy))):
+        raise ValueError('alignment_transform requires finite numbers')
+    if abs(angle) > 3600 or max(abs(dx), abs(dy)) > 1000:
+        raise ValueError('alignment_transform exceeds 3600 degrees or 1000 mm')
+    return {'rotation_deg': angle, 'offset_mm': [dx, dy]}
+
+
+def manual_alignment(converted_source, reference_source, transform):
+    """Evaluate an explicit rigid transform without relaxing pad correspondence."""
+    transform = validate_alignment_transform(transform)
+    result = estimate_alignment(converted_source, reference_source, method='center')
+    if not result['ok']:
+        return result
+    converted = _pad_positions(_parse_module(converted_source))
+    reference = _pad_positions(_parse_module(reference_source))
+    angle = math.radians(transform['rotation_deg'])
+    c, s = math.cos(angle), math.sin(angle)
+    dx, dy = transform['offset_mm']
+    error = max(math.hypot(c*x+s*y+dx-reference[number][0],
+                           -s*x+c*y+dy-reference[number][1])
+                for number, (x, y) in converted.items())
+    return {**result, **transform, 'method': 'manual', 'max_error_mm': error,
+            'requires_review': error > _TOLERANCE + 1e-12,
+            'reason': 'Explicit rigid transform; inspect numbered-pad residuals and geometry'}
+
+
 def _validate_supported(source, *, allow_models=False, render_only=False):
     root = _parse_module(source)
     for node in root.children[2:]:
@@ -205,11 +245,13 @@ def _outside_project(path):
             raise ValueError('Geometry work/output must be outside a KiCad project')
 
 
-def align_module(converted: Path, reference: Path, output: Path, *, method='rigid') -> dict:
+def align_module(converted: Path, reference: Path, output: Path, *, method='rigid', transform=None) -> dict:
     """Write a staging library module using pcbnew, or copy identity bytes.
 
     Inputs are never overwritten. Nonidentity inputs are conservatively
     checked for unsupported objects before invoking the native worker.
+    An explicit transform replaces the estimated pose, never composes with it;
+    numbered-pad eligibility remains strict, with residuals flagged for review.
     """
     result = _failure('Alignment has not run')
     try:
@@ -222,7 +264,8 @@ def align_module(converted: Path, reference: Path, output: Path, *, method='rigi
         target = reference.read_text(encoding='utf-8-sig')
         _validate_supported(source, allow_models=True)
         _validate_supported(target, allow_models=True)
-        result = estimate_alignment(source,target,method=method)
+        result = (estimate_alignment(source, target, method=method) if transform is None
+                  else manual_alignment(source, target, transform))
         if not result['ok']:
             return result
         identity = abs(result['rotation_deg']) < 1e-9 and max(map(abs,result['offset_mm'])) < 1e-9

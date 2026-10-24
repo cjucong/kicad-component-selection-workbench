@@ -1,5 +1,6 @@
 """Native alignment through library publication, using disposable CAD only."""
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -9,7 +10,9 @@ from unittest.mock import patch
 import pytest
 
 from part_selection_footprints import FootprintChoices
-from part_selection_footprint_geometry import _find_kicad_python, estimate_alignment
+from part_selection_footprint_geometry import (
+    _find_kicad_python, _pad_positions, _parse_module, estimate_alignment, render_comparison,
+)
 from part_selection_runtime import runtime_directory
 
 
@@ -80,6 +83,84 @@ def test_native_preview_and_published_geometry_match_original_pad_coordinates(na
     for path, source in before.items():
         if path.name != 'fp-lib-table':
             assert path.read_bytes() == source, f'Existing design file changed: {path.name}'
+
+
+def test_manual_native_transform_publishes_exact_stage_and_renders_transformed_pads(native_preview):
+    root, service, preview, detail, original, before = native_preview
+    transform = {'rotation_deg': 127.5, 'offset_mm': [5.25, -2.75]}
+    choice = {'preview_id': preview['preview_id'], 'source': 'converted',
+              'existing_id': 'Local:Original', 'target_mode': 'existing', 'target_library': 'Local',
+              'name': 'Manual', 'acknowledged': True, 'alignment_transform': transform}
+    assert service.changes_geometry(choice)
+    state = service.previews[preview['preview_id']]
+    aligned, _ = service._alignment(state, 'Local:Original', transform)
+    staged = aligned['path'].read_bytes()
+    raw_pads = _pad_positions(_parse_module(state['module'].read_text(encoding='utf-8')))
+    c, s = math.cos(math.radians(127.5)), math.sin(math.radians(127.5))
+    expected = {n: (c*x+s*y+5.25, -s*x+c*y-2.75) for n, (x, y) in raw_pads.items()}
+    actual = _pad_positions(_parse_module(staged.decode('utf-8')))
+    for number in expected:
+        assert actual[number] == pytest.approx(expected[number], abs=2e-6)
+    reference = _pad_positions(_parse_module(original.read_text(encoding='utf-8')))
+    residual = max(math.dist(expected[n], reference[n]) for n in expected)
+    assert aligned['alignment']['method'] == 'manual'
+    assert aligned['alignment']['requires_review'] and residual > .025
+    assert aligned['alignment']['max_error_mm'] == pytest.approx(residual)
+    rendered = render_comparison(original, aligned['path'], state['work']/'manual-render')
+    assert rendered['ok'], rendered
+    assert {p['number']: tuple(p['position_mm']) for p in rendered['converted_pads']} == actual
+    assert {p['number']: tuple(p['position_mm']) for p in rendered['existing_pads']} == reference
+    center = [(min(p[i] for p in actual.values())+max(p[i] for p in actual.values()))/2 for i in (0, 1)]
+    assert rendered['converted_center_mm'] == pytest.approx(center)
+    assert detail['alignment']['rotation_deg'] == pytest.approx(90), 'Auto preview stays unchanged'
+    assert detail['existing_pads'] == detail['converted_pads']
+    result = service.commit(choice)
+    published = root/result['target_path']/'Manual.kicad_mod'
+    assert published.read_text(encoding='utf-8') == aligned['path'].read_text(encoding='utf-8').replace(
+        '(footprint "Converted"', '(footprint "Manual"', 1)
+    assert result['alignment'] == aligned['alignment']
+    assert service.commit(choice) == result
+    for path, source in before.items():
+        if path.name != 'fp-lib-table':
+            assert path.read_bytes() == source, f'Existing design file changed: {path.name}'
+
+
+@pytest.mark.skipif(_find_kicad_python() is None, reason='Bundled KiCad Python is required')
+def test_five_vs_nine_pads_can_render_but_manual_cannot_publish(scratch_project, monkeypatch):
+    root = Path(scratch_project)
+    monkeypatch.setenv('KICAD_PART_SELECTION_CACHE', str(root.parent/'r'))
+    pretty = root/'Libraries/Local.pretty'
+    pretty.mkdir(parents=True)
+    original = pretty/'Original.kicad_mod'
+    original.write_text(module('Original', [(str(i+1), i, 0) for i in range(5)], .6), encoding='utf-8')
+    (root/'fp-lib-table').write_text('(fp_lib_table (lib (name "Local") (type "KiCad") '
+        '(uri "${KIPRJMOD}/Libraries/Local.pretty")))', encoding='utf-8')
+    service = FootprintChoices(root)
+    def convert(code, progress=None):
+        folder = service.staging_root/'Libraries/DSMU/LCSC'/code
+        path = folder/f'LCSC_{code}.pretty/Converted.kicad_mod'
+        path.parent.mkdir(parents=True)
+        path.write_text(module('Converted', [(str(i+1), i, 2) for i in range(9)], .8), encoding='utf-8')
+        (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (version 20241209) '
+            f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))', encoding='utf-8')
+        return {'footprint': f'LCSC_{code}:Converted', 'symbol': f'LCSC_{code}:Part', 'c_code': code}
+    before = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    with patch('part_selection_footprints.LibraryImporter.convert', side_effect=convert):
+        preview = service.prepare('C123', ['Local:Original'])
+    detail = service.comparison(preview['preview_id'], 'Local:Original')
+    assert detail['preview_only'] and not detail['alignment']['ok']
+    assert len(detail['existing_pads']) == 5 and len(detail['converted_pads']) == 9
+    assert detail['existing_center_mm'] == [2, 0] and detail['converted_center_mm'] == [4, 2]
+    assert detail['converted_layers']['copper']
+    choice = {'preview_id': preview['preview_id'], 'source': 'converted',
+              'existing_id': 'Local:Original', 'target_mode': 'existing', 'target_library': 'Local',
+              'name': 'Refused', 'acknowledged': True,
+              'alignment_transform': {'rotation_deg': 90, 'offset_mm': [4, -3]}}
+    with pytest.raises(ValueError):
+        service.changes_geometry(choice)
+    with pytest.raises(ValueError):
+        service.commit(choice)
+    assert before == {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
 
 
 @pytest.mark.parametrize('native_preview', [.2], indirect=True)

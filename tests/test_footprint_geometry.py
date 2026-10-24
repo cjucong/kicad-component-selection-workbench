@@ -56,6 +56,59 @@ def test_identity_estimate(geometry):
     assert result['max_error_mm'] == pytest.approx(0)
 
 
+@pytest.mark.parametrize('transform', [
+    None, [], {}, {'rotation_deg': 0}, {'rotation_deg': 0, 'offset_mm': [0, 0], 'scale': 1},
+    {'rotation_deg': True, 'offset_mm': [0, 0]},
+    {'rotation_deg': '90', 'offset_mm': [0, 0]},
+    {'rotation_deg': 0, 'offset_mm': [False, 0]},
+    {'rotation_deg': 0, 'offset_mm': '00'},
+    {'rotation_deg': 0, 'offset_mm': [0]},
+    {'rotation_deg': 0, 'offset_mm': [0, 0, 0]},
+    {'rotation_deg': 0, 'offset_mm': (0, 0)},
+    {'rotation_deg': float('nan'), 'offset_mm': [0, 0]},
+    {'rotation_deg': 0, 'offset_mm': [0, float('inf')]},
+    {'rotation_deg': 3601, 'offset_mm': [0, 0]},
+    {'rotation_deg': 0, 'offset_mm': [-1000.001, 0]},
+    {'rotation_deg': 10**400, 'offset_mm': [0, 0]},
+])
+def test_manual_transform_rejects_invalid_or_unbounded_values(geometry, transform):
+    with pytest.raises(ValueError, match='alignment_transform'):
+        geometry.validate_alignment_transform(transform)
+
+
+def test_manual_transform_is_absolute_kicad_rotation_not_an_auto_delta(geometry):
+    angle = math.radians(37.5)
+    c, s = math.cos(angle), math.sin(angle)
+    targets = [(n, c*x+s*y+4, -s*x+c*y-3) for n, x, y in POINTS]
+    transform = {'rotation_deg': 37.5, 'offset_mm': [4, -3]}
+    result = geometry.manual_alignment(footprint(), footprint(targets), transform)
+    assert result['ok'] and result['method'] == 'manual' and not result['requires_review']
+    assert result['rotation_deg'] == 37.5 and result['offset_mm'] == [4, -3]
+    assert result['max_error_mm'] < 1e-12
+    result['offset_mm'][0] = 9
+    assert transform['offset_mm'] == [4, -3], 'Never retain the caller-owned offset list'
+
+
+def test_manual_residual_is_evaluated_without_refitting_or_rejecting_review(geometry):
+    result = geometry.manual_alignment(footprint(), footprint(),
+        {'rotation_deg': 0, 'offset_mm': [.1, -.2]})
+    assert result['ok'] and result['requires_review']
+    assert result['max_error_mm'] == pytest.approx(math.hypot(.1, .2))
+    assert result['offset_mm'] == [.1, -.2]
+    assert geometry.estimate_alignment(footprint(), footprint())['method'] == 'rigid'
+
+
+@pytest.mark.parametrize('points', [
+    [('1', 0, 0)], [('1', 0, 0), ('1', 1, 0)],
+    [('1', 0, 0), ('2', 0, 0), ('3', 0, 0)],
+    [('A', -2, -1), ('B', 2, -1), ('C', 1, 2)],
+])
+def test_manual_transform_cannot_override_ambiguous_or_missing_numbered_pads(geometry, points):
+    result = geometry.manual_alignment(footprint(points), footprint(),
+        {'rotation_deg': 90, 'offset_mm': [4, -3]})
+    assert not result['ok']
+
+
 @pytest.mark.parametrize('transform', [lambda x,y: (x+1,y), lambda x,y: (-y,x), lambda x,y: (-x,y)])
 def test_shared_reference_does_not_fit_away_local_transform(geometry, transform):
     other = [(n,*transform(x,y)) for n,x,y in POINTS]
@@ -317,12 +370,13 @@ print(json.dumps(checks))''', reference, output)
 
 
 @pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')
-def test_real_native_transform_covers_complex_geometry_and_keeps_library_origin(geometry, workspace):
+@pytest.mark.parametrize('transform', [None, {'rotation_deg': 90, 'offset_mm': [7, -5]}])
+def test_real_native_transform_covers_complex_geometry_and_keeps_library_origin(geometry, workspace, transform):
     converted, reference, output = [workspace / n for n in ['complex.kicad_mod','ref.kicad_mod','out.kicad_mod']]
     converted.write_text(complex_footprint(), encoding='utf-8')
     points = POINTS + [('4',0,-2)]
     reference.write_text(footprint([(n,y+7,-x-5) for n,x,y in points]), encoding='utf-8')
-    result = geometry.align_module(converted, reference, output)
+    result = geometry.align_module(converted, reference, output, transform=transform)
     assert result['ok'], result
     assert result['rotation_deg'] == pytest.approx(90)
     assert result['offset_mm'] == pytest.approx([7,-5])
@@ -360,11 +414,12 @@ print(json.dumps({'origin':xy(f.GetPosition()),'orientation':f.GetOrientationDeg
 
 @pytest.mark.parametrize('extra', ['(model "unknown.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))',
                                   '(future_geometry (at 1 2))'])
-def test_nonidentity_unsupported_objects_are_rejected_not_dropped(geometry, workspace, extra):
+@pytest.mark.parametrize('transform', [None, {'rotation_deg': 0, 'offset_mm': [2, 0]}])
+def test_nonidentity_unsupported_objects_are_rejected_not_dropped(geometry, workspace, extra, transform):
     converted, reference, output = [workspace / n for n in ['in.kicad_mod','ref.kicad_mod','out.kicad_mod']]
     converted.write_text(footprint(extra=extra), encoding='utf-8')
     reference.write_text(footprint([(n,x+2,y) for n,x,y in POINTS]), encoding='utf-8')
-    result = geometry.align_module(converted, reference, output)
+    result = geometry.align_module(converted, reference, output, transform=transform)
     assert not result['ok'] and 'unsupported' in result['reason'].lower() and not output.exists()
 
 
@@ -377,6 +432,9 @@ def test_real_native_svg_layers_share_mm_frame_and_isolate_labels(geometry, work
     assert result.get('ok', True), result
     assert result['origin_mm'] == [0,0]
     assert result['existing_pad_one'] == result['converted_pad_one'] == [-2,-1]
+    expected_pads = [{'number': n, 'position_mm': [x, y]} for n, x, y in POINTS + [('4', 0, -2)]]
+    assert result['existing_pads'] == result['converted_pads'] == expected_pads
+    assert result['existing_center_mm'] == result['converted_center_mm'] == [0, 0]
     assert len(result['view_box']) == 4 and min(result['view_box'][2:]) > 0
     ids = {layer['id'] for layer in result['layers']}
     assert {'copper','F.SilkS','B.SilkS','reference','value','F.Fab','F.CrtYd'} <= ids
@@ -403,6 +461,21 @@ def test_render_rejects_work_inside_repository(geometry, workspace):
     reference.write_text(footprint(), encoding='utf-8')
     result = geometry.render_comparison(reference, reference, ROOT/'forbidden-geometry-work')
     assert result['ok'] is False and not (ROOT/'forbidden-geometry-work').exists()
+
+
+@pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')
+def test_native_render_reports_all_duplicate_numbered_pads_and_empty_center(geometry, workspace):
+    reference, converted = workspace/'ref.kicad_mod', workspace/'new.kicad_mod'
+    reference.write_text(footprint([('1', 0, 0), ('1', 4, 2), ('2', 1, 0), ('', 40, 40)]), encoding='utf-8')
+    converted.write_text(footprint([('', 5, 5)]), encoding='utf-8')
+    result = geometry.render_comparison(reference, converted, workspace/'plots')
+    assert result['ok'], result
+    assert result['existing_pads'] == [
+        {'number': '1', 'position_mm': [0, 0]}, {'number': '1', 'position_mm': [4, 2]},
+        {'number': '2', 'position_mm': [1, 0]}]
+    assert result['existing_center_mm'] == [2, 1]
+    assert result['existing_pad_one'] is None
+    assert result['converted_pads'] == [] and result['converted_center_mm'] is None
 
 
 @pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')

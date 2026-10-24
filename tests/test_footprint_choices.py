@@ -646,5 +646,168 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertFalse((self.pretty/'Refused.kicad_mod').exists())
 
 
+    def test_existing_and_rename_choices_reject_even_null_or_identity_transform(self):
+        for kind in ('converted', 'library', 'rename'):
+            if kind == 'converted':
+                preview = self.prepare()
+            elif kind == 'library':
+                preview = self.service.prepare_library(['DSMU:0603'])
+                self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+            else:
+                preview = self.service.prepare_rename(['DSMU:0603'], 'Renamed', code='C123')
+                self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+            for source in ('existing', 'rename'):
+                for transform in (None, {'rotation_deg': 0, 'offset_mm': [0, 0]}):
+                    choice = self.choice(preview, source=source, alignment_transform=transform)
+                    for action in (self.service.changes_geometry, self.service.commit):
+                        with self.subTest(kind=kind, source=source, transform=transform, action=action):
+                            with self.assertRaisesRegex(ValueError, 'alignment_transform'):
+                                action(choice)
+
+    def test_invalid_manual_choice_rejected_before_staging_or_publication(self):
+        preview = self.prepare()
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        for transform in (None, {}, {'rotation_deg': True, 'offset_mm': [0, 0]},
+                          {'rotation_deg': 0, 'offset_mm': [float('nan'), 0]},
+                          {'rotation_deg': 0, 'offset_mm': [0, 0], 'mirror': True}):
+            for action in (self.service.changes_geometry, self.service.commit):
+                with self.subTest(transform=transform, action=action), self.assertRaises(ValueError):
+                    action(self.choice(preview, alignment_transform=transform))
+        self.assertNotIn('aligned', self.service.previews[preview['preview_id']])
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_manual_cache_is_exact_and_shared_by_geometry_check_and_commit(self):
+        import math
+        from copy import deepcopy
+        from part_selection_footprints import geometry
+        preview = self.prepare()
+        transform = {'rotation_deg': 90, 'offset_mm': [1, 2]}
+        calls = []
+        def align(converted, reference, output, *, method, transform=None):
+            calls.append(deepcopy(transform))
+            output.write_text(module('Manual', width=.9), encoding='utf-8')
+            return {'ok': True, 'method': 'manual' if transform else method,
+                    **(deepcopy(transform) if transform else {'rotation_deg': 0, 'offset_mm': [0, 0]}),
+                    'max_error_mm': 3, 'requires_review': True}
+        with patch('part_selection_footprint_geometry.align_module', side_effect=align), \
+             patch('part_selection_footprint_geometry.render_comparison', return_value={'ok': True}):
+            self.service.comparison(preview['preview_id'], 'DSMU:0603')
+            choice = self.choice(preview, name='Manual', alignment_transform=transform)
+            self.assertTrue(self.service.changes_geometry(choice))
+            self.assertTrue(self.service.changes_geometry(deepcopy(choice)))
+            state = self.service.previews[preview['preview_id']]
+            slightly_different = {'rotation_deg': 90, 'offset_mm': [math.nextafter(1., 2.), 2]}
+            different, _ = self.service._alignment(state, 'DSMU:0603', slightly_different)
+            exact, _ = self.service._alignment(state, 'DSMU:0603', transform)
+            self.assertNotEqual(exact['path'], different['path'])
+            self.assertEqual(len(calls), 3)
+            result = self.service.commit(choice)
+            self.assertEqual(len(calls), 3, 'Commit must reuse the exact geometry-check stage')
+        self.assertEqual(calls, [None, transform, slightly_different])
+        self.assertEqual(result['alignment']['offset_mm'], [1, 2])
+        self.assertTrue(result['alignment']['requires_review'])
+        self.assertEqual(geometry((self.pretty/'Manual.kicad_mod').read_text()),
+                         geometry(exact['path'].read_text()))
+
+    def test_manual_translation_alone_changes_geometry_and_published_evidence_hash(self):
+        from part_selection_library import digest
+        self.old.write_text(module('0603'), encoding='utf-8')
+        preview = self.prepare()
+        choice = self.choice(preview, name='Translated')
+        self.assertFalse(self.service.changes_geometry(choice), 'Unadjusted geometry is identical')
+        def worker(payload):
+            self.assertEqual(payload['rotation_deg'], 0)
+            self.assertEqual(payload['offset_mm'], [1, 0])
+            source = Path(payload['converted']).read_text(encoding='utf-8')
+            Path(payload['output']).write_text(source.replace('(at -0.75 0)', '(at 0.25 0)')
+                .replace('(at 0.75 0)', '(at 1.75 0)'), encoding='utf-8')
+            return {'ok': True}
+        choice['alignment_transform'] = {'rotation_deg': 0, 'offset_mm': [1, 0]}
+        with patch('part_selection_footprint_geometry._run_worker', side_effect=worker) as native:
+            self.assertTrue(self.service.changes_geometry(choice))
+            state = self.service.previews[preview['preview_id']]
+            aligned, _ = self.service._alignment(state, 'DSMU:0603', choice['alignment_transform'])
+            self.assertEqual(aligned['hash'], digest(aligned['path']))
+            self.assertNotEqual(aligned['hash'], state['module_hash'])
+            result = self.service.commit(choice)
+            native.assert_called_once()
+        published = self.pretty/'Translated.kicad_mod'
+        self.assertIn('(at 0.25 0)', published.read_text())
+        evidence = self.service.change_evidence(choice, ['R1'], {'R1': 'DSMU:0603'}, result)['R1']
+        self.assertEqual(evidence['target']['hash'], digest(published))
+        self.assertNotEqual(evidence['target']['hash'], state['module_hash'])
+        self.assertEqual(evidence['operation'], 'replace')
+
+    def test_manual_requires_explicit_acknowledgment(self):
+        preview = self.prepare()
+        with patch('part_selection_footprint_geometry.align_module') as align:
+            for acknowledged in (False, None, 1):
+                with self.subTest(acknowledged=acknowledged), self.assertRaises(ValueError):
+                    self.service.commit(self.choice(preview, acknowledged=acknowledged,
+                        alignment_transform={'rotation_deg': 0, 'offset_mm': [1, 0]}))
+            align.assert_not_called()
+
+    def test_manual_rejects_duplicate_pads_even_when_number_sets_match(self):
+        def convert(code, progress=None):
+            result = self.convert(code, progress)
+            path = self.service.staging_root/f'Libraries/DSMU/LCSC/{code}/LCSC_{code}.pretty/R0603.kicad_mod'
+            source = path.read_text(encoding='utf-8')
+            path.write_text(source[:-1] + '(pad "1" smd rect (at 1 2) (size .8 .5) '
+                            '(layers "F.Cu" "F.Mask")))', encoding='utf-8')
+            return result
+        with patch('part_selection_footprints.LibraryImporter.convert', side_effect=convert):
+            preview = self.prepare()
+        self.assertTrue(preview['compatible'], 'Set-only summary is not publication authorization')
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        choice = self.choice(preview, name='Refused',
+            alignment_transform={'rotation_deg': 90, 'offset_mm': [4, -3]})
+        for action in (self.service.changes_geometry, self.service.commit):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'Duplicate'):
+                action(choice)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_manual_preserves_group_and_missing_reference_guards(self):
+        other = self.pretty/'Other.kicad_mod'
+        other.write_text(module('Other').replace('(at 0.75 0)', '(at 0.85 0)'))
+        for ids in (['DSMU:0603', 'DSMU:Other'], ['DSMU:0603', 'Missing:Absent']):
+            preview = self.service.prepare('C123', ids)
+            for action in (self.service.changes_geometry, self.service.commit):
+                with self.subTest(ids=ids, action=action), self.assertRaises(ValueError):
+                    action(self.choice(preview, name='Refused',
+                        alignment_transform={'rotation_deg': 90, 'offset_mm': [4, -3]}))
+        self.assertFalse((self.pretty/'Refused.kicad_mod').exists())
+
+    def test_manual_preserves_source_cache_and_expiry_guards(self):
+        import time
+        for changed in ('module', 'symbol', 'reference', 'aligned', 'expired'):
+            with self.subTest(changed=changed):
+                self.old.write_text(module('0603', .7112), encoding='utf-8')
+                preview = self.prepare()
+                state = self.service.previews[preview['preview_id']]
+                transform = {'rotation_deg': 0, 'offset_mm': [0, 0]}
+                choice = self.choice(preview, name='Tampered', alignment_transform=transform)
+                self.assertTrue(self.service.changes_geometry(choice))
+                if changed == 'expired':
+                    state['time'] = time.monotonic() - 1801
+                else:
+                    path = (self.old if changed == 'reference' else
+                            next(iter(state['aligned'].values()))['path'] if changed == 'aligned'
+                            else state[changed])
+                    path.write_bytes(path.read_bytes() + b'\n; tampered')
+                for action in (self.service.changes_geometry, self.service.commit):
+                    with self.assertRaises(ValueError):
+                        action(choice)
+        self.assertFalse((self.pretty/'Tampered.kicad_mod').exists())
+
+    def test_manual_transform_is_bound_into_overwrite_approval(self):
+        preview = self.prepare()
+        choice = self.choice(preview, alignment_transform={'rotation_deg': 0, 'offset_mm': [0, 0]})
+        token = self.service.commit(choice)['conflict']['token']
+        changed = {**choice, 'alignment_transform': {'rotation_deg': 0, 'offset_mm': [5e-10, 0]}}
+        with self.assertRaisesRegex(ValueError, '覆盖确认无效'):
+            self.service.commit({**changed, 'collision': 'overwrite', 'collision_token': token})
+        self.assertEqual(self.old.read_text(), module('0603', .7112))
+
+
 if __name__ == '__main__':
     unittest.main()

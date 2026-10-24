@@ -18,7 +18,7 @@ import time
 from uuid import uuid4
 
 from kicad_sexpr import parse_sexpr
-from part_selection_footprint_geometry import reference_layout_difference
+from part_selection_footprint_geometry import reference_layout_difference, validate_alignment_transform
 from part_selection_library import IMPORT_LOCK, LibraryImporter, checked_path, digest, table_text
 from part_selection_runtime import runtime_directory
 
@@ -437,8 +437,10 @@ class FootprintChoices:
             shutil.rmtree(work, ignore_errors=True)
             raise
 
-    def _alignment(self, state, identifier):
+    def _alignment(self, state, identifier, transform=None):
         from part_selection_footprint_geometry import align_module
+        if transform is not None:
+            transform = validate_alignment_transform(transform)
         entry = next((e for e in state['existing'] if e['id'] == identifier
                       and e['id'] in state.get('alignment_ids',state['original_ids'])), None)
         if entry is None:
@@ -454,15 +456,21 @@ class FootprintChoices:
             if difference:
                 raise ValueError(original['id'] + ' 与 ' + originals[0]['id'] + '：' + difference + '；请先拆行后分别配准')
         cache = state.setdefault('aligned', {})
-        if identifier not in cache:
+        key = (identifier if transform is None else
+               (identifier, transform['rotation_deg'].hex(),
+                *(value.hex() for value in transform['offset_mm'])))
+        if key not in cache:
             index = len(cache)
             folder = checked_path(state['work'], state['work'] / ('v' + str(index)))
             folder.mkdir()
             output = checked_path(state['work'], state['work'] / ('a' + str(index) + '.kicad_mod'))
-            result = align_module(state['module'], entry['path'], output, method='center')
-            cache[identifier] = {'alignment': result, 'path': output if result.get('ok') else None,
-                                 'hash': digest(output) if result.get('ok') else None, 'work': folder}
-        return cache[identifier], entry
+            options = {'method': 'center'}
+            if transform is not None:
+                options['transform'] = transform
+            result = align_module(state['module'], entry['path'], output, **options)
+            cache[key] = {'alignment': result, 'path': output if result.get('ok') else None,
+                          'hash': digest(output) if result.get('ok') else None, 'work': folder}
+        return cache[key], entry
 
     def comparison(self, preview_id, identifier, target_identifier=None):
         from part_selection_footprint_geometry import render_comparison
@@ -566,9 +574,18 @@ class FootprintChoices:
             state.pop('published', None)
             state.pop('rollback', None)
 
+    @staticmethod
+    def _choice_transform(choice):
+        if 'alignment_transform' not in choice:
+            return None
+        if choice.get('source') != 'converted':
+            raise ValueError('alignment_transform is only valid for a converted footprint')
+        return validate_alignment_transform(choice['alignment_transform'])
+
     def changes_geometry(self, choice):
         """Compare selected geometry with the preview's frozen baseline, not its name."""
         with IMPORT_LOCK:
+            transform = self._choice_transform(choice)
             self.context(choice.get('preview_id'))
             state = self.previews[choice['preview_id']]
             self._verify(state)
@@ -580,7 +597,9 @@ class FootprintChoices:
                 entry = next(e for e in state['existing'] if e['id'] == choice.get('existing_id'))
                 target = entry['path']
             else:
-                aligned, _ = self._alignment(state, choice.get('existing_id'))
+                aligned, _ = self._alignment(state, choice.get('existing_id'), transform)
+                if transform is not None and not aligned['alignment'].get('ok'):
+                    raise ValueError('封装配准失败：' + str(aligned['alignment'].get('reason') or '无法可靠匹配焊盘'))
                 target = aligned['path'] or state['module']
             selected = geometry(target.read_text(encoding='utf-8-sig'))
             return len(originals) != len(set(baseline_ids)) or any(
@@ -609,6 +628,7 @@ class FootprintChoices:
 
     def commit(self, choice):
         with IMPORT_LOCK:
+            transform = self._choice_transform(choice)
             key = choice.get('preview_id')
             self.context(key)
             state = self.previews[key]
@@ -674,7 +694,7 @@ class FootprintChoices:
             elif not state['compatible']:
                 raise ValueError('焊盘编号不一致或原封装不可读取，禁止直接替换')
             else:
-                aligned, _ = self._alignment(state, choice.get('existing_id'))
+                aligned, _ = self._alignment(state, choice.get('existing_id'), transform)
                 if not aligned['alignment'].get('ok'):
                     raise ValueError('封装配准失败：' + str(aligned['alignment'].get('reason') or '无法可靠匹配焊盘'))
                 source = aligned['path'].read_text(encoding='utf-8-sig')

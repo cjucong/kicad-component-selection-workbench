@@ -19,8 +19,10 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   page.setDefaultTimeout(4000);
   await page.route('**/*', route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html><body><button id="launch">Open</button></body></html>'}));
   await page.goto('http://footprint.test/');
+  await page.evaluate(svg=>document.body.insertAdjacentHTML('afterbegin',svg),require('node:fs').readFileSync(process.env.FP_ICONS,'utf8'));
   await page.addStyleTag({path:process.env.FP_CSS});
   await page.addStyleTag({path:process.env.TOOL_CSS});
+  if (process.env.FP_ADJUST_JS) await page.addScriptTag({path:process.env.FP_ADJUST_JS});
   await page.addScriptTag({path:process.env.FP_JS});
   await page.evaluate(() => {
    window.calls=[]; window.pending={}; window.aborted=0; window.hold=false; window.bad=false;
@@ -28,7 +30,9 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    window.sample = id=>({alignment:{ok:!window.bad,rotation_deg:id==='Local:B'?180:90,offset_mm:[1,2],max_error_mm:0.002,reason:window.bad?'焊盘编号无法配准':''},
     view_box:[-5,-2.5,10,5],layers:[{id:'F.Cu',label:'铜层',default_visible:true},{id:'F.SilkS',label:'丝印',default_visible:false}],
     existing_layers:{'F.Cu':svg('#159b52'),'F.SilkS':svg('#159b52')},converted_layers:{'F.Cu':svg('#d52798'),'F.SilkS':svg('#d52798')},
-    origin_mm:[0,0],existing_pad_one:[-1.5,0],converted_pad_one:[-1.5,0],ref:id});
+    origin_mm:[0,0],existing_pad_one:[-1.5,0],converted_pad_one:[-1.5,0],
+    existing_pads:[{number:'1',position_mm:[-1.5,0]},{number:'2',position_mm:[1.5,0]}],
+    converted_pads:[{number:'1',position_mm:[-1.5,0]},{number:'2',position_mm:[1.5,0]}],ref:id});
    window.fetch = async (url, options) => {
     const payload=JSON.parse(options.body); calls.push({url,payload});
     options.signal?.addEventListener('abort',()=>window.aborted++);
@@ -59,7 +63,10 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    });
    await page.getByLabel('改名后',{exact:true}).waitFor();
    assert.equal(await page.locator('.fp-workflow > .fp-title').isVisible(),false,'native title bar must not have an inner duplicate');
-   assert.equal(await page.locator('.fp-tabs [data-fp-back]').count(),1);
+   assert.equal(await page.locator('.fp-history [data-fp-back]').count(),1);
+   const tabsBounds=await page.locator('.fp-tabs').boundingBox(), historyBounds=await page.locator('.fp-history').boundingBox();
+   assert.ok(historyBounds.y>=tabsBounds.y+tabsBounds.height-1,'history sits below operation tabs');
+   assert.ok(historyBounds.height<=32,'history buttons stay compact');
    await page.getByRole('tab',{name:'库封装改名',exact:true}).click();
    await page.getByRole('button',{name:'返回上一页',exact:true}).click();
    await page.getByRole('button',{name:'前进',exact:true}).click();
@@ -69,6 +76,158 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    await page.keyboard.press('Escape');
    await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));
    await page.evaluate(()=>document.documentElement.classList.remove('native-utility-page'));
+  }
+  if(check==='all'||check==='manual') {
+   await page.evaluate(()=>{calls=[];openComparison();});
+   await page.locator('[data-fp-adjust]').waitFor();
+   assert.equal(await page.locator('[data-fp-pad-number]').count(),4,'all numbered pads are labeled');
+   const canvas=page.locator('[data-fp-stage="converted"]');
+   const point=await canvas.boundingBox();
+   const x=point.x+point.width/2,y=point.y+point.height/2;
+   await page.locator('[data-fp-ack]').check();
+   await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+point.width/10,y+point.height/5,{steps:5});await page.mouse.up();
+   assert.equal(await page.locator('[data-fp-ack]').isChecked(),false,'moving requires fresh review');
+   assert.ok(Math.abs(Number(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue())-1)<0.01);
+   assert.ok(Math.abs(Number(await page.getByLabel('立创 Y 偏移 mm',{exact:true}).inputValue())-1)<0.01);
+   assert.match(await page.locator('[data-fp-source-layers="converted"]').getAttribute('style'),/transform:/);
+   await page.getByRole('button',{name:'1 号引脚中心对齐',exact:true}).click();
+   assert.ok(Math.abs(Number(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue()))<0.001);
+   await page.getByLabel('立创旋转角度',{exact:true}).fill('90');
+   assert.equal(await page.getByLabel('立创旋转角度',{exact:true}).inputValue(),'90');
+   await page.getByRole('button',{name:'按引脚编号自动定向',exact:true}).click();
+   assert.ok(Math.abs(Number(await page.getByLabel('立创旋转角度',{exact:true}).inputValue()))<0.001);
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('2');
+   await page.getByLabel('立创 Y 偏移 mm',{exact:true}).fill('1');
+   await page.getByRole('button',{name:'封装中心对齐',exact:true}).click();
+   assert.ok(Math.abs(Number(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue()))<0.001);
+   assert.ok(Math.abs(Number(await page.getByLabel('立创 Y 偏移 mm',{exact:true}).inputValue()))<0.001);
+   await page.getByRole('button',{name:'设置旋转中心',exact:true}).click();
+   const pivotBounds=await canvas.boundingBox();
+   await page.mouse.click(pivotBounds.x+pivotBounds.width*.6,pivotBounds.y+pivotBounds.height/2);
+   assert.equal(await page.getByRole('button',{name:'旋转立创封装',exact:true}).getAttribute('aria-pressed'),'true');
+   await page.getByLabel('立创旋转角度',{exact:true}).fill('90');
+   assert.ok(Math.abs(Number(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue())-1)<0.01,'rotation around a user pivot moves the origin: '+await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue());
+   assert.ok(Math.abs(Number(await page.getByLabel('立创 Y 偏移 mm',{exact:true}).inputValue())-1)<0.01);
+   await page.getByRole('button',{name:'重置手动调整',exact:true}).click();
+   await page.getByRole('button',{name:'旋转立创封装',exact:true}).click();
+   const rotationBounds=await canvas.boundingBox();
+   await page.mouse.move(rotationBounds.x+rotationBounds.width*.6,rotationBounds.y+rotationBounds.height/2);await page.mouse.down();
+   await page.mouse.move(rotationBounds.x+rotationBounds.width/2,rotationBounds.y+rotationBounds.height*.7,{steps:8});await page.mouse.up();
+   assert.ok(Math.abs(Number(await page.getByLabel('立创旋转角度',{exact:true}).inputValue())+90)<0.1,'canvas rotation uses KiCad counterclockwise degrees');
+   await page.getByRole('button',{name:'重置手动调整',exact:true}).click();
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('1.25');
+   await page.getByLabel('立创 Y 偏移 mm',{exact:true}).fill('-0.5');
+   await page.locator('[data-fp-view="side"]').check();
+   assert.equal(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue(),'1.25','view modes retain adjustments');
+   await page.getByLabel('引脚编号',{exact:true}).uncheck();
+   assert.equal(await page.locator('[data-fp-pad-label-stack]').first().isVisible(),false);
+   await page.getByLabel('引脚编号',{exact:true}).check();
+   assert.equal(await page.evaluate(()=>calls.filter(c=>c.url==='/api/footprint_comparison').length),1,'manual gestures never re-render over HTTP');
+   await page.locator('[data-fp-ack]').check();await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   const result=await page.evaluate(()=>result);
+   assert.equal(result.alignment_transform.rotation_deg,90);
+   assert.deepEqual(result.alignment_transform.offset_mm,[2.25,1.5],'persist the composed raw-to-reference transform');
+   await page.evaluate(()=>openComparison());await page.locator('[data-fp-adjust]').waitFor();
+   await page.getByRole('button',{name:'设置旋转中心',exact:true}).click();
+   const customPivot=await canvas.boundingBox();
+   await page.mouse.click(customPivot.x+customPivot.width*.6,customPivot.y+customPivot.height/2);
+   const axisPoint=await page.locator('.fp-rotation-axis').evaluate(e=>[parseFloat(e.style.left)/100*10-5,parseFloat(e.style.top)/100*5-2.5]);
+   await page.getByLabel('立创旋转角度',{exact:true}).fill('37');
+   const radians=37*Math.PI/180,c=Math.cos(radians),s=Math.sin(radians);
+   const labelPoint=await page.locator('[data-fp-side=converted][data-fp-pad-number="2"]').evaluate(e=>[parseFloat(e.style.left)/100*10-5,parseFloat(e.style.top)/100*5-2.5]);
+   const around=([x,y])=>[c*(x-axisPoint[0])+s*(y-axisPoint[1])+axisPoint[0],-s*(x-axisPoint[0])+c*(y-axisPoint[1])+axisPoint[1]];
+   const expectedLabel=around([1.5,0]);
+   assert.ok(labelPoint.every((v,i)=>Math.abs(v-expectedLabel[i])<1e-5),'labels follow the custom pivot within CSS percentage serialization precision');
+   await page.locator('[data-fp-ack]').check();await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   const composed=await page.evaluate(()=>result.alignment_transform);
+   assert.ok(Math.abs(composed.rotation_deg-127)<1e-6);
+   const expectedOffset=around([1,2]);
+   assert.ok(composed.offset_mm.every((v,i)=>Math.abs(v-expectedOffset[i])<1e-6),'nonzero base rotation and custom pivot compose into the published transform');
+   await page.evaluate(()=>{
+    const sample=window.sample;window.originalSample=sample;
+    window.sample=id=>({...sample(id),alignment:{ok:false,rotation_deg:0,offset_mm:[0,0],reason:'Pad number sets do not match exactly'},
+      existing_pads:Array.from({length:9},(_,i)=>({number:String(i+1),position_mm:[i-4,0]})),
+      converted_pads:Array.from({length:5},(_,i)=>({number:String(i+1),position_mm:[i-2,0]}))});
+    preview.compatible=false;preview.alignment_ids=[];openComparison();
+   });
+   await page.locator('[data-fp-adjust]').waitFor();
+   assert.equal(await page.locator('[data-fp-pad-number]').count(),14);
+   await page.getByRole('button',{name:'封装中心对齐',exact:true}).click();
+   await page.getByRole('button',{name:'按引脚编号自动定向',exact:true}).click();
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('1');
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false,'manual transforms cannot authorize 5 to 9 pins');
+   assert.match(await page.locator('[data-fp-adjust-status]').innerText(),/仅预览.*9.*5/);
+   await page.locator('[name=fp-source][value=rename]').check();
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result?.source==='rename');
+   assert.equal(await page.evaluate(()=>Object.hasOwn(result,'alignment_transform')),false,'rename never includes a geometric adjustment');
+   await page.evaluate(()=>{sample=originalSample;preview.compatible=true;delete preview.alignment_ids;});
+   for(const width of [1440,390]) {
+    await page.setViewportSize({width,height:1000});
+    await page.evaluate(()=>openComparison());await page.locator('[data-fp-adjust]').waitFor();
+    await page.waitForFunction(()=>[...document.querySelectorAll('[data-fp-layer-image]')].every(e=>e.complete&&e.naturalWidth>0));
+    assert.equal(await page.locator('.fp-body').evaluate(e=>e.scrollWidth<=e.clientWidth+1),true);
+    await page.screenshot({path:process.env.FP_SHOTS+`/footprint-manual-${width}.png`});
+    await close();
+   }
+  }
+  if(check==='all'||check==='manual-safety') {
+   await page.evaluate(()=>openComparison());await page.locator('[data-fp-adjust]').waitFor();
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('2.5');
+   assert.match(await page.locator('[data-fp-alignment]').innerText(),/手动配准/);
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('');
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false,'empty numeric input cannot apply a hidden prior value');
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('1001');
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('900');
+   await page.getByLabel('立创 Y 偏移 mm',{exact:true}).fill('900');
+   const safetyCanvas=page.locator('[data-fp-stage="converted"]'),safetyBounds=await safetyCanvas.boundingBox();
+   await page.getByRole('button',{name:'设置旋转中心',exact:true}).click();
+   await page.mouse.click(safetyBounds.x+safetyBounds.width/2,safetyBounds.y+safetyBounds.height/2);
+   await page.getByLabel('立创旋转角度',{exact:true}).fill('45');
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false,'derived offset outside bounds cannot close and lose the draft');
+   await page.getByRole('button',{name:'重置手动调整',exact:true}).click();
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('1000');
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false,'composed absolute offset also respects backend bounds');
+   await page.getByRole('button',{name:'重置手动调整',exact:true}).click();
+   await page.getByRole('button',{name:'拖动立创封装',exact:true}).click();
+   await page.mouse.move(safetyBounds.x+safetyBounds.width/2,safetyBounds.y+safetyBounds.height/2);await page.mouse.down();
+   await page.mouse.move(safetyBounds.x+safetyBounds.width*.6,safetyBounds.y+safetyBounds.height/2);
+   await safetyCanvas.evaluate(e=>e.releasePointerCapture(1));await page.mouse.up();
+   assert.equal(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue(),'0','lost pointer capture restores the gesture baseline');
+   await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('1');
+   await page.locator('[data-fp-existing]').selectOption('Local:B');
+   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]').textContent.includes('180°'));
+   assert.equal(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue(),'0','new baseline resets old draft');
+   await page.getByRole('button',{name:'重置手动调整',exact:true}).click();
+   await page.locator('[data-fp-ack]').check();await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.equal(await page.evaluate(()=>Object.hasOwn(result,'alignment_transform')),false,'reset preserves existing automatic path');
+   await page.evaluate(()=>{
+    const old=window.sample;window.savedSample=old;
+    window.sample=id=>({...old(id),converted_pads:[{number:'2',position_mm:[0,0]},{number:'2',position_mm:[1,0]}]});
+    preview.compatible=false;openComparison();
+   });
+   await page.locator('[data-fp-adjust]').waitFor();
+   assert.equal(await page.getByRole('button',{name:'1 号引脚中心对齐',exact:true}).isEnabled(),false);
+   assert.equal(await page.getByRole('button',{name:'按引脚编号自动定向',exact:true}).isEnabled(),false,'duplicate numbers are ambiguous');
+   await page.getByRole('button',{name:'封装中心对齐',exact:true}).click();
+   await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));
+   await page.evaluate(()=>{sample=savedSample;preview.compatible=true;openComparison();});
+   await page.locator('[data-fp-adjust]').waitFor();
+   assert.equal(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue(),'0','cancel never retains geometry for a different session');
+   await close();
+   await page.evaluate(()=>{window.chooseFootprint(structuredClone(preview),{readonly:true,loadComparison:async()=>sample('Local:A')});});
+   await page.locator('[data-fp-pad-number]').first().waitFor();
+   assert.equal(await page.locator('[data-fp-adjust]').isVisible(),false,'PCB read-only comparison is never editable');
+   await close();
   }
   if(check==='all'||check==='incompatible-preview') {
    await page.evaluate(()=>{
@@ -295,7 +454,7 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    assert.equal(await page.getByRole('slider',{name:'立创不透明度'}).count(),1);
    assert.equal(await page.evaluate(()=>calls.filter(e=>e.url==='/api/footprint_comparison').length),1);
    assert.equal(await page.evaluate(()=>window.untrustedRan),undefined,'SVG must never execute');
-   assert.equal(await page.locator('.fp-comparison svg').count(),0,'upstream SVG may only be an img');
+   assert.equal(await page.locator('.fp-layer-stack svg').count(),0,'upstream SVG may only be an img');
    const dimensions=await page.locator('[data-fp-layer-image]').evaluateAll(images=>images.filter(e=>e.getClientRects().length).map(e=>({src:e.src,w:e.getBoundingClientRect().width,h:e.getBoundingClientRect().height})));
    assert.ok(dimensions.every(d=>d.src.startsWith('blob:')));
    assert.ok(dimensions.every(d=>Math.abs(d.w/d.h-2)<0.01));
@@ -431,10 +590,12 @@ def run_checks(scenario="all"):
         shots = runtime_directory(ROOT) / "footprint-overlay-smoke"
         shots.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "FP_CASE": scenario, "FP_JS": str(ROOT / "tools/web/footprint-compare.js"),
+               "FP_ICONS": str(ROOT / "tools/web/toolbar-icons.svg"),
+               "FP_ADJUST_JS": str(ROOT / "tools/web/footprint-adjust.js"),
                "TOOL_CSS": str(ROOT / "tools/web/tool-pages.css"),
                "FP_CSS": str(ROOT / "tools/web/footprint-compare.css"), "FP_SHOTS": str(shots)}
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-        result = subprocess.run(["node", "-e", BROWSER], cwd=directory, env=env, capture_output=True,
+        result = subprocess.run(["node", "-"], input=BROWSER, cwd=directory, env=env, capture_output=True,
                                 text=True, encoding="utf-8", timeout=90, **options)
         if result.returncode:
             raise AssertionError(result.stderr + result.stdout)

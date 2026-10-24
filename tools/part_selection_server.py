@@ -3999,7 +3999,8 @@ def render_index(app: PartSelectionApp) -> str:
     config = app.config
     icon_sprite = (Path(__file__).resolve().parent / "web" / "toolbar-icons.svg").read_text(encoding="utf-8")
     footprint_css = (Path(__file__).resolve().parent / "web" / "footprint-compare.css").read_text(encoding="utf-8")
-    footprint_js = (Path(__file__).resolve().parent / "web" / "footprint-compare.js").read_text(encoding="utf-8")
+    footprint_js = "\n".join((Path(__file__).resolve().parent / "web" / name).read_text(encoding="utf-8")
+                             for name in ("footprint-adjust.js", "footprint-compare.js"))
     row_edits_js = (Path(__file__).resolve().parent / "web" / "row-edits.js").read_text(encoding="utf-8")
     row_filters_js = (Path(__file__).resolve().parent / "web" / "row-filters.js").read_text(encoding="utf-8")
     row_filters_css = (Path(__file__).resolve().parent / "web" / "row-filters.css").read_text(encoding="utf-8")

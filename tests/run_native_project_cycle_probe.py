@@ -121,6 +121,7 @@ def run(report):
         ipc=Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='cycle-ipc-',dir=root.anchor)))
         stack.enter_context(patch.dict(os.environ,{'KICAD_CONFIG_HOME':str(settings.parent),
             'KICAD_PART_SELECTION_HOME':str(root.parent/'desktop'),'KIPRJMOD':str(root),
+            'KICAD_PART_SELECTION_CACHE':str(ipc/'cache'),
             'TEMP':str(ipc),'TMP':str(ipc)}))
         native=_find_kicad_python()
         subprocess.run([str(native),'-B',str(ROOT/'tests/run_native_pcb_in_place_probe.py'),
@@ -232,6 +233,49 @@ def run(report):
             assert done['stage']=='complete' and done['result']['saved'],done
             assert footprint_bytes(footprint_map(session._board()[1])['R1'])==footprint_bytes(renamed)
             results['checks']['pcb_only_saved_reopened_located']=True
+            # Only the upstream converter output is synthetic. Publication and
+            # the full save/sync/reopen cycle below use the real native path.
+            def converted_fixture(importer, code, progress=None):
+                folder=importer.root/'Libraries/DSMU/LCSC'/code
+                pretty=folder/f'LCSC_{code}.pretty'
+                pretty.mkdir(parents=True)
+                (pretty/'Converted.kicad_mod').write_bytes((root/'Local.pretty/Standard_R1.kicad_mod').read_bytes())
+                (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (version 20241209) '
+                    f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))',encoding='utf-8')
+                return {'footprint':f'LCSC_{code}:Converted','symbol':f'LCSC_{code}:Part','c_code':code}
+            with patch('part_selection_footprints.LibraryImporter.convert',autospec=True,side_effect=converted_fixture):
+                converted=app.row_footprint({'refs':'R1','bom':'__schematic__','mode':'convert'})['preview']
+            reference=converted['default_reference_id']
+            rendered=app.footprint_choices.comparison(converted['preview_id'],reference)
+            assert len(rendered['existing_pads'])==len(rendered['converted_pads'])==2
+            transform={'rotation_deg':17.0,'offset_mm':[.75,-1.25]}
+            app.row_footprint({'footprint_choice':{'preview_id':converted['preview_id'],'source':'converted',
+                'existing_id':reference,'acknowledged':True,'target_mode':'existing','target_library':'Local',
+                'name':'Manual_R1','alignment_transform':transform}})
+            from part_selection_footprint_geometry import _parse_module, _pad_positions
+            import math
+            source_pads=_pad_positions(_parse_module((root/'Local.pretty/Standard_R1.kicad_mod').read_text(encoding='utf-8')))
+            manual_pads=_pad_positions(_parse_module((root/'Local.pretty/Manual_R1.kicad_mod').read_text(encoding='utf-8')))
+            angle=math.radians(17)
+            for number,(x,y) in source_pads.items():
+                expected=(math.cos(angle)*x+math.sin(angle)*y+.75,-math.sin(angle)*x+math.cos(angle)*y-1.25)
+                assert math.dist(manual_pads[number],expected)<=.000002,(number,manual_pads[number],expected)
+            manual_before=session.snapshot(root,['R1'])
+            preview=app.design_sync.preview({'refs':['R1'],'destination':'both','alignment':'rigid'})
+            state=finished(app.design_sync,app.design_sync.start(preview['preview_id'],{}))
+            assert state['stage']=='awaiting_pcb_confirmation',state
+            token=state['pcb_preview']['preview_id']
+            replacements=app.pcb_updates.previews[token]['replacements']
+            done=finished(app.design_sync,app.design_sync.continue_pcb(state['job_id'],token,{'geometry':True}))
+            assert done['stage']=='complete' and done['result']['saved'],done
+            from run_native_pcb_in_place_probe import check_replacement
+            from part_selection_pcb_session import outside_parts
+            manual_after=session.snapshot(root,['R1'])
+            check_replacement(decode(manual_before['parts']['R1']['proto']),decode(manual_after['parts']['R1']['proto']),
+                              decode(replacements[0]['proto']),persisted=True)
+            selected={manual_before['parts']['R1']['uuid']}
+            assert outside_parts(manual_before['text'],selected)==outside_parts(manual_after['text'],selected)
+            results['checks']['manual_transform_published_schematic_pcb_saved_reopened']=True
             before_replace=session.snapshot(root,['R1'])
             preview=app.row_footprint({'refs':'R1','bom':'__schematic__','mode':'library'})['preview']
             app.footprint_choices.library_detail(preview['preview_id'],'Local:Standard_R1')
