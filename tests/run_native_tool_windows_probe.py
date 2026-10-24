@@ -141,7 +141,8 @@ def run(report):
                     elif kind=='footprint':
                         wait(child,'!!document.querySelector(".fp-native-workflow")')
                         assert child.evaluate_js('getComputedStyle(document.querySelector(".fp-workflow > .fp-title")).display')=='none'
-                        assert child.evaluate_js('document.querySelectorAll(".fp-tabs [data-fp-back]").length')==1
+                        assert child.evaluate_js('document.querySelectorAll(".fp-history [data-fp-back]").length')==1
+                        assert child.evaluate_js('const h=document.querySelector(".fp-history").getBoundingClientRect(); const t=document.querySelector(".fp-tabs").getBoundingClientRect(); h.y>=t.bottom-1 && h.height<=32')
                         check_native_edit_settings(child)
                         result['checks']['single_native_title_and_child_edit_menu']=True
                         wait(child,"[...document.querySelectorAll('[data-fp-items] option')].some(o=>o.value==='Local:Other')")
