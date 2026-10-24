@@ -167,8 +167,11 @@ def test_pcb_execution_obeys_selection_then_override_lock_order():
     import textwrap
     from part_selection_server import PartSelectionApp
     entry = ast.parse(textwrap.dedent(inspect.getsource(PartSelectionApp.run_selection_job)))
-    assert any(isinstance(node, ast.Call) and ast.unparse(node.func) == 'self.apply_design_pcb'
+    assert any(isinstance(node, ast.Call) and ast.unparse(node.func) == 'self.sync_design_pcb'
                for node in ast.walk(entry))
+    wrapper = ast.parse(textwrap.dedent(inspect.getsource(PartSelectionApp.sync_design_pcb)))
+    assert any(isinstance(node, ast.Call) and ast.unparse(node.func) == 'self.apply_design_pcb'
+               for node in ast.walk(wrapper))
     tree = ast.parse(textwrap.dedent(inspect.getsource(PartSelectionApp.apply_design_pcb)))
     block = next(node for node in ast.walk(tree) if isinstance(node, ast.With))
     locks = [ast.unparse(item.context_expr) for item in block.items]

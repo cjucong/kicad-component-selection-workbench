@@ -68,3 +68,26 @@ def test_orphan_fields_cannot_supply_a_missing_hierarchy_instance(scratch_projec
     child.write_text('(kicad_sch (uuid "out-file"))')
     with pytest.raises(ValueError, match='L9'):
         DesignSource(app).capture(['L9'])
+
+
+def test_native_save_refresh_accepts_formatting_but_rejects_selected_field_changes(scratch_project):
+    from part_selection_design_source import DesignSource
+    app, child = app_for(scratch_project)
+    source = DesignSource(app)
+    snapshot = source.capture(['L9'])
+    child.write_text(child.read_text() + '\n')
+    assert not source.validate(snapshot)
+    assert source.refresh_after_save(snapshot)
+    assert source.validate(snapshot)
+    child.write_text(child.read_text().replace('10uH', '22uH'))
+    assert not source.refresh_after_save(snapshot)
+    assert snapshot['fields']['L9']['value'] == '10uH'
+
+
+def test_native_save_refresh_never_accepts_library_or_records_changes(scratch_project):
+    from part_selection_design_source import DesignSource
+    app, _ = app_for(scratch_project)
+    source = DesignSource(app)
+    snapshot = source.capture(['L9'])
+    (scratch_project / 'fp-lib-table').write_text('(fp_lib_table)')
+    assert not source.refresh_after_save(snapshot)

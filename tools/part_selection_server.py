@@ -2066,12 +2066,12 @@ class PartSelectionApp:
         if payload.get('operation') == 'pcb-update':
             if payload.get('acknowledged') is not True:
                 raise ValueError('请确认 PCB 更新')
-            return self.apply_design_pcb(str(payload.get('preview_id') or ''), progress=progress)
+            return self.sync_design_pcb(str(payload.get('preview_id') or ''), progress=progress)
         if payload.get("operation") == "row-footprint":
             return self.row_footprint(payload, progress=progress)
         return self.select_candidate(payload, progress=progress)
 
-    def apply_design_pcb(self, preview_id, progress=None):
+    def apply_design_pcb(self, preview_id, progress=None, *, restore_schematic=True, auto_save=False):
         notify = progress or (lambda *args: None)
         options = {'progress':progress} if progress else {}
         notify('waiting', '正在等待设计同步事务')
@@ -2089,8 +2089,10 @@ class PartSelectionApp:
                 return self.pcb_updates.apply(preview_id, True, **options)
             closed = False
             notify('schematic_guard', '正在安全保存并暂关同工程原理图，避免 KiCad 10 事务冲突')
-            prepared = self.run_kicad_script(self.kicad_url_for_refs(state['refs']),
-                ['-Mode','FindDialog','-SaveActiveFrame','-CloseAfterSave','-SaveOnly','-ExistingOnly'])
+            switches = ['-Mode','FindDialog','-SaveActiveFrame','-CloseAfterSave','-SaveOnly','-ExistingOnly']
+            if auto_save:
+                switches.append('-AllowNativeSave')
+            prepared = self.run_kicad_script(self.kicad_url_for_refs(state['refs']), switches)
             if not prepared.get('ok'):
                 raise ValueError('PCB 未写入：无法安全暂关同工程原理图。' + str(prepared.get('message','')))
             markers = [line.strip() for line in str(prepared.get('message','')).splitlines()
@@ -2100,14 +2102,53 @@ class PartSelectionApp:
             closed = 'SchematicClosed=1' in str(prepared.get('message',''))
             result = None
             try:
+                if auto_save and not self.pcb_updates.sources.refresh_after_save(state['source']['design']):
+                    raise ValueError('保存期间原理图字段或工作台记录已改变，请重新预检；未写入 PCB')
                 result = self.pcb_updates.apply(preview_id, True, schematic_close_verified=True, **options)
                 return result
             finally:
-                if closed:
+                if closed and (restore_schematic or result is None):
                     notify('restore', 'PCB 已处理，正在通过工程管理器恢复原理图')
                     restored = self.notify_kicad_schematic_changed({'updated_refs':state['refs']})
                     if result is not None and not restored.get('ok'):
                         result['warning'] = 'PCB 已更新；原理图重新打开失败，请从工程管理器打开：' + str(restored.get('message',''))
+
+    def sync_design_pcb(self, preview_id, progress=None):
+        """Publish once, verify/save, normally restart only the verified project."""
+        from part_selection_pcb_session import persisted_footprint_matches, decode
+        notify = progress or (lambda *args: None)
+        with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock:
+            result = self.apply_design_pcb(preview_id, progress=progress, restore_schematic=False, auto_save=True)
+            state = self.pcb_updates.previews[preview_id]
+            if result.get('cycle_complete'):
+                return result
+            refs = state['refs']
+            session = self.pcb_updates.session
+            expected = session.snapshot(self.project_root, refs)
+            if not result.get('no_changes'):
+                session.verify(state['snapshot'], expected, state['replacements'])
+            saved = session.save_verified(expected,
+                runtime_directory(self.project_root) / ('pcb-save-' + uuid4().hex), progress=progress)
+            result.update(saved=True, save_path=saved['path'])
+            state['result'] = deepcopy(result)
+            notify('project_close', 'PCB 已保存，正在保存并正常关闭当前工程')
+            closed = self.prepare_kicad_for_external_schematic_write(refs)
+            if not closed.get('ok'):
+                raise RuntimeError('PCB 已更新并保存，但关闭工程未完成；请勿重复应用。详情：' + str(closed.get('message', '')))
+            if 'ProjectClosed=1' not in str(closed.get('message', '')):
+                raise RuntimeError('PCB 已保存，但未核验当前工程退出，未完成关闭重开流程；请勿重复应用')
+            notify('project_reopen', '正在通过工程管理器重新打开 PCB 并核验保存结果')
+            reopened = session.snapshot(self.project_root, refs, progress=progress)
+            for ref in refs:
+                if not persisted_footprint_matches(decode(expected['parts'][ref]['proto']), decode(reopened['parts'][ref]['proto'])):
+                    recovery = Path(saved['backup_dir'])
+                    for name, snapshot in (('before-reopen', expected), ('after-reopen', reopened)):
+                        (recovery / (name + '.json')).write_text(json.dumps(snapshot, ensure_ascii=False), encoding='utf-8')
+                    raise RuntimeError(ref + ' 保存重开后的封装或字段核验失败，请停止重复同步。恢复材料：' + str(recovery))
+            self.reopen_and_locate_design(refs, progress=progress)
+            result.update(cycle_complete=True, reopened=True, located_ref=refs[0])
+            state['result'] = deepcopy(result)
+            return result
 
     @staticmethod
     def _design_sync_row(source, ref):
@@ -2757,7 +2798,6 @@ class PartSelectionApp:
                 ],
                 cwd=str(self.project_root),
                 capture_output=True,
-                text=True,
                 # Covers editor startup, a five-minute KiCad project backup,
                 # dirty-state verification, and the two-minute close wait.
                 timeout=480 if "-SaveOnly" in switches else 90,
@@ -2765,9 +2805,17 @@ class PartSelectionApp:
             )
         except Exception as exc:
             return {"ok": False, "message": str(exc)}
+        def decode_output(value):
+            if not isinstance(value, bytes):
+                return str(value or '')
+            try:
+                return value.decode('utf-8')
+            except UnicodeDecodeError:
+                return value.decode('mbcs' if os.name == 'nt' else 'utf-8', errors='replace')
+        output, errors = decode_output(completed.stdout), decode_output(completed.stderr)
         return {
             "ok": completed.returncode == 0,
-            "message": (completed.stdout or completed.stderr or "").strip(),
+            "message": '\n'.join(item.strip() for item in (output, errors) if item.strip()),
             "returncode": completed.returncode,
         }
 
@@ -2781,10 +2829,25 @@ class PartSelectionApp:
 
     def prepare_kicad_for_external_schematic_write(self, refs: list[str]) -> dict[str, object]:
         url = self.kicad_url_for_refs(refs)
-        return self.run_kicad_script(
+        result = self.run_kicad_script(
             url,
-            ["-Mode", "FindDialog", "-SaveActiveFrame", "-CloseAfterSave", "-SaveOnly"],
+            ["-SaveCloseProject", "-SaveOnly"],
         )
+        if result.get('ok') and 'PcbWasOpen=1' in str(result.get('message', '')):
+            self._reopen_pcb_after_sync = True
+        return result
+
+    def reopen_and_locate_design(self, refs, progress=None):
+        notify = progress or (lambda *args: None)
+        if getattr(self, '_reopen_pcb_after_sync', False):
+            notify('reopen_pcb', '正在恢复本次保存关闭的 PCB 编辑器')
+            self.pcb_updates.session._board(progress=progress)
+            self._reopen_pcb_after_sync = False
+        notify('locate', '正在通过工程管理器重新打开原理图并定位器件')
+        result = self.jump_to_schematic(self.kicad_url_for_refs(refs[:1]))
+        if not result.get('ok'):
+            raise ValueError('设计已保存，但重新打开或定位失败：' + str(result.get('message', '')))
+        return result
 
     def notify_kicad_schematic_changed(
         self,
@@ -3176,8 +3239,8 @@ class PartSelectionApp:
             self.append_schematic_sync_runtime_log(attempt_id, event, selected_refs or [], started_at, details)
             if progress:
                 messages = {'bulk_transaction_lock_acquired':'正在核验原理图源版本',
-                    'bulk_targets_ready':'已核验所选位号', 'bulk_prepare_started':'正在保存并关闭原理图编辑器',
-                    'bulk_prepare_complete':'原理图编辑器准备完成', 'bulk_write_complete':'已写入，正在回读原理图',
+                    'bulk_targets_ready':'已核验所选位号', 'bulk_prepare_started':'正在保存原理图与 PCB，并关闭当前工程',
+                    'bulk_prepare_complete':'当前工程已安全关闭', 'bulk_write_complete':'已写入，正在回读原理图',
                     'bulk_write_verified':'原理图回读完成', 'bulk_notify_complete':'原理图重新载入完成',
                     'bulk_already_synced':'原理图已是最新数据', 'bulk_record_overrides_complete':'同步记录已保存'}
                 if event in messages:

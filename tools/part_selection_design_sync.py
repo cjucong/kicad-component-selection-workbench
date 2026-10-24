@@ -215,12 +215,13 @@ class DesignSync:
                     self._update(key,stage='schematic:'+stage,message=message)
                 schematic = self.app.bulk_sync_bom_state_to_schematic(result['bom'],
                     selected_refs=result['refs'], prepared_fields=state['desired'],progress=progress,
-                    validate_source=lambda:self.sources.validate(state['source']))
+                    validate_source=lambda:self.sources.refresh_after_save(state['source']))
                 if not schematic.get('ok') or not schematic.get('schematic_verify',{}).get('ok') or schematic.get('missing_refs'):
                     raise ValueError('原理图写入或回读未通过，未继续 PCB')
                 with self.lock:
                     self.jobs[key]['phase_results']['schematic'] = deepcopy(schematic)
                 if result['destination'] == 'schematic':
+                    self.app.reopen_and_locate_design(result['refs'], progress=progress)
                     self._update(key,done=True,stage='complete',message='原理图同步完成',result={'ok':True})
                     return
                 phase = 'pcb_preview'
@@ -233,17 +234,17 @@ class DesignSync:
                 self._update(key,done=True,stage='awaiting_pcb_confirmation',needs_confirmation=True,
                     message='原理图已完成，请核对 PCB 更新后继续',pcb_preview=pcb)
                 return
-            self._update(key,stage='pcb',message='正在更新所选 PCB 器件；不会自动保存整板')
+            self._update(key,stage='pcb',message='正在更新所选 PCB 器件，完成后自动保存并重新打开')
             phase = 'pcb_apply'
             pcb_token = result['pcb_preview']['preview_id']
-            pcb = self.app.apply_design_pcb(pcb_token,
+            pcb = self.app.sync_design_pcb(pcb_token,
                 progress=lambda stage,message:self._update(key,stage='pcb:'+stage,message=message))
             if not pcb.get('ok'):
                 raise RuntimeError('PCB 发布结果未确认，请只读核验，不要重复执行')
             with self.lock:
                 self.jobs[key]['phase_results']['pcb'] = deepcopy(pcb)
             self._update(key,done=True,stage='complete',needs_confirmation=False,
-                message='设计同步完成；PCB 改动尚未保存',result={'ok':True,'saved':False})
+                message='设计同步完成，PCB 已保存并重新打开',result={'ok':True,'saved':True})
         except Exception as exc:
             with self.lock:
                 job = self.jobs[key]

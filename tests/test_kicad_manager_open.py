@@ -45,6 +45,29 @@ Open-SchematicPage -Page Power
 Write-Output 'reused'
 '''), "reused")
 
+    def test_ellipsized_identity_requires_current_restart_registration_and_matching_display(self):
+        self.assertEqual(self.run_functions(r'''
+$node = $ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Resolve-KiCadProjectIdentity'}, $true)
+if (-not $node) { throw 'Missing complete project identity resolver' }
+. ([scriptblock]::Create($node.Extent.Text))
+$path = 'E:\long\current\board.kicad_pro'
+$probe = [pscustomobject]@{Texts=@('Project: E:\...\board.kicad_pro'); Restart='"'+$path+'"'}
+$actual = @(Resolve-KiCadProjectIdentity $probe)
+if ($actual.Count -ne 1 -or $actual[0] -ne $path) { throw 'Current registered project was not recovered' }
+$probe.Restart='"E:\other\different.kicad_pro"'
+if (@(Resolve-KiCadProjectIdentity $probe).Count) { throw 'Incompatible registered identity accepted' }
+$probe.Restart=''
+if (@(Resolve-KiCadProjectIdentity $probe).Count) { throw 'Ellipsis used as authoritative path' }
+$probe.Texts=@('Project: E:\long\current\board.kicad_pro')
+if (@(Resolve-KiCadProjectIdentity $probe)[0] -ne $path) { throw 'Full display path broken' }
+$probe.Texts=@('Project: E:\...icad_pro')
+$probe.Restart='"'+$path+'"'
+if (@(Resolve-KiCadProjectIdentity $probe)[0] -ne $path) { throw 'Truncated extension was not supported' }
+$probe.Texts=@('Project:')
+if (@(Resolve-KiCadProjectIdentity $probe).Count) { throw 'Stale registration without active project accepted' }
+'verified'
+'''), 'verified')
+
     def test_manager_selection_excludes_editors_and_other_projects(self):
         self.assertEqual(self.run_functions(r'''
 function Get-KiCadTopLevelWindows {
@@ -73,6 +96,72 @@ $found = Ensure-KiCadProjectOpen
 if ($found.MainWindowHandle -ne 55) { throw 'Expected exact manager window' }
 Write-Output 'existing'
 '''), "existing")
+
+    def test_project_close_saves_both_editors_before_any_close_and_stops_on_save_failure(self):
+        self.assertEqual(self.run_functions(r'''
+$node = $ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Save-AndCloseKiCadProject'}, $true)
+if (-not $node) { throw 'Missing safe project close' }
+. ([scriptblock]::Create($node.Extent.Text))
+Add-Type @'
+using System;
+public class NativeMethods {
+public static bool IsWindowEnabled(IntPtr h) {return true;}
+public static bool IsWindow(IntPtr h) {return false;}
+}
+'@
+$script:events=[Collections.Generic.List[string]]::new()
+$script:manager | Add-Member ScriptMethod Refresh {} -Force
+$script:manager | Add-Member ScriptMethod CloseMainWindow {$script:events.Add('close manager');return $true} -Force
+function Ensure-NativeMethods {}
+function Get-KiCadProjectManagerWindow {return $script:manager}
+function Get-HostedProjectStatus {param($Window) if($Window.Id -eq 123){return 'match'};return 'other'}
+function Get-KiCadTopLevelWindows {
+    $script:manager
+    [pscustomobject]@{Id=123;MainWindowHandle=[IntPtr]56;MainWindowTitle='board - Schematic Editor'}
+    [pscustomobject]@{Id=123;MainWindowHandle=[IntPtr]57;MainWindowTitle='board - PCB Editor'}
+    [pscustomobject]@{Id=999;MainWindowHandle=[IntPtr]99;MainWindowTitle='other - PCB Editor'}
+}
+function Test-SchematicEditorWindowName {param($Name) return $Name -like '*Schematic*'}
+function Save-KiCadActiveFrame {param($Target,$Editor);$script:events.Add('save '+$Editor);if($script:fail -and $Editor -eq 'pcb'){throw 'save failed'}}
+function Close-KiCadVerifiedFrame {param($Target);$script:events.Add('close '+$Target.MainWindowHandle)}
+$script:fail=$true
+try {Save-AndCloseKiCadProject;throw 'unexpected success'}catch{if($_.Exception.Message -notmatch 'save failed'){throw}}
+if(($script:events -join ',') -ne 'save schematic,save pcb'){throw 'Close dispatched before all saves completed'}
+$script:events.Clear();$script:fail=$false
+[void](Save-AndCloseKiCadProject)
+if(($script:events -join ',') -ne 'save schematic,save pcb,close 56,close 57,close manager'){throw ($script:events -join ',')}
+'verified'
+'''), 'verified')
+
+    def test_cross_process_editor_blocks_external_writes_even_with_no_manager(self):
+        self.assertEqual(self.run_functions(r'''
+$node = $ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Save-AndCloseKiCadProject'}, $true)
+. ([scriptblock]::Create($node.Extent.Text))
+function Ensure-NativeMethods {}
+function Get-KiCadProjectManagerWindow {return $script:currentManager}
+function Get-KiCadTopLevelWindows {
+    [pscustomobject]@{Id=999;MainWindowHandle=[IntPtr]99;MainWindowTitle='board - Schematic Editor'}
+}
+function Test-SchematicEditorWindowName {param($Name) return $Name -like '*Schematic*'}
+function Get-HostedProjectStatus {param($Window) return 'match'}
+function Save-KiCadActiveFrame {throw 'Must not save while ownership is unsafe'}
+foreach ($candidate in @($script:manager,$null)) {
+    $script:currentManager=$candidate
+    try { Save-AndCloseKiCadProject; throw 'unexpected success' }
+    catch {if($_.Exception.Message -notmatch 'outside its verified manager'){throw}}
+}
+function Get-KiCadTopLevelWindows {
+    [pscustomobject]@{Id=999;MainWindowHandle=[IntPtr]99;MainWindowTitle='board - PCB Editor'}
+}
+try { Save-AndCloseKiCadProject; throw 'unexpected success' }
+catch {if($_.Exception.Message -notmatch 'outside its verified manager'){throw}}
+function Get-HostedProjectStatus {return 'unknown'}
+function Get-CimInstance {return [pscustomobject]@{CommandLine='eeschema.exe C:\old\other.kicad_sch'}}
+function Get-CommandLineProjectStatus {return 'other'}
+try { Save-AndCloseKiCadProject; throw 'unexpected success' }
+catch {if($_.Exception.Message -notmatch 'current project'){throw}}
+'blocked'
+'''), 'blocked')
 
     def test_pcb_manager_unknown_identity_never_starts_a_second_manager(self):
         self.assertEqual(self.run_functions(r'''

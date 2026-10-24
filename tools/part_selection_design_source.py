@@ -85,3 +85,23 @@ class DesignSource:
                     and all(content_hash(path) == digest for path, digest in versions['hashes'].items()))
         except (OSError, ValueError, KeyError, TypeError):
             return False
+
+    def refresh_after_save(self, snapshot: dict) -> bool:
+        """Accept native formatting/settings saves, never changed selected design data."""
+        fresh = self.capture(snapshot['refs'])
+        for key in ('refs', 'fields', 'records', 'properties', 'mapping', 'parameters'):
+            if fresh.get(key) != snapshot.get(key):
+                return False
+        if fresh['identity']['paths'] != snapshot['identity']['paths']:
+            return False
+        before, after = snapshot['versions'], fresh['versions']
+        if before['configuration'] != after['configuration'] or before['files'] != after['files']:
+            return False
+        # Only KiCad document saves may change bytes. Library and workbench
+        # changes remain strict even if selected fields happen to be unchanged.
+        for path, digest in before['hashes'].items():
+            if Path(path).suffix.lower() not in ('.kicad_pro', '.kicad_sch') and after['hashes'].get(path) != digest:
+                return False
+        snapshot.clear()
+        snapshot.update(fresh)
+        return True

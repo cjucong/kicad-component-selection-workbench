@@ -20,6 +20,10 @@ HERE = Path(__file__).resolve().parent
 CORE = HERE / "app" if (HERE / "app").is_dir() else HERE.parent
 
 
+class AmbiguousLaunchProject(ValueError):
+    pass
+
+
 def validate_project(path: Path) -> Path:
     path = Path(os.path.expandvars(str(path))).expanduser()
     if not path.is_absolute():
@@ -33,7 +37,7 @@ def validate_project(path: Path) -> Path:
     return root
 
 
-def project_from_ipc(client) -> Path:
+def project_from_ipc(client, *, allow_environment=True, expected_token=None) -> Path:
     try:
         path = client.get_board().get_project().path
         logging.info("IPC PCB project path=%r", path)
@@ -56,13 +60,67 @@ def project_from_ipc(client) -> Path:
                     raise ValueError("Schematic supplied an empty project path")
                 root = validate_project(Path(path))
             except ValueError:
+                if (not allow_environment or (expected_token is not None and
+                        getattr(getattr(client, '_client', None), '_kicad_token', '') != expected_token)):
+                    raise
                 root = schematic_project_from_environment(doc)
             roots.add(root)
-        if len(roots) != 1:
+        if len(roots) > 1:
+            raise AmbiguousLaunchProject("检测到多个原理图工程，请核对当前入口后重试")
+        if not roots:
             raise ValueError("Cannot identify one schematic project; select its project file")
         return roots.pop()
+    except AmbiguousLaunchProject:
+        raise
     except Exception as exc:
         raise ValueError("KiCad did not supply one valid saved project; select its project file") from exc
+
+
+def verify_launching_schematic(root: Path) -> bool:
+    """Read-only current-manager check; no save, opening, or endpoint adoption."""
+    script = CORE / 'kicad_schematic_search.ps1'
+    result = subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-WindowStyle','Hidden',
+        '-ExecutionPolicy','Bypass','-File',str(script),'-ProjectRoot',str(root),'-VerifySchematicProject'],
+        capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=20,
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    return result.returncode == 0 and result.stdout.strip() == 'SchematicProjectVerified=1'
+
+
+def resolve_launch_project() -> Path:
+    """Recover a stale entry from independently verified native project ownership."""
+    from kipy import KiCad
+    started = time.monotonic()
+    inherited = os.environ.get("KICAD_API_SOCKET", "")
+    expected = None
+    if os.environ.get("KIPRJMOD"):
+        try:
+            expected = validate_project(Path(os.environ["KIPRJMOD"]))
+        except ValueError:
+            logging.warning("Launching project environment could not be validated")
+    try:
+        client = KiCad(socket_path=inherited, kicad_token=os.environ.get("KICAD_API_TOKEN", ""),
+                       client_name="component-workbench-launch", timeout_ms=400)
+        root = project_from_ipc(client, allow_environment=bool(os.environ.get('KICAD_API_TOKEN')),
+                                expected_token=os.environ.get('KICAD_API_TOKEN', ''))
+    except AmbiguousLaunchProject:
+        raise
+    except Exception as exc:
+        logging.info("Launching IPC unavailable; checking current manager (%s)", type(exc).__name__)
+    else:
+        if expected is not None and root != expected:
+            raise ValueError("启动工程与 KiCad 文档不一致，请从目标工程原理图重新点击入口后重试")
+        return root
+
+    if expected is not None and verify_launching_schematic(expected):
+        # The workbench reads saved project data and can discover the PCB later.
+        # Never attach a discovered same-basename server's socket/token here.
+        os.environ.pop('KICAD_API_SOCKET', None)
+        os.environ.pop('KICAD_API_TOKEN', None)
+        logging.info('Recovered launching project through verified manager elapsed_ms=%.1f',
+                     (time.monotonic()-started)*1000)
+        return expected
+    raise ValueError("原理图连接暂时不可用，请完成 KiCad 中的对话框后重试；无需彻底退出 KiCad。"
+                     "未能核验工程，不会自动打开其他工程或要求重新选择文件。")
 
 
 def schematic_project_from_environment(document) -> Path:
@@ -341,18 +399,13 @@ def main(argv=None) -> int:
             if not args.config.is_file():
                 raise FileNotFoundError(f"Configuration not found: {args.config}")
             root = validate_project(load_config(args.config)["project_root"])
+        elif os.environ.get("KICAD_API_SOCKET"):
+            root = resolve_launch_project()
         else:
-            try:
-                if not os.environ.get("KICAD_API_SOCKET"):
-                    raise ValueError("No launching KiCad instance supplied")
-                from kipy import KiCad
-                root = project_from_ipc(KiCad())
-            except Exception:
-                logging.exception("IPC project discovery failed; requesting explicit project")
-                path = choose_project()
-                if path is None:
-                    return 0
-                root = validate_project(path)
+            path = choose_project()
+            if path is None:
+                return 0
+            root = validate_project(path)
         config = ensure_config(root, args.config) if args.config else ensure_config(root)
         sys.path.insert(0, str(CORE))
         from part_selection_overrides import load_config

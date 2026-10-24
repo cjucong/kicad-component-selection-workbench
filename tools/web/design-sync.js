@@ -119,8 +119,8 @@
                 `<div class="design-geometry-info">中心偏差 ${Number(item.center_error_mm || 0).toFixed(4)} mm · 焊盘最大移动 ${Number(item.max_error_mm || 0).toFixed(4)} mm</div><button type="button" data-design-compare="${escape(item.ref)}">封装对比</button>${(item.pad_errors || []).length ?
                   `<details><summary>逐焊盘移动</summary>${item.pad_errors.map(p => `<div>${escape(p.number)}：${Number(p.error_mm).toFixed(6)} mm</div>`).join('')}</details>` : ''}` : ''}</td></tr>`).join('')}</tbody></table>` : '');
       q('[data-design-safety]').textContent = state.payload.destination === 'schematic' ? '仅写入所选原理图字段，不修改 PCB。' :
-        state.payload.destination === 'both' && !state.continuation ? '先同步原理图，再核验 PCB 并确认。PCB 不会自动保存。' :
-        '仅更新所选现有器件，不改网络或走线；PCB 不自动保存，可在 KiCad 中单步撤销。';
+        state.payload.destination === 'both' && !state.continuation ? '先保存并关闭当前工程，同步原理图后核验 PCB 并确认。' :
+        '仅更新所选器件，不改网络或走线。自动保存当前工程（含此前编辑），重新打开并定位。';
       q('[data-design-both]').hidden = preview.suggested_destination !== 'both';
       q('[data-design-apply]').textContent = state.continuation ? '继续同步 PCB' : destinations[state.payload.destination];
       status(preview.reason || (preview.blocked || pcb?.blocked ? '存在待核对的封装，尚未写入 PCB' :

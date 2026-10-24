@@ -10,8 +10,7 @@ from pathlib import Path
 import time
 from unittest.mock import patch
 
-from run_native_pcb_in_place_probe import run_probe, footprint_map, close_owned_schematic
-from run_native_design_sync_probe import finished
+from run_native_pcb_in_place_probe import run_probe, footprint_map, close_owned_schematic, sync_fixture_adapter
 from part_selection_paths import resolve_config
 from part_selection_server import PartSelectionApp
 from part_selection_pcb_session import encode, decode, footprint_bytes
@@ -115,14 +114,7 @@ def grouped_checks(root, report, session, client, board, results):
                 'source':'converted' if mode=='convert' else 'rename','existing_id':reference,
                 'target_mode':'existing','target_library':'Local','name':name,'acknowledged':True}})
             assert saved['ok'], saved
-            preview = app.design_sync.preview({'refs':['R1','R2'],'destination':'both','alignment':'rigid'})
-            acknowledgments = {'geometry':True}
-            job = finished(app.design_sync, app.design_sync.start(preview['preview_id'], acknowledgments))
-            assert job['stage']=='awaiting_pcb_confirmation', job
-            assert job['phase_results']['schematic']['schematic_verify']['ok'], job
-            done = finished(app.design_sync, app.design_sync.continue_pcb(
-                job['job_id'], job['pcb_preview']['preview_id'], acknowledgments))
-            assert done['stage']=='complete', done
+            sync_fixture_adapter(app, ['R1','R2'])
             after = footprint_map(board)
             published = after
             for ref in ('R1','R2'):
@@ -141,7 +133,7 @@ def grouped_checks(root, report, session, client, board, results):
                     assert footprint_bytes(new)==footprint_bytes(expected), 'Rename changed instance geometry'
             assert all(after[r].proto==baseline[r].proto for r in baseline if r not in ('R1','R2'))
             assert tracks==[t.proto.SerializeToString() for t in board.get_tracks()]
-            results['checks']['grouped_'+mode+'_ten_nm_real_sync_and_pcb']=True
+            results['checks']['grouped_'+mode+'_ten_nm_real_adapter_sync_and_pcb']=True
             client.run_action('common.Interactive.undo');time.sleep(.25)
             assert same_parts(footprint_map(board), baseline)
             published = None

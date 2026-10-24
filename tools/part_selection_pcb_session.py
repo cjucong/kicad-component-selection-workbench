@@ -1,4 +1,4 @@
-"""Verified live KiCad PCB access; never saves or reloads the user's board."""
+"""Verified live KiCad PCB access; saving is an explicit orchestration step."""
 from base64 import b64decode, b64encode
 from copy import deepcopy
 import hashlib
@@ -43,6 +43,66 @@ def footprint_bytes(item):
     for obj in objects:
         proto.definition.items.add().ParseFromString(obj)
     return proto.SerializeToString(deterministic=True)
+
+
+def persisted_footprint_matches(before, after):
+    """Only reopen may quantize world coordinates and seven-decimal angles."""
+    first, second = deepcopy(before.proto), deepcopy(after.proto)
+    first.ParseFromString(footprint_bytes(before))
+    second.ParseFromString(footprint_bytes(after))
+
+    def same(a, b, parent=''):
+        if a.DESCRIPTOR.full_name == 'google.protobuf.Any':
+            if a.type_url != b.type_url:
+                return False
+            from google.protobuf import descriptor_pool, message_factory
+            try:
+                descriptor = descriptor_pool.Default().FindMessageTypeByName(a.type_url.rsplit('/', 1)[-1])
+            except KeyError:
+                return a == b
+            message = message_factory.GetMessageClass(descriptor)
+            x, y = message(), message()
+            x.ParseFromString(a.value)
+            y.ParseFromString(b.value)
+            if not same(x, y, parent):
+                return False
+            a.value = b.value
+            return a == b
+        for field in a.DESCRIPTOR.fields:
+            coordinate = field.name in ('x_nm', 'y_nm', 'z_nm') and parent in ('position', 'point')
+            angle = field.name == 'value_degrees' and parent in ('angle', 'orientation')
+            if coordinate or angle:
+                x, y = getattr(a, field.name), getattr(b, field.name)
+                if angle and (not math.isfinite(x) or not math.isfinite(y)):
+                    return False
+                if abs(x - y) > (1 if coordinate else 5e-8):
+                    return False
+                if angle and x != y and round(x, 7) != y:
+                    return False
+                setattr(a, field.name, y)
+        left, right = a.ListFields(), b.ListFields()
+        if [field.number for field, _ in left] != [field.number for field, _ in right]:
+            return False
+        for (field, x), (_, y) in zip(left, right):
+            repeated = getattr(field, 'is_repeated', None)
+            if repeated is None:
+                repeated = field.label == field.LABEL_REPEATED
+            if repeated:
+                if len(x) != len(y):
+                    return False
+                if field.message_type:
+                    if not all(same(v, w, field.name) for v, w in zip(x, y)):
+                        return False
+                elif x != y:
+                    return False
+            elif field.message_type:
+                if not same(x, y, field.name):
+                    return False
+            elif x != y:
+                return False
+        return a == b
+
+    return same(first, second)
 
 
 def decode(value):
@@ -185,6 +245,15 @@ def outside_parts(text, selected_ids):
     root = parse_sexpr(text, 'kicad_pcb')
     return [tree_data(node) for node in root.children[1:] if not
             (node.head == 'footprint' and node.child('uuid') and node.child('uuid').arg() in selected_ids)]
+
+
+def saved_board_data(text):
+    """IPC exports standalone footprint headers that PCB files omit."""
+    root = parse_sexpr(text, 'kicad_pcb')
+    for footprint in root.children_named('footprint'):
+        footprint.children = [node for node in footprint.children
+                              if node.head not in ('version', 'generator', 'generator_version')]
+    return tree_data(root)
 
 
 def replacement(original, target, placement):
@@ -400,6 +469,38 @@ class PcbSession:
             return {'session_id': fingerprint([self.socket, str(doc), server_token]),
                     'document_path': str(self.root / doc.board_filename),
                     'revision': hashlib.sha256(text.encode()).hexdigest(), 'text': text, 'parts': parts}
+
+    def save_verified(self, expected: dict, backup_dir: Path, progress=None) -> dict:
+        notify = progress or (lambda *args: None)
+        with self.lock:
+            refs = list(expected['parts'])
+            if self.snapshot(self.root, refs) != expected:
+                raise ValueError('PCB 在保存前已改变，请重新核验；未自动关闭编辑器')
+            path = Path(expected['document_path']).resolve()
+            if path.parent != self.root or path.suffix.lower() != '.kicad_pcb':
+                raise ValueError('PCB 保存目标不属于当前工程')
+            backup_dir = Path(backup_dir).resolve()
+            if backup_dir.is_relative_to(self.root):
+                raise ValueError('保存前备份必须在工程外')
+            backup_dir.mkdir(parents=True, exist_ok=False)
+            if path.exists():
+                (backup_dir / 'disk-before.kicad_pcb').write_bytes(path.read_bytes())
+            _, board, _ = self._board()
+            if board.get_as_string() != expected['text']:
+                raise ValueError('PCB 在保存前已改变，未发出保存请求')
+            notify('save', '正在保存 PCB（包括此前未保存的编辑）')
+            board.save()
+            notify('save_verify', '正在核验 PCB 磁盘文件与实时内容')
+            actual = self.snapshot(self.root, refs)
+            if (actual != expected or not path.is_file() or
+                    saved_board_data(path.read_text(encoding='utf-8-sig')) !=
+                    saved_board_data(expected['text'])):
+                (backup_dir / 'expected-live.json').write_text(json.dumps(expected, ensure_ascii=False), encoding='utf-8')
+                (backup_dir / 'actual-live.json').write_text(json.dumps(actual, ensure_ascii=False), encoding='utf-8')
+                if path.is_file():
+                    (backup_dir / 'disk-after.kicad_pcb').write_bytes(path.read_bytes())
+                raise RuntimeError('PCB 保存回读未通过，已保留编辑器；请检查磁盘与实时内容，不要重复更新。恢复材料：' + str(backup_dir))
+            return {'ok':True, 'saved':True, 'path':str(path), 'backup_dir':str(backup_dir)}
 
     def read_library(self, lib_id: str, *, back=False) -> dict:
         if self.library_reader:

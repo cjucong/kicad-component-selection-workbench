@@ -28,6 +28,8 @@
 
     [switch]$SaveActiveFrame,
 
+    [switch]$AllowNativeSave,
+
     [switch]$CloseAfterSave,
 
     [switch]$SaveOnly,
@@ -39,6 +41,10 @@
     [switch]$NotifyOnly,
 
     [switch]$OpenPcb,
+
+    [switch]$SaveCloseProject,
+
+    [switch]$VerifySchematicProject,
 
     [switch]$EnablePageSwitch,
 
@@ -187,7 +193,12 @@ public static class NativeMethods {
     public static IntPtr[] TopLevelWindows() {
         var windows = new System.Collections.Generic.List<IntPtr>();
         EnumWindows(delegate(IntPtr hwnd, IntPtr param) {
-            if (IsWindowVisible(hwnd)) windows.Add(hwnd);
+            var title = new StringBuilder(1024);
+            GetWindowText(hwnd, title, title.Capacity);
+            // Older launchers hid Manager. Keep its current identity visible
+            // to ownership checks, without enumerating arbitrary hidden tools.
+            if (IsWindowVisible(hwnd) || System.Text.RegularExpressions.Regex.IsMatch(title.ToString(), @"\sKiCad\s+\d"))
+                windows.Add(hwnd);
             return true;
         }, IntPtr.Zero);
         return windows.ToArray();
@@ -251,6 +262,9 @@ public static class NativeMethods {
 
     [DllImport("user32.dll")]
     public static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowEnabled(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -435,7 +449,7 @@ function Set-KiCadForeground {
 function Get-KiCadTopLevelWindows {
     Ensure-NativeMethods
     $processIds = @{}
-    foreach ($process in (Get-Process -Name kicad,eeschema -ErrorAction SilentlyContinue)) {
+    foreach ($process in (Get-Process -Name kicad,eeschema,pcbnew -ErrorAction SilentlyContinue)) {
         try {
             $process.Refresh()
             if ($process.HasExited) { continue }
@@ -657,6 +671,28 @@ function Invoke-KiCadProjectProbe {
     }
 }
 
+function Resolve-KiCadProjectIdentity {
+    param($Probe)
+
+    $full = @()
+    $abbreviated = @()
+    foreach ($text in $Probe.Texts) {
+        if ($text -notmatch '(?i)((?:[A-Z]:[\\/]|\\\\).+)\s*$') { continue }
+        $display = $matches[1].Trim()
+        if ($display -match '\.\.\.|\u2026') { $abbreviated += $display; continue }
+        if ($display -match '\.kicad_pro$') { $full += [IO.Path]::GetFullPath($display) }
+    }
+    if ($full.Count) { return $full | Select-Object -Unique }
+    # KiCad registers its *current* project on each project-open, unlike the
+    # process launch arguments. Never trust that registration without live UI.
+    if ($Probe.Restart -notmatch '^"((?:[A-Z]:[\\/]|\\\\).+\.kicad_pro)"$') { return }
+    $registered = [IO.Path]::GetFullPath($matches[1])
+    foreach ($display in $abbreviated) {
+        $pattern = '^' + (([regex]::Split($display, '\.\.\.|\u2026') | ForEach-Object { [regex]::Escape($_) }) -join '.*') + '$'
+        if ($registered -match $pattern) { return $registered }
+    }
+}
+
 function Get-HostedProjectPaths {
     param([int]$ProcessId)
 
@@ -668,15 +704,35 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $element = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]__HWND__)
 $children = $element.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
-$paths = @(foreach ($child in $children) {
-    $text = $child.Current.Name
-    if ($text -match '(?i)((?:[A-Z]:[\\/]|\\\\).+\.kicad_pro)\s*$') {
-        [System.IO.Path]::GetFullPath($matches[1])
+$texts = @($children | ForEach-Object { $_.Current.Name })
+$restart = ''
+if (@($texts | Where-Object { $_ -match '(?:[A-Z]:[\\/]|\\\\).*?(?:\.\.\.|\u2026)' }).Count) {
+    Add-Type @"
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class ProjectRestartQuery {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
+    public static extern int GetApplicationRestartSettings(IntPtr process, StringBuilder command, ref uint size, out uint flags);
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr handle);
+}
+"@
+    $handle = [ProjectRestartQuery]::OpenProcess(0x410, $false, $element.Current.ProcessId)
+    if ($handle -ne [IntPtr]::Zero) {
+        try {
+            $buffer = New-Object Text.StringBuilder 32768
+            [uint32]$size = 32768; [uint32]$flags = 0
+            if ([ProjectRestartQuery]::GetApplicationRestartSettings($handle, $buffer, [ref]$size, [ref]$flags) -eq 0) {
+                $restart = $buffer.ToString()
+            }
+        } finally { [void][ProjectRestartQuery]::CloseHandle($handle) }
     }
-})
-ConvertTo-Json -InputObject $paths -Compress
+}
+ConvertTo-Json -InputObject @{Texts=$texts; Restart=$restart} -Compress
 '@
-        foreach ($path in (Invoke-KiCadProjectProbe -ProbeScript $probe.Replace('__HWND__', [string]$frame.MainWindowHandle.ToInt64()))) {
+        $identity = Invoke-KiCadProjectProbe -ProbeScript $probe.Replace('__HWND__', [string]$frame.MainWindowHandle.ToInt64())
+        foreach ($path in (Resolve-KiCadProjectIdentity -Probe $identity)) {
             Write-Log ("HOSTED_PROJECT pid={0} hwnd={1} path={2}" -f $ProcessId, $frame.MainWindowHandle, $path)
             $path
         }
@@ -753,7 +809,9 @@ function Ensure-KiCadProjectOpen {
     }
 
     Write-Log "OPEN_PROJECT $projectPath"
-    Start-Process -FilePath $KicadExe -ArgumentList @('"' + $projectPath + '"') -WindowStyle Hidden
+    # This is the interactive application the user asked to reopen, not a
+    # background helper. Hidden Manager cannot reliably host/open editors.
+    Start-Process -FilePath $KicadExe -ArgumentList @('"' + $projectPath + '"') -WindowStyle Normal
     $deadline = (Get-Date).AddMilliseconds(8000)
     do {
         try { $manager = Get-KiCadProjectManagerWindow -RequireUnique:$RequireUnique }
@@ -832,7 +890,7 @@ function Open-SchematicPage {
         Write-Log "OPEN_PAGE missing_top_schematic"
         return
     }
-    $manager = Ensure-KiCadProjectOpen
+    $manager = Ensure-KiCadProjectOpen -RequireUnique
     # The manager, not eeschema.exe, must own editor creation and project state.
     if (@(Get-KiCadCandidateWindows).Count -gt 0) {
         Write-Log 'OPEN_PAGE reuse_existing_schematic'
@@ -1516,7 +1574,8 @@ function Invoke-KiCadApi {
         [int]$ProcessId,
         [string]$ApiName,
         [string]$CmdType = "cpp_sdk_action",
-        [string]$ParamsJson = "{}"
+        [string]$ParamsJson = "{}",
+        [ValidateSet('schematic', 'pcb')][string]$Editor = 'schematic'
     )
 
     $ipcScript = Join-Path $PSScriptRoot "kicad_ipc_action.py"
@@ -1533,7 +1592,7 @@ function Invoke-KiCadApi {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $output = & $KicadMcpPython $ipcScript --pid $ProcessId --editor schematic --api $ApiName --cmd-type $CmdType --params-json $ParamsJson 2>&1
+        $output = & $KicadMcpPython $ipcScript --pid $ProcessId --editor $Editor --api $ApiName --cmd-type $CmdType --params-json $ParamsJson 2>&1
         $exitCode = $LASTEXITCODE
     } catch {
         Write-Log ("IPC_API failed api={0} error={1}" -f $ApiName, $_.Exception.Message)
@@ -1561,7 +1620,7 @@ function Wait-KiCadEditorSaved {
 }
 
 function Save-KiCadActiveFrame {
-    param($Target)
+    param($Target, [ValidateSet('schematic', 'pcb')][string]$Editor = 'schematic', [switch]$AllowNativeSave)
 
     Assert-KiCadWindowResponsive -Target $Target -Phase 'before_save'
     $Target.Refresh()
@@ -1569,15 +1628,33 @@ function Save-KiCadActiveFrame {
         Write-Log ("SAVE_ACTIVE_FRAME skipped_clean id={0} title={1}" -f $Target.Id, $Target.MainWindowTitle)
         return
     }
-    if (Invoke-KiCadApi -ProcessId $Target.Id -ApiName "saveFrame") {
+    if (Invoke-KiCadApi -ProcessId $Target.Id -ApiName "saveFrame" -Editor $Editor) {
         if (-not (Wait-KiCadEditorSaved -Target $Target)) {
             throw "KiCad save command did not complete: the editor still has unsaved changes. Stop sync."
         }
         Write-Log "SAVE_ACTIVE_FRAME method=ipc"
         return
     }
-    # Native menu Save hung this KiCad build for minutes. Never dispatch it
-    # when IPC is unavailable; leave the user's unsaved editor untouched.
+    if ($AllowNativeSave) {
+        # Explicit whole-project save/close flow only. Send one frame-specific
+        # Save, never keyboard input or retries, and require clean readback.
+        Ensure-NativeMethods
+        if (-not [NativeMethods]::IsWindowEnabled($Target.MainWindowHandle)) { throw 'KiCad has a blocking dialog; no save was requested.' }
+        $simplified = -join ([char]0x4FDD, [char]0x5B58)
+        $traditional = -join ([char]0x5132, [char]0x5B58)
+        $command = Find-KiCadMenuCommand -Menu ([NativeMethods]::GetMenu($Target.MainWindowHandle)) -Labels @('Save', $simplified, $traditional)
+        if ($null -eq $command) { throw 'KiCad Save command is unavailable; no close was requested.' }
+        if (-not [NativeMethods]::PostMessage($Target.MainWindowHandle, 0x0111, [IntPtr]([long]$command), [IntPtr]::Zero)) {
+            throw 'KiCad Save command was not accepted; no close was requested.'
+        }
+        if (-not (Wait-KiCadEditorSaved -Target $Target -TimeoutMs 30000)) {
+            throw 'KiCad save did not complete. No close or external write was requested.'
+        }
+        Assert-KiCadWindowResponsive -Target $Target -Phase 'save_readback'
+        Write-Log ('SAVE_ACTIVE_FRAME method=verified_menu editor=' + $Editor)
+        return
+    }
+    # Legacy live-transaction guard retains its conservative no-menu fallback.
     Write-Log "SAVE_ACTIVE_FRAME blocked manual_save_required ipc_unavailable"
     throw "KiCad manual save required: automatic save IPC is unavailable. Save with Ctrl+S in KiCad, wait for it to respond, then retry. No close was requested; no schematic fields were written."
 }
@@ -1649,7 +1726,7 @@ function Save-AndCloseKiCadEditorFrame {
         Write-Log ("CLOSE_MENU cache_failed_before_save hwnd={0} error={1}" -f $closeWindowHandle, $_.Exception.Message)
     }
 
-    Save-KiCadActiveFrame -Target $Target
+    Save-KiCadActiveFrame -Target $Target -AllowNativeSave:$AllowNativeSave
     Write-Log "SAVE_ACTIVE_FRAME completed"
     Assert-KiCadWindowResponsive -Target $Target -Phase 'before_close'
 
@@ -1698,6 +1775,72 @@ function Save-AndCloseKiCadEditorFrame {
     if (-not $closed) {
         throw "KiCad schematic window did not close after save (automatic). No schematic fields were written. Check for a blocking dialog or save error; unsaved edits were not discarded."
     }
+}
+
+function Close-KiCadVerifiedFrame {
+    param($Target)
+
+    Assert-KiCadWindowResponsive -Target $Target -Phase 'project_close'
+    $Target.Refresh()
+    if ($Target.MainWindowTitle -match '^\*' -or -not [NativeMethods]::IsWindowEnabled($Target.MainWindowHandle)) {
+        throw 'KiCad has unsaved changes or a blocking dialog. No close was requested.'
+    }
+    if (-not $Target.CloseMainWindow()) { throw 'KiCad did not accept the normal close request.' }
+    $deadline = (Get-Date).AddSeconds(30)
+    while ([NativeMethods]::IsWindow($Target.MainWindowHandle)) {
+        if ((Get-Date) -ge $deadline) { throw 'KiCad did not close normally. Stop sync; no forced termination was performed.' }
+        Start-Sleep -Milliseconds 100
+    }
+}
+
+function Save-AndCloseKiCadProject {
+    Ensure-NativeMethods
+    $manager = Get-KiCadProjectManagerWindow -RequireUnique
+    $windows = @(Get-KiCadTopLevelWindows)
+    # A standalone editor is not owned by the manager PID. Never leave one
+    # editing this project while declaring it closed for external writes.
+    foreach ($window in $windows) {
+        if ($null -ne $manager -and $window.Id -eq $manager.Id) { continue }
+        if (-not (Test-SchematicEditorWindowName -Name $window.MainWindowTitle) -and
+            $window.MainWindowTitle -notmatch '(?:PCB|\.kicad_pcb)') { continue }
+        $ownership = Get-HostedProjectStatus -Window $window
+        if ($ownership -eq 'unknown') {
+            throw 'Cannot verify an independently open editor current project. No close or external write was allowed; startup arguments are not current ownership proof.'
+        }
+        if ($ownership -eq 'match') {
+            throw 'This project has an editor outside its verified manager. Save and close that standalone editor first; no external write was allowed.'
+        }
+    }
+    if ($null -eq $manager) {
+        return 'ProjectClosed=0'
+    }
+    $editors = @()
+    foreach ($window in $windows) {
+        if ($window.Id -ne $manager.Id -or $window.MainWindowHandle -eq $manager.MainWindowHandle) { continue }
+        $editor = if (Test-SchematicEditorWindowName -Name $window.MainWindowTitle) { 'schematic' }
+            elseif ($window.MainWindowTitle -match '(?:PCB|\.kicad_pcb)') { 'pcb' } else { continue }
+        if ((Get-HostedProjectStatus -Window $window) -ne 'match') { throw 'Editor project ownership could not be verified. No close was requested.' }
+        Assert-KiCadWindowResponsive -Target $window -Phase 'project_save'
+        if (-not [NativeMethods]::IsWindowEnabled($window.MainWindowHandle)) { throw 'KiCad has a blocking dialog. No close was requested.' }
+        $editors += @{Target=$window; Editor=$editor}
+    }
+    # Finish *all* saves before requesting the first close. A save failure must
+    # not discard another editor's draft or start the external write phase.
+    foreach ($item in $editors) { Save-KiCadActiveFrame -Target $item.Target -Editor $item.Editor -AllowNativeSave }
+    foreach ($item in $editors) { Close-KiCadVerifiedFrame -Target $item.Target }
+    if ((Get-HostedProjectStatus -Window $manager) -ne 'match') { throw 'Manager project changed during save; no external write was allowed.' }
+    Assert-KiCadWindowResponsive -Target $manager -Phase 'manager_close'
+    if (-not [NativeMethods]::IsWindowEnabled($manager.MainWindowHandle)) { throw 'KiCad manager has a blocking dialog. Stop sync.' }
+    if (-not $manager.CloseMainWindow()) { throw 'KiCad manager did not accept the normal close request.' }
+    $deadline = (Get-Date).AddSeconds(30)
+    while ([NativeMethods]::IsWindow($manager.MainWindowHandle)) {
+        if ((Get-Date) -ge $deadline) { throw 'KiCad manager did not close normally. No external write was allowed.' }
+        Start-Sleep -Milliseconds 100
+    }
+    $process = Get-Process -Id $manager.Id -ErrorAction SilentlyContinue
+    if ($process -and -not $process.WaitForExit(10000)) { throw 'KiCad process has not exited. No external write was allowed.' }
+    if (@($editors | Where-Object { $_.Editor -eq 'pcb' }).Count) { Write-Output 'PcbWasOpen=1' }
+    return 'ProjectClosed=1'
 }
 
 function Invoke-SearchPanelFirstResult {
@@ -1778,6 +1921,19 @@ try {
     }
 
     Write-Log "START raw=$UriOrRef hotkey=$SearchHotkey dryRun=$DryRun mode=$Mode"
+    if ($VerifySchematicProject) {
+        $manager = Get-KiCadProjectManagerWindow -RequireUnique
+        $candidates = @(Get-KiCadCandidateWindows)
+        if ($null -eq $manager -or $candidates.Count -ne 1 -or $candidates[0].Id -ne $manager.Id) {
+            throw 'Cannot uniquely verify the launching schematic and its current project manager.'
+        }
+        Write-Output 'SchematicProjectVerified=1'
+        exit 0
+    }
+    if ($SaveCloseProject) {
+        Save-AndCloseKiCadProject
+        exit 0
+    }
     if ($OpenPcb) {
         $root = Get-ProjectRoot
         $projects = @(Get-ChildItem -LiteralPath $root -Filter '*.kicad_pro' -File)
@@ -1868,7 +2024,7 @@ try {
                 Write-Log ("WINDOW_CACHE_DELETE_FAILED " + $_.Exception.Message)
             }
         } else {
-            Save-KiCadActiveFrame -Target $target
+            Save-KiCadActiveFrame -Target $target -AllowNativeSave:$AllowNativeSave
         }
         if ($SaveOnly) {
             Write-Log "DONE action=save_only"

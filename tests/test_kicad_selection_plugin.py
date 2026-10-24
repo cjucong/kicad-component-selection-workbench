@@ -157,13 +157,14 @@ class SelectionPluginTests(unittest.TestCase):
             get_board=lambda: SimpleNamespace(get_project=lambda: SimpleNamespace(path="")),
             get_open_documents=lambda kind: [SimpleNamespace(board_filename="board.kicad_sch")],
             get_project=lambda doc: SimpleNamespace(path=""),
+            _client=SimpleNamespace(_kicad_token='launch-token'),
         )
         with patch.dict(sys.modules, {
                 "webview":view,
-                "kipy": SimpleNamespace(KiCad=lambda: client),
+                "kipy": SimpleNamespace(KiCad=lambda **kwargs: client),
                 "kipy.proto.common.types.base_types_pb2": SimpleNamespace(
                     DocumentType=SimpleNamespace(DOCTYPE_SCHEMATIC=1))}), patch.dict(
-                os.environ, {"KICAD_API_SOCKET": "test-socket", "KIPRJMOD": str(root)}), patch.object(
+                os.environ, {"KICAD_API_SOCKET": "test-socket", "KICAD_API_TOKEN":"launch-token", "KIPRJMOD": str(root)}), patch.object(
                 desktop, "cache_directory", return_value=self.root), patch.object(
                 desktop.logging, "basicConfig"), patch.object(desktop, "choose_project") as picker, patch.object(
                 desktop, "acquire_window", return_value=(None, True)), patch.object(

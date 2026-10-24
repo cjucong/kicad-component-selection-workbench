@@ -1071,9 +1071,8 @@ class PartSelectionOverridesTest(unittest.TestCase):
             )
 
             self.assertEqual(calls[0][0], "kicad-sch-search://C118?page=PA")
-            self.assertIn("-SaveActiveFrame", calls[0][1])
+            self.assertIn("-SaveCloseProject", calls[0][1])
             self.assertIn("-SaveOnly", calls[0][1])
-            self.assertIn("-CloseAfterSave", calls[0][1])
             self.assertIn("-NotifyOnly", calls[1][1])
             self.assertNotIn("FindDialog", calls[1][1])
             self.assertNotIn("-ReloadFromDisk", calls[1][1])

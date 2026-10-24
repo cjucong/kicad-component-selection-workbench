@@ -151,6 +151,18 @@ def windows(pid):
     return result
 
 
+def close_fixture_helpers(pid, since):
+    """Only reap this probe's orphaned helper after its owned KiCad exits."""
+    command = (f"$since=[DateTimeOffset]::FromUnixTimeSeconds({int(since)}).UtcDateTime; "
+        f"if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }}; "
+        f"Get-CimInstance Win32_Process -Filter \"ParentProcessId={pid}\" | "
+        "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*kicad-mcp-client*' "
+        "-and $_.CreationDate.ToUniversalTime() -ge $since } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction Stop }")
+    subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',command],
+        check=True,capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+
+
 def close_fixture(process):
     # This process was created by this probe; never enumerate or close user KiCad.
     user = ctypes.windll.user32
@@ -161,13 +173,7 @@ def close_fixture(process):
             # Only verified children born after this owned fixture may be ended.
             since = getattr(process, 'probe_started', None)
             if since is not None:
-                command = (f"$since=[DateTimeOffset]::FromUnixTimeSeconds({int(since)}).UtcDateTime; "
-                    f"Get-CimInstance Win32_Process -Filter \"ParentProcessId={process.pid}\" | "
-                    "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*kicad-mcp-client*' "
-                    "-and $_.CreationDate.ToUniversalTime() -ge $since } | "
-                    "ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction Stop }")
-                subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',command],
-                    check=True,capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+                close_fixture_helpers(process.pid, since)
             return
         owned = windows(process.pid)
         dialogs = [(h, t) for h, t in owned if t in ('保存变更?', '文件打开警告') or '错误' in t]
@@ -274,40 +280,33 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
    await library.locator('[data-fp-ack]').check();await library.locator('.fp-apply').click();
    await page.waitForFunction(({ref,target,prefix})=>currentRows.find(row=>row.ref===ref)?.footprint==='Local:'+prefix+target,{ref,target,prefix});
   }
-  for(const ref of refs)await page.locator(`#rows tr[data-refs="${ref}"] [data-select-row]`).check();
-  await page.locator('#designSyncMenu').click();
-  await page.locator('[data-design-destination="both"]').click();
-  await page.getByText('已完成预检，请核对改动',{exact:true}).waitFor();
-  await page.locator('[data-design-apply]').click();
-  await page.getByRole('button',{name:'继续同步 PCB',exact:true}).waitFor();
-  await page.getByText('原理图：已完成',{exact:true}).waitFor();
-  if(!center) {
-   await page.locator('[data-design-alignment]').selectOption('rigid');
-   await page.getByText('已完成预检，请核对改动',{exact:true}).waitFor();
-  } else {
-   assert.equal(await page.locator('[data-design-alignment]').inputValue(),'center');
-   assert(await page.locator('[data-design-movement]').isVisible());
-  }
-  await page.locator('[data-design-compare="R1"]').click();
-  await page.getByText(center?'当前 PCB / 目标库封装 · 铜焊盘中心对齐，允许焊盘偏移 · mm':'当前 PCB / 目标库封装 · 按编号原位对齐 · mm',{exact:true}).waitFor();
-  assert((await page.locator('.design-sync-comparison [data-fp-layer-image]').count())>=2);
-  await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/pcb-comparison.png'});
-  await page.locator('.design-sync-comparison [data-fp-cancel]').click();
   for(const width of [1440,800,390]) {
    await page.setViewportSize({width,height:980});
    await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/workbench-'+width+'.png'});
   }
-  await page.setViewportSize({width:1440,height:980});
-  await page.locator('[data-design-geometry]').check();
-  if(center) await page.locator('[data-design-movement]').check();
-  await page.locator('[data-design-apply]').click();
-  await page.getByText('设计同步完成；PCB 改动尚未保存',{exact:true}).waitFor();
-  await page.screenshot({path:process.env.PCB_WORKBENCH_REPORT+'/workbench-complete.png'});
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,schematic_sync:true,staged_both:true,refs,alignment:center?'center':'rigid'}));
+  console.log(JSON.stringify({ok:true,ui_library_selection:true,refs,alignment:center?'center':'rigid'}));
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
+
+
+def sync_fixture_adapter(app, refs, *, alignment='rigid'):
+    """Test adapter undo with a persistent session, never full project restart."""
+    from unittest.mock import patch
+    with patch.object(app, 'prepare_kicad_for_external_schematic_write',
+                      side_effect=AssertionError('Adapter probe must not close the whole project')):
+        closed = app.run_kicad_script(app.kicad_url_for_refs(refs),
+            ['-Mode','FindDialog','-SaveActiveFrame','-CloseAfterSave','-SaveOnly','-ExistingOnly'])
+        assert closed['ok'], closed
+        synced = app.bulk_sync_bom_state_to_schematic('__schematic__', selected_refs=refs,
+                                                     prepare=False, notify=False)
+        assert synced['ok'] and synced['schematic_verify']['ok'], synced
+        preview = app.pcb_updates.preview(refs, '__schematic__', alignment=alignment)
+        assert not preview['blocked'], preview
+        applied = app.apply_design_pcb(preview['preview_id'])
+        assert applied['ok'] and not applied['saved'], applied
+        return applied
 
 
 def workbench_flow(root, report, session, *, center=False):
@@ -333,8 +332,12 @@ def workbench_flow(root, report, session, *, center=False):
         (report / 'workbench.log').write_text(result.stdout + result.stderr, encoding='utf-8')
         assert result.returncode == 0, result.stderr
         outcome = json.loads(result.stdout)
+        # This probe owns a persistent native session to test one-step undo.
+        # Exercise the adapter explicitly, not the user save/restart cycle.
+        refs = outcome['refs']
+        sync_fixture_adapter(app, refs, alignment=outcome['alignment'])
         assert app.pcb_updates.session.socket == session.socket
-        return {**outcome, 'pcb_connection_discovered_on_demand': True}
+        return {**outcome, 'adapter_only':True, 'pcb_connection_discovered_on_demand': True}
     finally:
         server.shutdown()
         server.server_close()
@@ -344,7 +347,7 @@ def workbench_flow(root, report, session, *, center=False):
         app.design_sync.close()
 
 
-def run_probe(report, extra_checks=None):
+def run_probe(report, extra_checks=None, *, long_path=False, manager_width=None):
     from _scratch import temporary_project
     from part_selection_footprint_geometry import _find_kicad_python
     from kipy import KiCad
@@ -356,7 +359,7 @@ def run_probe(report, extra_checks=None):
     process = None
     stack = ExitStack()
     try:
-        root = Path(stack.enter_context(temporary_project(prefix='pcb-probe-', short_paths=True)))
+        root = Path(stack.enter_context(temporary_project(prefix='pcb-probe-', short_paths=not long_path)))
         cache = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='pcb-ipc-', dir=root.anchor)))
         results['fixture'] = str(root)
         try:
@@ -415,6 +418,22 @@ def run_probe(report, extra_checks=None):
                 if not opened:
                     for hwnd, title in windows(process.pid):
                         if title.startswith('Probe') and 'KiCad' in title:
+                            if manager_width is not None:
+                                user = ctypes.windll.user32
+                                user.ShowWindow(hwnd, 9)
+                                user.SetWindowPos(hwnd, 0, 0, 0, manager_width, 600, 0x16)
+                                time.sleep(2)
+                                results['narrow_manager_width'] = manager_width
+                                inspection = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+                                    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); '
+                                    'Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; '
+                                    '$e=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]' + str(hwnd) + '); '
+                                    '$e.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition) | '
+                                    'ForEach-Object { $c=$_.Current; '
+                                    '$value=$null;try {$value=$_.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value}catch{}; '
+                                    '[pscustomobject]@{Name=$c.Name;Value=$value;Help=$c.HelpText;Id=$c.AutomationId} } | ConvertTo-Json'],
+                                    capture_output=True, text=True, encoding='utf-8', timeout=10, **flags)
+                                (report / 'manager-accessibility.json').write_text(inspection.stdout + inspection.stderr, encoding='utf-8')
                             from part_selection_pcb_connection import launch_editor
                             started=time.perf_counter()
                             launch_editor(root / 'Probe.kicad_pcb')
@@ -661,6 +680,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', type=Path)
     parser.add_argument('--report-dir', type=Path)
+    parser.add_argument('--long-path', action='store_true')
+    parser.add_argument('--manager-width', type=int)
     args = parser.parse_args()
     if args.build:
         if not args.build.parent.name.startswith('pcb-probe-') or args.build.name != 'project':
@@ -673,7 +694,7 @@ def main():
     if report.is_relative_to(ROOT):
         parser.error('Reports must stay outside source')
     report.mkdir(parents=True, exist_ok=True)
-    return run_probe(report)
+    return run_probe(report, long_path=args.long_path, manager_width=args.manager_width)
 
 
 if __name__ == '__main__':

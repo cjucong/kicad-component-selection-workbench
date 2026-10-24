@@ -84,6 +84,30 @@ catch { if ($_.Exception.Message -notmatch 'still has unsaved changes') { throw 
 ''')
         self.assertEqual(output, "protected")
 
+    def test_explicit_project_save_uses_one_verified_frame_menu_and_requires_readback(self):
+        output = self.run_functions('''
+Add-Type @'
+using System;
+public class NativeMethods {
+public static int Saves=0;
+public static bool IsWindowEnabled(IntPtr h) {return true;}
+public static IntPtr GetMenu(IntPtr h) {if(h!=(IntPtr)123)throw new Exception("wrong frame");return (IntPtr)1;}
+public static bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l) {if(h!=(IntPtr)123||m!=0x111||w!=(IntPtr)8765)throw new Exception("wrong command");Saves++;return true;}
+}
+'@
+function Ensure-NativeMethods {}
+function Invoke-KiCadApi {return $false}
+function Find-KiCadMenuCommand {param($Menu,$Labels);if('Save' -notin $Labels){throw 'Wrong menu labels'};return 8765}
+function Wait-KiCadEditorSaved {return $false}
+$target=[pscustomobject]@{Id=1;MainWindowHandle=[IntPtr]123;MainWindowTitle='*test'}
+$target|Add-Member ScriptMethod Refresh {}
+try {Save-KiCadActiveFrame -Target $target -Editor pcb -AllowNativeSave;throw 'unexpected success'}
+catch {if($_.Exception.Message -notmatch 'save did not complete'){throw}}
+if([NativeMethods]::Saves -ne 1){throw 'Save repeated or not sent'}
+'protected'
+''')
+        self.assertEqual(output, 'protected')
+
     def test_busy_editor_remains_a_candidate_not_treated_as_closed(self):
         output = self.run_functions('''
 Add-Type @'

@@ -9,6 +9,12 @@ from unittest.mock import Mock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def no_native_navigation_in_unit_tests(monkeypatch):
+    from part_selection_server import PartSelectionApp
+    monkeypatch.setattr(PartSelectionApp, 'reopen_and_locate_design', Mock(return_value={'ok':True}))
+
+
 @pytest.mark.parametrize('closed', [False, True])
 def test_legacy_native_commit_closes_only_existing_schematic_then_revalidates(monkeypatch, closed):
     from part_selection_server import PartSelectionApp
@@ -100,15 +106,16 @@ def coordinator():
     from part_selection_design_sync import DesignSync
     snapshot = {'refs':['R1'], 'fields':{'R1':{'value':'100k','footprint':'Local:New'}},
                 'records':{'R1':{}}, 'identity':{}, 'mapping':{}, 'versions':{}}
-    sources = SimpleNamespace(capture=Mock(side_effect=lambda refs:deepcopy(snapshot)),validate=Mock(return_value=True))
+    sources = SimpleNamespace(capture=Mock(side_effect=lambda refs:deepcopy(snapshot)),validate=Mock(return_value=True),
+        refresh_after_save=Mock(return_value=True))
     pcb = SimpleNamespace(preview=Mock(return_value={'ok':True,'preview_id':'pcb-one',
         'blocked':False,'items':[{'ref':'R1','kind':'fields','needs_ack':False,'field_changes':[]}]}),
         apply=Mock(return_value={'ok':True,'saved':False}))
     app = SimpleNamespace(project_root='synthetic',selection_save_lock=threading.RLock(),
         design_sync_fields=Mock(return_value={'R1':{'value':'22k','footprint':'Local:New'}}),
         bulk_sync_bom_state_to_schematic=Mock(return_value={'ok':True,'schematic_verify':{'ok':True}}),
-        pcb_updates=pcb)
-    app.apply_design_pcb = lambda token, progress=None:pcb.apply(token,True)
+        pcb_updates=pcb, reopen_and_locate_design=Mock(return_value={'ok':True}))
+    app.sync_design_pcb = lambda token, progress=None:pcb.apply(token,True)
     return DesignSync(app,sources=sources), app, sources
 
 

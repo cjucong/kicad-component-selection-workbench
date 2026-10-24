@@ -22,9 +22,40 @@ def test_document_requires_exact_project_identity(scratch_project):
         select_document([selected, doc(root, 'other.kicad_pcb')], root)
 
 
+def test_verified_save_requires_unchanged_live_board_and_matching_saved_bytes(monkeypatch, scratch_project):
+    import threading
+    from unittest.mock import Mock
+    board_path = scratch_project / 'test.kicad_pcb'
+    original = '(kicad_pcb (version 20241229) (general))'
+    expected = {'document_path':str(board_path), 'text':original, 'parts':{'R1':{}}, 'revision':'v1'}
+    session = sessions.PcbSession(scratch_project)
+    session.lock = threading.RLock()
+    session.snapshot = Mock(return_value=expected)
+    board = Obj(save=Mock(side_effect=lambda:board_path.write_text(original)), get_as_string=lambda:original)
+    session._board = Mock(return_value=(None,board,None))
+    board_path.write_text('old disk')
+    assert session.save_verified(expected, scratch_project.parent / 'save-backup')['saved']
+    board.save.assert_called_once()
+    assert (scratch_project.parent / 'save-backup' / 'disk-before.kicad_pcb').read_text() == 'old disk'
+    session.snapshot.return_value={**expected,'revision':'newer'}
+    with pytest.raises(ValueError, match='改变'):
+        session.save_verified(expected, scratch_project.parent / 'unused-save')
+    board.save.assert_called_once()
+
+
 def test_absolute_filename_cannot_escape_document_project(scratch_project):
     with pytest.raises(ValueError):
         select_document([doc(scratch_project, str(scratch_project.parent / 'other.kicad_pcb'))], scratch_project)
+
+
+def test_saved_board_comparison_ignores_only_standalone_footprint_headers():
+    disk = '(kicad_pcb (version 20260206) (footprint "Lib:R" (at 1 2 90) (pad "1" (net "VCC"))))'
+    live = disk.replace('(footprint "Lib:R"', '(footprint "Lib:R" (version 20260206) (generator "pcbnew") (generator_version "10.0")')
+    assert sessions.saved_board_data(live) == sessions.saved_board_data(disk)
+    for before, after in [('1 2 90', '2 2 90'), ('1 2 90', '1 2 0'), ('VCC', 'GND'),
+                          ('Lib:R', 'Lib:Other'), ('20260206', '20241229')]:
+        assert sessions.saved_board_data(disk.replace(before, after)) != sessions.saved_board_data(live)
+    assert sessions.saved_board_data(disk.replace('(pad', '(property "Value" "wrong") (pad')) != sessions.saved_board_data(live)
 
 
 def fake_api(monkeypatch, endpoints):
