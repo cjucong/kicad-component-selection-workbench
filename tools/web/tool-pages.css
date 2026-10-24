@@ -9,5 +9,15 @@ html.native-utility-page dialog { width:calc(100vw - 2px); max-width:none; heigh
 html.native-utility-page dialog th { position:static; }
 html.native-utility-page #columnPanel { display:block; position:static !important; width:100%; max-width:none !important; max-height:none !important; padding:0; border:0; box-shadow:none; }
 html.native-utility-page .fp-overlay { padding:0; background:#fff; }
-html.native-utility-page .fp-dialog { width:100vw; max-width:none; height:100vh; max-height:none; border:0; border-radius:0; }
+html.native-utility-page .fp-overlay:not(.fp-native-workflow) > .fp-dialog { width:100vw; max-width:none; height:100dvh; max-height:100dvh; border:0; border-radius:0; }
+html.native-utility-page .fp-workflow { width:100%; max-width:none; height:100dvh; max-height:100dvh; border:0; border-radius:0; box-shadow:none; }
+html.native-utility-page .fp-native-workflow > .fp-workflow > .fp-title { display:none; }
+html.native-utility-page .fp-workflow > .fp-pages,
+html.native-utility-page .fp-workflow .fp-page,
+html.native-utility-page .fp-workflow .fp-embedded { flex:1; min-height:0; }
+html.native-utility-page .fp-workflow .fp-page { overflow:hidden; }
+html.native-utility-page .fp-native-workflow .fp-tabs { align-items:center; gap:18px; }
+html.native-utility-page .fp-native-workflow .fp-tabs > [data-fp-back],
+html.native-utility-page .fp-native-workflow .fp-tabs > [data-fp-forward] { width:28px; height:28px; padding:4px; border:0; }
+html.native-utility-page .fp-native-workflow .fp-tabs svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; }
 html.tool-field-mapping .path-settings-body > :not(#pathFieldMapping):not(#pathSettingsStatus) { display:none; }

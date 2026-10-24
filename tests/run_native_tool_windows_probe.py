@@ -15,6 +15,7 @@ from part_selection_lifecycle import DesktopBridge, DesktopLifecycle, ServiceLif
 from part_selection_server import PartSelectionApp, make_handler
 from part_selection_tool_windows import ToolWindows
 from test_footprint_choices import module
+from kicad_plugin.desktop import enable_browser_shortcuts
 
 
 def wait(window, expression, timeout=25):
@@ -39,6 +40,19 @@ def capture(window, path):
         assert tasks[0].IsCompleted and not tasks[0].IsFaulted, 'Native screenshot failed'
     finally:
         stream.Dispose()
+
+
+def check_native_edit_settings(window):
+    from System import Action
+    settings = []
+    def inspect():
+        core = window.native.webview.CoreWebView2
+        settings.append((core.Settings.AreDefaultContextMenusEnabled,
+                         core.Settings.AreBrowserAcceleratorKeysEnabled,
+                         core.Settings.AreDevToolsEnabled))
+    window.native.Invoke(Action(inspect))
+    assert settings == [(True,True,False)], settings
+    assert getattr(window, '_workbench_edit_menu', None), 'Edit menu handler is not installed'
 
 
 def run(report):
@@ -79,15 +93,18 @@ def run(report):
         # No network updater or actual install is invoked by this native UI probe.
         lifecycle.updater = SimpleNamespace(status=lambda:{'ok':True,'current_version':'native-probe',
             'mode':'off','installed':False})
-        main = webview.create_window('Native tool fixture',url,width=800,height=640,x=50,y=50,
+        main = webview.create_window('Native tool fixture',url,width=800,height=640,x=50,y=50,text_select=True,
                                      js_api=DesktopBridge(lifecycle))
         lifecycle.window = main
         main.events.closing += lifecycle.on_closing
-        lifecycle.tools = ToolWindows(lifecycle,webview.create_window)
+        main.events.loaded += lambda: enable_browser_shortcuts(main)
+        lifecycle.tools = ToolWindows(lifecycle,webview.create_window,enable_browser_shortcuts)
         def worker():
             tools = lifecycle.tools
             try:
                 wait(main,'typeof window.openNativeTool === "function" && !!window.pywebview?.api?.tool_window && currentRows.length===2')
+                check_native_edit_settings(main)
+                result['checks']['native_edit_menu_settings']=True
                 for kind in ['settings','inventory','field-mapping','list-view','value-parameters','undo','footprint','plugin-update','design-sync','candidate']:
                     payload = {'refs':'R1','bom':'__schematic__'} if kind in ['value-parameters','undo','footprint','design-sync','candidate'] else {}
                     if kind=='design-sync': payload['destination']='schematic'
@@ -122,6 +139,11 @@ def run(report):
                         wait(child,'!!document.querySelector("#columnList [data-column-toggle]")')
                         capture(child,report/'list-native.png')
                     elif kind=='footprint':
+                        wait(child,'!!document.querySelector(".fp-native-workflow")')
+                        assert child.evaluate_js('getComputedStyle(document.querySelector(".fp-workflow > .fp-title")).display')=='none'
+                        assert child.evaluate_js('document.querySelectorAll(".fp-tabs [data-fp-back]").length')==1
+                        check_native_edit_settings(child)
+                        result['checks']['single_native_title_and_child_edit_menu']=True
                         wait(child,"[...document.querySelectorAll('[data-fp-items] option')].some(o=>o.value==='Local:Other')")
                         child.evaluate_js('const s=document.querySelector("[data-fp-items]"); s.value="Local:Other"; s.dispatchEvent(new Event("change",{bubbles:true})); true')
                         wait(child,'!!document.querySelector("[data-fp-page=library] .fp-scene:not([hidden])")')
@@ -255,6 +277,12 @@ if __name__=='__main__':
     if report.is_relative_to(Path(__file__).resolve().parents[1]):
         parser.error('Reports must be outside the repository')
     report.mkdir(parents=True,exist_ok=True)
-    outcome=run(report)
+    import faulthandler
+    with (report/'threads.log').open('w',encoding='utf-8') as trace:
+        faulthandler.dump_traceback_later(90, file=trace)
+        try:
+            outcome=run(report)
+        finally:
+            faulthandler.cancel_dump_traceback_later()
     print(json.dumps(outcome,indent=2))
     raise SystemExit(0 if outcome['passed'] else 1)

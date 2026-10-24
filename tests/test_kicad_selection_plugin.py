@@ -214,6 +214,28 @@ class SelectionPluginTests(unittest.TestCase):
         self.assertTrue(settings.AreDefaultContextMenusEnabled)
         self.assertFalse(settings.AreDevToolsEnabled)
 
+    def test_native_context_menu_keeps_only_edit_commands_and_installs_once(self):
+        import desktop
+        class Event:
+            def __init__(self): self.handlers = []
+            def __iadd__(self, handler): self.handlers.append(handler); return self
+        class Items(list):
+            @property
+            def Count(self): return len(self)
+            def RemoveAt(self, index): self.pop(index)
+        event = Event()
+        core = SimpleNamespace(Settings=SimpleNamespace(), ContextMenuRequested=event)
+        window = SimpleNamespace(native=SimpleNamespace(webview=SimpleNamespace(CoreWebView2=core),
+                                                        Invoke=lambda action:action()))
+        with patch.dict(sys.modules, {'System':SimpleNamespace(Action=lambda action:action)}):
+            desktop.enable_browser_shortcuts(window)
+            desktop.enable_browser_shortcuts(window)
+        self.assertEqual(len(event.handlers), 1)
+        items = Items(SimpleNamespace(Name=name) for name in
+                      ['copy', 'searchWeb', 'cut', 'paste', 'selectAll', 'reload', 'undo', 'inspectElement'])
+        event.handlers[0](core, SimpleNamespace(MenuItems=items))
+        self.assertEqual([item.Name for item in items], ['copy', 'cut', 'paste', 'selectAll', 'undo'])
+
     def test_native_window_explicitly_allows_text_selection(self):
         tree = ast.parse((PLUGIN / 'desktop.py').read_text(encoding='utf-8'))
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)

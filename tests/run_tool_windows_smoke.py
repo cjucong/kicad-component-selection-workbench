@@ -64,7 +64,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.getByText('已撤回工作台修改；原理图和 PCB 未改动',{exact:true}).waitFor();
   await open('footprint',{refs:'R1',bom:'__schematic__'});
   await page.locator('.fp-workflow').waitFor({state:'visible'});
-  await page.locator('[data-fp-close]:visible').last().click();
+  await page.keyboard.press('Escape');
   // Failed row loading must remain visible and retryable, never leave blank chrome.
   await page.route('**/api/boms',route=>route.fulfill({status:503,contentType:'application/json',
     body:JSON.stringify({error:'fixture source unavailable'})}));
@@ -74,7 +74,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.unroute('**/api/boms');
   await page.locator('.fp-load-error button').click();
   await page.locator('.fp-load-error').filter({hasText:'fixture source unavailable'}).waitFor({state:'detached'});
-  await page.locator('[data-fp-close]:visible').last().click();
+  await page.keyboard.press('Escape');
   // Cancel while the real source request is pending; its late response cannot revive preview.
   let delayed; const footprintRequests=[];
   page.on('request',request=>{if(request.url().endsWith('/api/row_footprint'))footprintRequests.push(request);});

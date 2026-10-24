@@ -20,6 +20,7 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   await page.route('**/*', route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html><body><button id="launch">Open</button></body></html>'}));
   await page.goto('http://footprint.test/');
   await page.addStyleTag({path:process.env.FP_CSS});
+  await page.addStyleTag({path:process.env.TOOL_CSS});
   await page.addScriptTag({path:process.env.FP_JS});
   await page.evaluate(() => {
    window.calls=[]; window.pending={}; window.aborted=0; window.hold=false; window.bad=false;
@@ -51,6 +52,39 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='native-layout') {
+   await page.evaluate(()=>{
+    document.documentElement.classList.add('native-utility-page');
+    window.openFootprintManager({load:async kind=>({...structuredClone(preview),kind:'rename',current_footprints:['Local:A']})});
+   });
+   await page.getByLabel('改名后',{exact:true}).waitFor();
+   assert.equal(await page.locator('.fp-workflow > .fp-title').isVisible(),false,'native title bar must not have an inner duplicate');
+   assert.equal(await page.locator('.fp-tabs [data-fp-back]').count(),1);
+   await page.getByRole('tab',{name:'库封装改名',exact:true}).click();
+   await page.getByRole('button',{name:'返回上一页',exact:true}).click();
+   await page.getByRole('button',{name:'前进',exact:true}).click();
+   const bounds=await page.locator('.fp-workflow').boundingBox();
+   assert.equal(bounds.x,0); assert.equal(bounds.y,0);
+   assert.equal(bounds.height,1000); assert.equal(bounds.width,1440);
+   await page.keyboard.press('Escape');
+   await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));
+   await page.evaluate(()=>document.documentElement.classList.remove('native-utility-page'));
+  }
+  if(check==='all'||check==='incompatible-preview') {
+   await page.evaluate(()=>{
+    preview.alignment_ids=[]; preview.compatible=false; bad=true;
+    preview.default_reference_id='Local:A';
+    window.openComparison();
+   });
+   await page.locator('[data-fp-layer-image]').first().waitFor({state:'attached'});
+   assert.equal(await page.locator('.fp-apply').isDisabled(),true);
+   assert.equal(await page.locator('[data-fp-canvas-status]').isVisible(),false);
+   assert.match(await page.locator('[data-fp-alignment]').innerText(),/仅预览，未配准.*焊盘编号/);
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isDisabled(),true);
+   await close();
+   await page.evaluate(()=>{ delete preview.alignment_ids;preview.compatible=true;bad=false; });
+  }
   if(check==='all'||check==='escape') {
    await page.evaluate(()=>{
     window.outerResult=undefined;window.innerResult=undefined;
@@ -307,7 +341,7 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   }
   if(check==='all'||check==='rename') {
    await page.evaluate(()=>{bad=true;preview.compatible=false;openComparison();});
-   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.textContent.includes('无法对齐'));
+   await page.waitForFunction(()=>document.querySelector('[data-fp-alignment]')?.textContent.includes('仅预览，未配准'));
    await page.locator('[data-fp-ack]').check();
    assert.equal(await page.locator('.fp-apply').isEnabled(),false);
    await page.locator('[name="fp-source"][value="rename"]').check();
@@ -352,7 +386,12 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    assert.equal(await page.evaluate(()=>calls.length),2,'completed late responses may be cached but never replace current selection');
    assert.match(await page.locator('[data-fp-alignment]').innerText(),/90°/);
    await page.locator('[data-fp-existing]').selectOption('Local:Other');
-   assert.equal(await page.evaluate(()=>calls.length),2,'unbound similar footprints must not be alignment references');
+   await page.waitForFunction(()=>pending['Local:Other']);
+   assert.equal(await page.evaluate(()=>calls.length),3,'unbound footprints remain inspectable without granting alignment permission');
+   await page.evaluate(()=>pending['Local:Other']());
+   await page.waitForFunction(()=>document.querySelectorAll('[data-fp-layer-image]').length===4);
+   await page.locator('[data-fp-ack]').check();
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false,'preview must not authorize an unbound alignment reference');
    await page.locator('[data-fp-existing]').selectOption('Local:Slow');
    await page.waitForFunction(()=>pending['Local:Slow']);
    await close();
@@ -392,6 +431,7 @@ def run_checks(scenario="all"):
         shots = runtime_directory(ROOT) / "footprint-overlay-smoke"
         shots.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "FP_CASE": scenario, "FP_JS": str(ROOT / "tools/web/footprint-compare.js"),
+               "TOOL_CSS": str(ROOT / "tools/web/tool-pages.css"),
                "FP_CSS": str(ROOT / "tools/web/footprint-compare.css"), "FP_SHOTS": str(shots)}
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
         result = subprocess.run(["node", "-e", BROWSER], cwd=directory, env=env, capture_output=True,

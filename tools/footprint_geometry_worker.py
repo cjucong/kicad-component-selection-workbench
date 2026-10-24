@@ -13,9 +13,9 @@ from pathlib import Path
 from part_selection_footprint_geometry import _outside_project, _validate_supported
 
 
-def _load(pcbnew, path, *, allow_models=False):
+def _load(pcbnew, path, *, allow_models=False, render_only=False):
     source = Path(path).read_text(encoding='utf-8-sig')
-    _validate_supported(source, allow_models=allow_models)
+    _validate_supported(source, allow_models=allow_models, render_only=render_only)
     item = pcbnew.PCB_IO_KICAD_SEXPR().Parse(source)
     footprint = item.Cast() if item else None
     if footprint is None or not isinstance(footprint,pcbnew.FOOTPRINT):
@@ -159,7 +159,7 @@ def _normalize_svg(source, view_box, color):
 
 
 def _plot(pcbnew, source, directory, layer_id, layers, view_box, color):
-    footprint = _load(pcbnew,source,allow_models=True)
+    footprint = _load(pcbnew,source,allow_models=True,render_only=True)
     label = layer_id if layer_id in ('reference','value') else None
     if label:
         for item in list(footprint.Pads()) + list(footprint.GraphicalItems()) + list(footprint.Zones()):
@@ -208,7 +208,7 @@ def _plot(pcbnew, source, directory, layer_id, layers, view_box, color):
 def _render(pcbnew,payload):
     work = Path(payload['work'])
     _outside_project(work)
-    existing, converted = (_load(pcbnew,payload[key],allow_models=True)
+    existing, converted = (_load(pcbnew,payload[key],allow_models=True,render_only=True)
                            for key in ('reference','converted'))
     boxes = [footprint.GetBoundingBox(True,True) for footprint in (existing,converted)]
     left = min(0,*[pcbnew.ToMM(box.GetX()) for box in boxes])-0.5

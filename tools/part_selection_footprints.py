@@ -476,8 +476,8 @@ class FootprintChoices:
                 reference = next((e for e in state['existing'] if e['id'] == identifier), None)
                 target = next((e for e in state['existing'] if e['id'] == target_identifier), None)
                 if (reference is None or target_identifier not in state['catalog'] or target is None
-                        or not target.get('loaded') or not target.get('compatible')):
-                    raise ValueError('请先读取兼容的工程库目标封装')
+                        or not target.get('loaded')):
+                    raise ValueError('请先读取工程库目标封装')
                 cache = state.setdefault('library_comparisons', {})
                 pair = (identifier, target_identifier)
                 if pair not in cache:
@@ -491,7 +491,9 @@ class FootprintChoices:
                         raise ValueError('库封装比较预览失败：' + str(rendered.get('reason') or '渲染不可用'))
                     self._verify(state)
                     cache[pair] = {**rendered, 'library_comparison': True,
-                                   'reference_id': identifier, 'target_id': target_identifier}
+                                   'reference_id': identifier, 'target_id': target_identifier,
+                                   'compatible': target['compatible'],
+                                   'reference_numbers': reference['numbers'], 'target_numbers': target['numbers']}
                 self._verify(state)
                 return deepcopy(cache[pair])
             if state.get('kind') in ('library', 'rename'):
@@ -509,7 +511,23 @@ class FootprintChoices:
                 self._verify(state)
                 return deepcopy(entry['comparison'])
             self._verify(state)
-            aligned, entry = self._alignment(state, identifier)
+            entry = next((e for e in state['existing'] if e['id'] == identifier), None)
+            if entry is None:
+                raise ValueError('请选择预览列表中的封装')
+            try:
+                aligned, entry = self._alignment(state, identifier)
+            except ValueError as exc:
+                # Rendering never authorizes publication. Incompatible numbering
+                # or grouped layouts still need an inspectable native preview.
+                reason = ('本地编号：' + ', '.join(entry['numbers']) + '；目标编号：' +
+                          ', '.join(state['info']['numbers']) + '。' + str(exc))
+                previews = state.setdefault('unaligned_previews', {})
+                if identifier not in previews:
+                    folder = state['work'] / ('raw-' + uuid4().hex)
+                    folder.mkdir()
+                    previews[identifier] = {'path': None, 'work': folder,
+                                           'alignment': {'ok': False, 'reason': reason}}
+                aligned = previews[identifier]
             if 'comparison' not in aligned:
                 rendered = render_comparison(entry['path'], aligned['path'] or state['module'], aligned['work'])
                 if rendered.get('ok') is False:
@@ -517,7 +535,9 @@ class FootprintChoices:
                 aligned['comparison'] = rendered
             self._verify(state)
             return deepcopy({**aligned['comparison'], 'reference_id': identifier,
-                             'alignment': aligned['alignment']})
+                             'alignment': aligned['alignment'],
+                             'preview_only': not aligned['alignment'].get('ok', False),
+                             'reference_numbers': entry['numbers'], 'target_numbers': state['info']['numbers']})
 
     def bind(self, preview_id, context):
         with IMPORT_LOCK:

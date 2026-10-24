@@ -620,17 +620,28 @@ function Get-HostedProjectStatus {
 }
 
 function Assert-KiCadWindowResponsive {
-    param($Target, [string]$Phase)
+    param($Target, [string]$Phase, [int]$WaitMs = 5000)
 
     Ensure-NativeMethods
     $result = [UIntPtr]::Zero
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    # WM_NULL checks the UI thread without queuing save/close or activating it.
-    $response = [NativeMethods]::SendMessageTimeout($Target.MainWindowHandle, 0, [IntPtr]::Zero, [IntPtr]::Zero, 0x22, 750, [ref]$result)
-    if ($response -eq [IntPtr]::Zero) {
-        Write-Log ("KICAD_BUSY phase={0} pid={1} hwnd={2} elapsed_ms={3}" -f $Phase, $Target.Id, $Target.MainWindowHandle, $timer.ElapsedMilliseconds)
-        throw "KICAD_BUSY: window is not responding (phase=$Phase, PID=$($Target.Id)). Stop sync; do not queue save or close. No schematic fields were written."
-    }
+    # Loading/painting may briefly block the UI. Only repeat read-only WM_NULL;
+    # never queue save or close while waiting for responsiveness to return.
+    do {
+        if ($Target -is [Diagnostics.Process]) { $Target.Refresh() }
+        $timeout = [Math]::Min(750, [Math]::Max(1, $WaitMs - $timer.ElapsedMilliseconds))
+        $response = [NativeMethods]::SendMessageTimeout($Target.MainWindowHandle, 0, [IntPtr]::Zero, [IntPtr]::Zero, 0x22, $timeout, [ref]$result)
+        if ($response -ne [IntPtr]::Zero) {
+            if ($timer.ElapsedMilliseconds -gt 750) {
+                Write-Log ("KICAD_READY phase={0} pid={1} elapsed_ms={2}" -f $Phase, $Target.Id, $timer.ElapsedMilliseconds)
+            }
+            return
+        }
+        if ($timer.ElapsedMilliseconds -ge $WaitMs) { break }
+        Start-Sleep -Milliseconds ([Math]::Max(0, [Math]::Min(120, $WaitMs - $timer.ElapsedMilliseconds)))
+    } while ($timer.ElapsedMilliseconds -lt $WaitMs)
+    Write-Log ("KICAD_BUSY phase={0} pid={1} hwnd={2} elapsed_ms={3}" -f $Phase, $Target.Id, $Target.MainWindowHandle, $timer.ElapsedMilliseconds)
+    throw "KICAD_BUSY: window did not recover within ${WaitMs}ms (phase=$Phase, PID=$($Target.Id)). Stop sync; do not queue save or close. No schematic fields were written."
 }
 
 function Invoke-KiCadProjectProbe {

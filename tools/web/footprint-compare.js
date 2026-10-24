@@ -319,9 +319,9 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const alignment = value.alignment || {};
       const format = (number, digits = 3) => Number.isFinite(number) ? String(Number(number.toFixed(digits))) : '—';
       q('[data-fp-alignment]').dataset.ok = String(alignment.ok === true);
-      q('[data-fp-alignment]').textContent = value.pcb_comparison ? `当前 PCB / 目标库封装 · ${alignment.method === 'center' ? '铜焊盘中心对齐，允许焊盘偏移' : '按编号原位对齐'} · mm` : value.library_comparison ? '当前库封装 / 所选库封装 · 同原点、同比例 · mm' : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
+      q('[data-fp-alignment]').textContent = value.pcb_comparison ? `当前 PCB / 目标库封装 · ${alignment.method === 'center' ? '铜焊盘中心对齐，允许焊盘偏移' : '按编号原位对齐'} · mm` : value.library_comparison ? `当前库封装 / 所选库封装 · 同原点、同比例 · mm${value.compatible === false ? ` · 仅预览，编号不匹配：本地 ${value.reference_numbers?.join(', ')} / 目标 ${value.target_numbers?.join(', ')}` : ''}` : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
         ? `中心已对齐 · 校正 ${format(alignment.rotation_deg)}° · 焊盘中心最大偏差 ${format(alignment.max_error_mm, 4)} mm${alignment.requires_review ? ' · 间距有差异，请核对' : ''}`
-        : '无法对齐，请检查焊盘编号与原封装';
+        : '仅预览，未配准：' + (alignment.reason || '请检查焊盘编号与原封装');
       q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);
       if (value.local_only || value.library_comparison) q('[data-fp-alignment]').removeAttribute('data-ok');
       q('.fp-scene').hidden = false;
@@ -340,9 +340,9 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       q('[data-fp-alignment]').textContent = '';
       const status = q('[data-fp-canvas-status]');
       status.hidden = false;
-      status.textContent = entry && (options.library || references.has(entry.id)) ? '正在读取预览…' : '请选择编号匹配的对齐基准';
+      status.textContent = entry || options.loadComparison ? '正在读取预览…' : '请选择要预览的封装';
       refresh();
-      if (!entry || (!options.library && !references.has(entry.id))) return;
+      if (!entry && !options.loadComparison) return;
       try {
         if (options.loadComparison) {
           const data = await options.loadComparison();
@@ -493,6 +493,11 @@ window.openFootprintManager = function openFootprintManager(options) {
       <nav class="fp-tabs" role="tablist" aria-label="封装操作"><button type="button" role="tab" data-fp-tab="library">替换库封装</button><button type="button" role="tab" data-fp-tab="convert">替换立创封装</button><button type="button" role="tab" data-fp-tab="rename">库封装改名</button></nav>
       <div class="fp-pages"></div></section>`;
     const q = selector => overlay.querySelector(selector), previousFocus = document.activeElement;
+    if (document.documentElement.classList.contains('native-utility-page')) {
+      overlay.classList.add('fp-native-workflow');
+      q('.fp-tabs').prepend(q('[data-fp-back]'), q('[data-fp-forward]'));
+      q('.fp-title').hidden = true;
+    }
     const controller = new AbortController(), pages = new Map();
     let closed = false, history = [options.initialMode || 'library'], index = 0;
     function close(value) {

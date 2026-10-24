@@ -12,6 +12,25 @@ POWERSHELL = shutil.which('powershell')
 
 @unittest.skipUnless(os.name == 'nt' and POWERSHELL, 'Windows PowerShell required')
 class KiCadBusyGuardTests(unittest.TestCase):
+    def test_short_busy_recovers_before_any_save_or_close(self):
+        self.assertEqual(self.run_functions(r'''
+Add-Type @'
+using System;
+public class NativeMethods {
+public static int Calls = 0;
+public static IntPtr SendMessageTimeout(IntPtr hwnd, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out UIntPtr result) {
+ result = UIntPtr.Zero;
+ if (msg != 0) throw new Exception("must not queue commands");
+ return ++Calls < 3 ? IntPtr.Zero : new IntPtr(1);
+}
+}
+'@
+function Ensure-NativeMethods {}
+Assert-KiCadWindowResponsive -Target ([pscustomobject]@{Id=1; MainWindowHandle=[IntPtr]123}) -Phase ownership
+if ([NativeMethods]::Calls -ne 3) { throw 'did not recover' }
+'recovered'
+'''), 'recovered')
+
     def run_functions(self, body):
         setup = r'''
 $ErrorActionPreference = 'Stop'

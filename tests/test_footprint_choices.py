@@ -132,6 +132,35 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertEqual(result['footprint'], 'DSMU:0603')
         self.assertFalse((self.root / 'sym-lib-table').exists())
 
+    def test_mismatched_converted_preview_renders_without_authorizing_replacement(self):
+        self.pin = 'EP'
+        preview = self.prepare()
+        key = preview['preview_id']
+        rendered = {'ok': True, 'view_box': [-3, -2, 6, 4], 'layers': [],
+                    'existing_layers': {}, 'converted_layers': {}}
+        with patch('part_selection_footprint_geometry.render_comparison', return_value=rendered) as render:
+            result = self.service.comparison(key, 'DSMU:0603')
+            self.assertTrue(result['preview_only'])
+            self.assertFalse(result['alignment']['ok'])
+            self.assertEqual(result['reference_numbers'], ['1', '2'])
+            self.assertEqual(result['target_numbers'], ['1', 'EP'])
+            self.assertIn('EP', result['alignment']['reason'])
+            self.assertEqual(render.call_args.args[0], self.old)
+            self.assertEqual(render.call_args.args[1], self.service.previews[key]['module'])
+        with self.assertRaises(ValueError):
+            self.service.commit(self.choice(preview))
+
+    def test_mismatched_library_preview_does_not_authorize_replacement(self):
+        (self.pretty / 'WrongPins.kicad_mod').write_text(module('WrongPins', pin='3'))
+        key = self.service.prepare_library(['DSMU:0603'])['preview_id']
+        self.service.library_detail(key, 'DSMU:WrongPins')
+        with patch('part_selection_footprint_geometry.render_comparison', return_value={'ok': True}):
+            result = self.service.comparison(key, 'DSMU:0603', 'DSMU:WrongPins')
+        self.assertTrue(result['library_comparison'])
+        self.assertFalse(result['compatible'])
+        with self.assertRaises(ValueError):
+            self.service.commit({'preview_id':key, 'source':'existing', 'existing_id':'DSMU:WrongPins', 'acknowledged':True})
+
     def test_external_staged_files_are_still_checked_for_changes(self):
         preview = self.prepare()
         state = self.service.previews[preview['preview_id']]
@@ -261,7 +290,7 @@ class FootprintChoicesTest(unittest.TestCase):
             for baseline, target in [('DSMU:Target', 'DSMU:0603'), ('../outside', 'DSMU:0603'),
                                      ('DSMU:0603', '../outside'), ('DSMU:0603', 'DSMU:Missing'),
                                      ('DSMU:0603', ''), ('DSMU:0603', 'DSMU:Target'),
-                                     ('DSMU:0603', 'DSMU:WrongPins'), ('DSMU:0603', 'DSMU:Broken')]:
+                                     ('DSMU:0603', 'DSMU:Broken')]:
                 with self.subTest(baseline=baseline, target=target), self.assertRaises(ValueError):
                     self.service.comparison(key, baseline, target)
             render.assert_not_called()
@@ -274,8 +303,6 @@ class FootprintChoicesTest(unittest.TestCase):
         with patch('part_selection_footprint_geometry.render_comparison') as render:
             with self.assertRaises(ValueError):
                 self.service.comparison(key, 'Missing:0603', 'DSMU:0603')
-            with self.assertRaises(ValueError):
-                self.service.comparison(key, 'DSMU:0603', 'DSMU:0603')
             self.service.previews[key]['time'] -= 1801
             with self.assertRaisesRegex(ValueError, '过期'):
                 self.service.comparison(key, 'DSMU:0603', 'DSMU:0603')
@@ -605,8 +632,10 @@ class FootprintChoicesTest(unittest.TestCase):
         (self.pretty/'Other.kicad_mod').write_text(
             module('Other').replace('(at 0.75 0)', '(at 0.750021 0)'), encoding='utf-8')
         preview = self.service.prepare('C123', ['DSMU:0603', 'DSMU:Other'])
-        with self.assertRaisesRegex(ValueError, '局部中心不同'):
-            self.service.comparison(preview['preview_id'], 'DSMU:0603')
+        with patch('part_selection_footprint_geometry.render_comparison', return_value={'ok': True}):
+            detail = self.service.comparison(preview['preview_id'], 'DSMU:0603')
+        self.assertTrue(detail['preview_only'])
+        self.assertIn('局部中心不同', detail['alignment']['reason'])
         for source in ('converted', 'rename'):
             with self.subTest(source=source), self.assertRaisesRegex(ValueError, '局部中心不同'):
                 self.service.commit(self.choice(preview, source=source, name='Refused'))

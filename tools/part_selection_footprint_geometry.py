@@ -145,10 +145,12 @@ def estimate_alignment(converted_source: str, reference_source: str, *, method='
         return _failure(f'Invalid footprint geometry: {exc}')
 
 
-def _validate_supported(source, *, allow_models=False):
+def _validate_supported(source, *, allow_models=False, render_only=False):
     root = _parse_module(source)
     for node in root.children[2:]:
-        if node.head not in _SUPPORTED and not (allow_models and node.head == 'model'):
+        # Rendering delegates format support to KiCad; the transform whitelist
+        # must not hide native objects that we cannot safely rewrite ourselves.
+        if not render_only and node.head not in _SUPPORTED and not (allow_models and node.head == 'model'):
             raise ValueError(f'Unsupported footprint object: {node.head or node.value}')
     at = root.child('at')
     if at and any(abs(_number(at.arg(i) or '0')) > 1e-9 for i in (1,2,3)):
@@ -255,7 +257,7 @@ def render_comparison(reference: Path, converted_aligned: Path, work: Path) -> d
         reference, converted_aligned, work = map(Path,(reference,converted_aligned,work))
         _outside_project(work)
         for source in (reference,converted_aligned):
-            _validate_supported(source.read_text(encoding='utf-8-sig'), allow_models=True)
+            _validate_supported(source.read_text(encoding='utf-8-sig'), allow_models=True, render_only=True)
         return _run_worker({'operation': 'render', 'reference': str(reference.resolve()),
                             'converted': str(converted_aligned.resolve()), 'work': str(work.resolve())})
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

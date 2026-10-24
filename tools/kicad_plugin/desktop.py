@@ -148,8 +148,19 @@ def enable_browser_shortcuts(window) -> None:
         from System import Action
 
         def enable():
-            window.native.webview.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = True
-            window.native.webview.CoreWebView2.Settings.AreDefaultContextMenusEnabled = True
+            core = window.native.webview.CoreWebView2
+            core.Settings.AreBrowserAcceleratorKeysEnabled = True
+            core.Settings.AreDefaultContextMenusEnabled = True
+            if not getattr(window, '_workbench_edit_menu', None) and hasattr(core, 'ContextMenuRequested'):
+                def edit_menu(sender, args):
+                    # Keep WebView2's native edit commands and selection handling;
+                    # never read the clipboard or grant a clipboard API to pages.
+                    allowed = {'undo', 'redo', 'cut', 'copy', 'paste', 'pasteandmatchstyle', 'selectall'}
+                    for index in range(args.MenuItems.Count - 1, -1, -1):
+                        if str(args.MenuItems[index].Name).lower() not in allowed:
+                            args.MenuItems.RemoveAt(index)
+                core.ContextMenuRequested += edit_menu
+                window._workbench_edit_menu = edit_menu
 
         window.native.Invoke(Action(enable))
     except Exception:

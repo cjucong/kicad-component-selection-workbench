@@ -406,6 +406,19 @@ def test_render_rejects_work_inside_repository(geometry, workspace):
 
 
 @pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')
+def test_native_preview_accepts_group_without_authorizing_transform(geometry, workspace):
+    source = workspace/'grouped.kicad_mod'
+    source.write_text(footprint(extra='(group "preview" (uuid "7503d31f-9ef4-4b3b-b39a-2712e953f945") (members))'), encoding='utf-8')
+    before = source.read_bytes()
+    result = geometry.render_comparison(source,source,workspace/'plots')
+    assert result.get('ok'), result
+    assert result['existing_layers']['copper']
+    assert source.read_bytes() == before
+    with pytest.raises(ValueError,match='Unsupported footprint object: group'):
+        geometry._validate_supported(source.read_text(encoding='utf-8'))
+
+
+@pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')
 def test_preview_allows_reference_model_without_loading_or_modifying_it(geometry, workspace):
     reference, converted = workspace/'existing.kicad_mod', workspace/'converted.kicad_mod'
     reference.write_text(footprint(extra='''(model "${KIPRJMOD}/missing.step"
