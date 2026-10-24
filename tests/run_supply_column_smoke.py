@@ -32,10 +32,28 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await row.locator('[data-action="clear-primary"]').count(),0);
   assert.equal(await row.locator('[data-stock-cell] > button').count(),0);
   assert.doesNotMatch(await row.locator('[data-stock-cell]').innerText(),/4小时|本地还需|本地缺口/);
+  assert.match(await row.locator('.supply-counts').innerText(),/商城库存/);
+  assert.equal(await row.locator('.supply-delivery').innerText(),'发货：1-3个工作日');
+  assert.equal(await row.locator('.supply-delivery').isVisible(),true);
+  for(const [value, expected] of [['0','0'],['','待核实']]) {
+   await page.evaluate(value=>{
+    const tr=document.querySelector('#rows tr[data-refs="C1"]');
+    setStockCells(tr,{...currentRows[0].stock,ok:true,c_code:'C100',stock:value,delivery:'1-3个工作日'});
+   },value);
+   assert.match(await row.locator('.supply-counts').innerText(),new RegExp('商城库存 '+expected));
+  }
   const details=row.locator('.stock-details');
   assert.equal(await details.getAttribute('open'),null);
   await details.locator('summary').click();
   assert.match(await details.innerText(),/深圳 200.*查询时间/s);
+  await details.locator('summary').click();
+  for(const width of [1440,768,390]) {
+   await page.setViewportSize({width,height:900});
+   await row.locator('[data-stock-cell]').scrollIntoViewIfNeeded();
+   assert.equal(await row.locator('.supply-delivery').isVisible(),true);
+   if(process.env.SUPPLY_SCREENSHOT_DIR) await page.screenshot({path:process.env.SUPPLY_SCREENSHOT_DIR+'/'+width+'.png'});
+  }
+  await page.setViewportSize({width:1440,height:900});
   // A stock response cannot replace a focused, unsaved primary-code editor.
   await code.focus();
   await code.evaluate(el=>{el.value='C101';window.supplyEditor=el;});
@@ -120,7 +138,7 @@ def main():
                                       'bom_dir': 'data'}), encoding='utf-8')
         app = PartSelectionApp(config)
         stock = {'ok': True, 'c_code': 'C100', 'stock': '200', 'stock_sz': 200,
-                 'status': '现货', 'delivery': '4小时发货', 'channel': '立创自营',
+                 'status': 'OK', 'delivery': '1-3个工作日', 'channel': '合作库存/订货',
                  'fetched_at': '2026-10-22T12:00:00', 'param_detail': '容值: 100nF', 'package': '0603'}
         save_stock_cache(app.stock_cache_path, {'C100': stock})
 

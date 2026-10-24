@@ -9,6 +9,7 @@ import ctypes
 import html
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import re
@@ -519,6 +520,9 @@ def cache_candidate_stock(cache_path: Path, candidate: object) -> None:
             "detail_parameter_status",
             "detail_url",
             "stock",
+            "immediate_stock",
+            "three_day_stock",
+            "delivery_schema",
             "moq",
             "mpq",
             "price",
@@ -609,7 +613,8 @@ def stock_number(stock: object) -> float | None:
     if not isinstance(stock, dict):
         return None
     try:
-        return float(str(stock.get("stock", "")).replace(",", "").strip())
+        number = float(str(stock.get("stock", "")).replace(",", "").strip())
+        return number if math.isfinite(number) and number >= 0 else None
     except ValueError:
         return None
 
@@ -618,9 +623,7 @@ def row_stock_is_low(row: dict[str, object]) -> bool:
     stock = row.get("stock")
     if isinstance(stock, dict) and isinstance(stock.get("entries"), list):
         return bool(stock.get("entries")) and any(
-            isinstance(item.get("stock"), dict)
-            and item["stock"].get("ok")
-            and (stock_number(item["stock"]) or 0) < 100
+            row_stock_is_low({"stock": item.get("stock")})
             for item in stock["entries"]
         )
     number = stock_number(stock)
@@ -649,6 +652,11 @@ def row_stock_is_error(row: dict[str, object]) -> bool:
 
 
 def row_stock_is_issue(row: dict[str, object]) -> bool:
+    stock = row.get("stock")
+    if isinstance(stock, dict) and isinstance(stock.get("entries"), list):
+        return any(row_stock_is_issue({"stock": item.get("stock")}) for item in stock["entries"])
+    if isinstance(stock, dict) and stock.get("ok") and stock_number(stock) is None:
+        return True
     return row_stock_is_low(row) or row_stock_is_error(row)
 
 
@@ -663,7 +671,8 @@ def row_stock_is_normal(row: dict[str, object]) -> bool:
         and row_stock_already_queried(row)
         and isinstance(stock, dict)
         and stock.get("ok")
-        and not row_stock_is_low(row)
+        and stock_number(stock) is not None
+        and stock_number(stock) >= 100
     )
 
 
@@ -4117,6 +4126,7 @@ tr.hidden-row {{ display: none; }}
 .supply-primary {{ display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 5px; }}
 .supply-primary input.edit {{ flex: 1 1 95px; min-width: 80px; width: 95px; margin: 0; }}
 .supply-counts {{ display:flex; flex-wrap:wrap; gap:4px 16px; align-items:baseline; line-height:1.8; }}
+.supply-delivery {{ color:#52606d; line-height:1.6; overflow-wrap:anywhere; }}
 .stock-retry {{ font:inherit; padding:0; color:#a33; }}
 .footprint-edit-control {{ display:grid; grid-template-columns:minmax(0,1fr) 28px; align-items:start; gap:4px; }}
 .footprint-edit-control .footprint-library {{ grid-column:1 / -1; }}
@@ -4494,7 +4504,7 @@ tr.hidden-row {{ display: none; }}
             <th data-candidate-col="model" style="width:250px">型号/品牌/封装<button class="candidate-filter-trigger" data-candidate-filter="identity" type="button" aria-label="筛选品牌和封装" aria-expanded="false" aria-pressed="false" title="筛选品牌和封装">&#9661;</button></th>
             <th data-candidate-col="param" style="width:280px">参数详情<button class="candidate-filter-trigger" data-candidate-filter="parameters" type="button" aria-label="筛选参数详情" aria-expanded="false" aria-pressed="false" title="筛选参数详情">&#9661;</button></th>
             <th data-candidate-col="code" style="width:92px">C编码</th>
-            <th data-candidate-col="channel_stock" style="width:215px">渠道 / 库存交期<label class="candidate-stock-filter"><input id="inStockOnly" type="checkbox">仅现货</label></th>
+            <th data-candidate-col="channel_stock" style="width:215px">渠道 / 库存交期<label class="candidate-stock-filter" title="仅按库存数量筛选，不代表立即发货；请核对各渠道交期"><input id="inStockOnly" type="checkbox">有库存</label></th>
             <th data-candidate-col="order" style="width:112px">MOQ/MPQ</th>
             <th data-candidate-col="price" style="width:165px">价格梯度</th>
           </tr>
@@ -4570,7 +4580,7 @@ const FILTER_CYCLES = {{
   ],
   stock_issue: [
     {{key: "stock_issue", label: "库存异常/低库存"}},
-    {{key: "stock_normal", label: "库存正常"}}
+    {{key: "stock_normal", label: "库存 ≥ 100"}}
   ],
   missing_ref: [
     {{key: "missing_ref", label: "原理图缺失位号"}},
@@ -5475,8 +5485,9 @@ function reviewStatusClass(value) {{
 }}
 
 function stockNumber(stock) {{
-  const number = Number(String(stock?.stock || "").replace(/,/g, ""));
-  return Number.isFinite(number) ? number : Number.NaN;
+  const text = String(stock?.stock ?? "").replace(/,/g, "").trim();
+  const number = text ? Number(text) : Number.NaN;
+  return Number.isFinite(number) && number >= 0 ? number : Number.NaN;
 }}
 
 function stockIsLow(stock) {{
@@ -5487,6 +5498,7 @@ function stockIsLow(stock) {{
 
 function stockIsIssue(stock) {{
   if (Array.isArray(stock?.entries)) return stock.entries.some(item => stockIsIssue(item.stock || {{}}));
+  if (stock?.ok && !Number.isFinite(stockNumber(stock))) return true;
   if (stockIsLow(stock)) return true;
   return !!(stockAlreadyQueried(stock) && !stock?.ok);
 }}
@@ -5509,7 +5521,7 @@ function rowHasMissingRef(row) {{
 function rowVisualClass(row, selectedStatus, syncNeeded, stock, reviewStatus) {{
   if (syncNeeded || rowHasMissingRef(row) || row?.sync_error) return "row-needs-sync";
   if (selectedStatus === "Rejected" || reviewStatus === "Rejected" || rowIsNc(row) || !rowHasCode(row, stock)) return "row-muted";
-  if (reviewStatus !== "Confirmed" || !stockAlreadyQueried(stock) || stockIsLow(stock)) return "row-warning";
+  if (reviewStatus !== "Confirmed" || !stockAlreadyQueried(stock) || stockIsIssue(stock)) return "row-warning";
   if (reviewStatus === "Confirmed" && stock?.ok) return "row-ok";
   return "row-warning";
 }}
@@ -5547,10 +5559,11 @@ function stockWithSavedDescription(row, stock) {{
 
 function stockVisual(stock) {{
   const status = stock.status || "";
-  const stockNumber = Number(String(stock.stock || "").replace(/,/g, ""));
-  const lowStock = stock.ok && Number.isFinite(stockNumber) && stockNumber < 100;
+  const number = stockNumber(stock);
+  if (stock.ok && !Number.isFinite(number)) return {{pill: "stock-wait", text: "库存待核实", detailClass: ""}};
+  const lowStock = stock.ok && number < 100;
   if (lowStock) return {{pill: "stock-low", text: "低库存", detailClass: "low-stock"}};
-  if (stock.ok) return {{pill: "stock-ok", text: "现货", detailClass: ""}};
+  if (stock.ok) return {{pill: "stock-ok", text: "有库存", detailClass: ""}};
   if (["待查询", "查询中"].includes(status)) return {{pill: "stock-wait", text: status, detailClass: ""}};
   return {{pill: "stock-bad", text: status || "异常", detailClass: "bad"}};
 }}
@@ -5584,21 +5597,29 @@ function stockAlreadyQueried(stock) {{
 }}
 
 function renderStock(stock) {{
-  if (!stock.c_code) return '<span>现货 —</span>';
-  if (stock.ok) return `<span>现货 <strong>${{esc(stock.stock ?? "待核实")}}</strong></span>`;
-  if (stock.status === "查询中") return '<span class="stock-wait">现货 查询中…</span>';
-  if (stock.status === "待查询") return '<span class="stock-wait">现货 待查询</span>';
-  return `<button type="button" class="action-link stock-retry" data-action="query-stock" title="${{esc(stock.error || stock.status || "点击重试")}}">现货 查询失败，重试</button>`;
+  if (!stock.c_code) return '<span>商城库存 —</span>';
+  if (stock.ok) return `<span>商城库存 <strong>${{esc(String(stock.stock ?? "").trim() || "待核实")}}</strong></span>`;
+  if (stock.status === "查询中") return '<span class="stock-wait">商城库存 查询中…</span>';
+  if (stock.status === "待查询") return '<span class="stock-wait">商城库存 待查询</span>';
+  return `<button type="button" class="action-link stock-retry" data-action="query-stock" title="${{esc(stock.error || stock.status || "点击重试")}}">商城库存 查询失败，重试</button>`;
+}}
+
+function stockDeliveryText(stock) {{
+  if (!stock?.ok || !stock.c_code || Array.isArray(stock.entries)) return "";
+  const text = String(stock.delivery || "").trim();
+  if (!text || stock.delivery_schema !== 1 && ["现货最快4小时发货", "4小时发货"].includes(text)) return "发货时间待核实";
+  return text === "发货时间待核实" ? text : `发货：${{text}}`;
 }}
 
 function renderStockCell(stock, row = null) {{
   const order = row?.procurement_choice || {{}};
   const detail = [renderSupplyOrder(row), esc(stock.channel || ""),
     stock.stock_sz != null ? esc(`深圳 ${{stock.stock_sz}} / 江苏 ${{stock.stock_js || 0}} / 香港 ${{stock.stock_hk || 0}}`) : "",
-    stock.delivery && !/(?:最快|小时.*发货|发货.*小时)/.test(stock.delivery) ? esc(stock.delivery) : "",
     stock.fetched_at ? esc(`查询时间: ${{String(stock.fetched_at).replace("T", " ")}}`) : ""].filter(Boolean);
-  const market = Array.isArray(stock?.entries) ? '<span>现货 待核实</span>' : renderStock(stock);
+  const market = Array.isArray(stock?.entries) ? '<span>商城库存 待核实</span>' : renderStock(stock);
+  const delivery = stockDeliveryText(stock);
   return `<div class="supply-counts">${{market}}<span data-local-inventory>本地库存 读取中…</span></div>`
+    + (delivery ? `<div class="supply-delivery">${{esc(delivery)}}</div>` : "")
     + (detail.length ? `<details class="stock-details"><summary>供货详情</summary>${{detail.join("<br>")}}</details>` : "");
 }}
 
@@ -5693,7 +5714,7 @@ function renderAlternateParts(row) {{
 function rowClassFromDataset(tr) {{
   if (tr.dataset.syncNeeded === "1" || tr.dataset.missingRef === "1" || tr.dataset.syncError === "1") return "row-needs-sync";
   if (tr.dataset.codeStatus === "Rejected" || tr.dataset.reviewStatus === "Rejected" || tr.dataset.isNc === "1" || tr.dataset.hasCode !== "1") return "row-muted";
-  if (tr.dataset.reviewStatus !== "Confirmed" || tr.dataset.stockQueried !== "1" || tr.dataset.stockLow === "1") return "row-warning";
+  if (tr.dataset.reviewStatus !== "Confirmed" || tr.dataset.stockQueried !== "1" || tr.dataset.stockIssue === "1") return "row-warning";
   return "row-ok";
 }}
 
@@ -7423,7 +7444,7 @@ function renderCandidateFilterPanel() {{
   for (const [key, values] of candidateFilters) for (const value of values) {{
     tags.push('<span class="candidate-filter-tag"><span>' + esc(labelFor(key)) + '：' + esc(value) + '</span><button type="button" data-remove-candidate-filter="' + esc(key) + '" data-filter-value="' + esc(value) + '" aria-label="' + esc('移除 ' + labelFor(key) + ' ' + value) + '" title="移除此条件">&times;</button></span>');
   }}
-  if (inStockOnly.checked) tags.push('<span class="candidate-filter-tag"><span>现货</span><button type="button" data-remove-candidate-stock aria-label="移除现货筛选" title="移除此条件">&times;</button></span>');
+  if (inStockOnly.checked) tags.push('<span class="candidate-filter-tag"><span>有库存</span><button type="button" data-remove-candidate-stock aria-label="移除库存筛选" title="移除此条件">&times;</button></span>');
   document.getElementById("candidateFilterTags").innerHTML = tags.join("");
   document.getElementById("clearCandidateFilters").hidden = !candidateFilters.size && !inStockOnly.checked;
   candidateWindow.querySelectorAll("[data-candidate-filter]").forEach(button => {{
@@ -7744,6 +7765,9 @@ async function addCandidateAsAlternate(code) {{
       price: item.price || "",
       price_ladder: item.price_ladder || "",
       delivery: item.delivery || "",
+      immediate_stock: item.immediate_stock ?? "",
+      three_day_stock: item.three_day_stock ?? "",
+      delivery_schema: item.delivery_schema ?? "",
       channel: item.channel || "",
       arrange: item.arrange || "",
       category: item.category || "",

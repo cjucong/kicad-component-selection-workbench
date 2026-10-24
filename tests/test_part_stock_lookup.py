@@ -702,7 +702,7 @@ class PartStockLookupTest(unittest.TestCase):
         self.assertEqual(stock["param"], "CAP CER 100nF 50V X7R 0805")
         self.assertEqual(stock["param_detail"], "精度: ±10%; 温度系数: X7R")
         self.assertEqual(stock["image_url"], "https://assets.lcsc.com/example.jpg")
-        self.assertEqual(stock["delivery"], "现货最快4小时发货")
+        self.assertEqual(stock["delivery"], "可立即发货 120")
         self.assertEqual(stock["arrange"], "Tape & Reel (TR)")
         self.assertEqual(stock["category"], "贴片电容(MLCC)")
 

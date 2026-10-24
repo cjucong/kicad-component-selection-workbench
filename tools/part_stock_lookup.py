@@ -208,11 +208,12 @@ def parse_szlcsc_next_data(page_html: str) -> list[dict[str, Any]]:
                 "productImageUrl": product.get("breviaryImageUrl"),
                 "productImageUrlBig": product.get("bigImageUrl"),
                 "productArrange": product.get("productMinEncapsulationUnit"),
-                "deliveryTimeWayDays": product.get("deliveryTimeWayDays"),
+                "deliveryTimeWayDays": product.get("deliveryTimeWayDays") or record.get("deliveryTimeWayDays"),
+                "hasStockNow": product.get("hasStockNow") if product.get("hasStockNow") is not None else record.get("hasStockNow"),
                 "validStockNumber": product.get("validStockNumber"),
                 "lcBookProductVO": product.get("lcBookProductVO"),
                 "productHkDollerPriceList": product.get("productHkDollerPriceList"),
-                "domesticStockVO": {"shipImmediately": total_stock or 0},
+                "domesticStockVO": record.get("domesticStockVO") or product.get("domesticStockVO") or {},
                 "source": "so.szlcsc.com/domestic",
             }
         )
@@ -851,34 +852,40 @@ def product_order_channels(product: dict[str, Any]) -> list[dict[str, Any]]:
     return deduped[:8]
 
 
+def product_dispatch_stock(product: dict[str, Any]) -> tuple[str, str]:
+    domestic = product.get("domesticStockVO")
+    domestic = domestic if isinstance(domestic, dict) else {}
+    counts = [text_value(domestic.get(key)).replace(",", "") for key in ("shipImmediately", "ship3Days")]
+    counts = [value if re.fullmatch(r"\d+", value) else "" for value in counts]
+    if text_value(product.get("hasStockNow")).lower() in {"no", "false", "0"}:
+        counts[0] = "0"
+    return counts[0], counts[1]
+
+
 def product_delivery(product: dict[str, Any]) -> str:
-    domestic = product.get("domesticStockVO") or {}
-    ship_now = int_value(domestic.get("shipImmediately") or product.get("stockSz") or product.get("stockNumber"))
-    ship_3_days = int_value(domestic.get("ship3Days"))
-    stock = int_value(product.get("stockNumber"))
-    if product_order_channels(product) and clean_space(product.get("deliveryTimeWayDays")):
-        return clean_space(product.get("deliveryTimeWayDays"))
-    if ship_now > 0:
-        return "现货最快4小时发货"
-    if ship_3_days > 0:
-        return "预计3天发货"
-    if clean_space(product.get("deliveryTimeWayDays")):
-        return clean_space(product.get("deliveryTimeWayDays"))
-    if stock > 0:
-        return "有库存，交期以立创页面为准"
+    # Neither total quantity nor warehouse location establishes dispatch readiness.
+    lead_time = clean_space(product.get("deliveryTimeWayDays"))
+    immediate, three_days = product_dispatch_stock(product)
+    parts = [lead_time] if lead_time else []
+    if int_value(immediate) > 0:
+        parts.append(f"可立即发货 {immediate}")
+    if int_value(three_days) > 0:
+        parts.append(f"预计3天发货 {three_days}")
+    if parts:
+        return "；".join(parts)
     if product.get("isForeignOnsale"):
         return "订货/海外代购，交期以立创页面为准"
-    return "无现货，交期待确认"
+    return "发货时间待核实"
 
 
 def product_channel(product: dict[str, Any]) -> str:
     if product_order_channels(product):
         return "合作库存/订货"
     if int_value(product.get("stockNumber")) > 0:
-        return "现货"
+        return "商城库存"
     if product.get("isForeignOnsale"):
         return "海外代购/订货"
-    return "无现货"
+    return "暂无库存" if text_value(product.get("stockNumber")) else "库存待核实"
 
 
 def normalize_model(value: object) -> str:
@@ -969,6 +976,9 @@ def parse_lcsc_product(c_code: str, product: dict[str, Any]) -> dict[str, Any]:
         "stock_sz": text_value(product.get("stockSz")),
         "stock_js": text_value(product.get("stockJs")),
         "stock_hk": text_value(product.get("wmStockHk")),
+        "immediate_stock": product_dispatch_stock(product)[0],
+        "three_day_stock": product_dispatch_stock(product)[1],
+        "delivery_schema": 1,
         "moq": text_value(product.get("minBuyNumber")),
         "mpq": text_value(product.get("minPacketNumber")),
         "price": price,
@@ -1148,6 +1158,9 @@ def build_candidate_item(keyword: str, product: dict[str, Any]) -> dict[str, Any
         "stock_sz": stock["stock_sz"],
         "stock_js": stock["stock_js"],
         "stock_hk": stock["stock_hk"],
+        "immediate_stock": stock["immediate_stock"],
+        "three_day_stock": stock["three_day_stock"],
+        "delivery_schema": stock["delivery_schema"],
         "moq": stock["moq"],
         "mpq": stock["mpq"],
         "price": stock["price"],
@@ -1482,6 +1495,13 @@ def load_stock_cache(path: Path) -> dict[str, dict[str, Any]]:
         if not code or not isinstance(value, dict):
             continue
         item = dict(value)
+        if item.get("channel") == "现货":
+            item["channel"] = "商城库存"
+        elif item.get("channel") == "无现货":
+            item["channel"] = "暂无库存"
+        # Older releases synthesized this promise from total stock, not a shipping quote.
+        if item.get("delivery_schema") != 1 and clean_space(item.get("delivery")) in {"现货最快4小时发货", "4小时发货"}:
+            item["delivery"] = "发货时间待核实"
         if text_value(item.get("price")).startswith("$"):
             item["price"] = "无人民币价"
         result[code] = item
