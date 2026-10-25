@@ -149,6 +149,11 @@ class DesignSync:
             raise ValueError('请明确确认封装几何替换及引脚功能')
         if any(item.get('max_error_mm',0) > .001 for item in items) and acknowledgments.get('pad_movement') is not True:
             raise ValueError('请确认焊盘移动，并在更新后检查连接与 DRC')
+        drops = [pad for item in items for pad in item.get('dropped_terminals', [])]
+        if drops and acknowledgments.get('dropped_terminals') is not True:
+            raise ValueError('请明确确认放弃原端子及连接风险')
+        if any(pad.get('net_assigned') for pad in drops) and acknowledgments.get('connected_terminals') is not True:
+            raise ValueError('放弃已分配网络的端子需要再次确认')
 
     def start(self, preview_id, acknowledgments):
         with self.lock:
@@ -161,6 +166,8 @@ class DesignSync:
             self._ack(state['result'],acknowledgments)
             if not self.sources.validate(state['source']):
                 raise ValueError('预检后原理图或工作台记录已改变，请重新预检')
+            if any(item.get('dropped_terminals') for item in (state['result'].get('pcb_preview') or {}).get('items', [])):
+                self.app.pcb_updates.approve_drops(state['result']['pcb_preview']['preview_id'], acknowledgments)
             if sum(not job['done'] for job in self.jobs.values()) >= 4:
                 raise ValueError('同步任务繁忙，请稍后重试')
             key = uuid4().hex
@@ -286,6 +293,8 @@ class DesignSync:
             self._ack(state['result'],acknowledgments)
             if not self.sources.validate(state['source']):
                 raise ValueError('PCB 重试预检已失效')
+            if any(item.get('dropped_terminals') for item in (state['result'].get('pcb_preview') or {}).get('items', [])):
+                self.app.pcb_updates.approve_drops(state['result']['pcb_preview']['preview_id'], acknowledgments)
             state['job_id'] = job_id
             self._update(job_id,done=False,ok=True,stage='queued',needs_confirmation=False,message='等待继续 PCB 同步')
             self.pool.submit(self._run,job_id,token,True)

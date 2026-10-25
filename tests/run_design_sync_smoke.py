@@ -16,7 +16,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
  try {
   const page=await browser.newPage({viewport:{width:1440,height:920}}), errors=[], requests=[];
   page.on('pageerror',error=>errors.push(error.message));
-  let pendingPreview=null, previewPolls=0;
+  let pendingPreview=null, previewPolls=0, mappedMode=false;
   await page.route('**/api/start_design_sync_preview',async route=>{
    const body=route.request().postDataJSON(); requests.push(body);
    pendingPreview={ok:true,preview_id:'synthetic',refs:body.refs,destination:body.destination,
@@ -24,6 +24,11 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
      items:[{ref:body.refs[0],kind:'rename',before:'Local:Original',after:'Local:0603',needs_ack:false,
       field_changes:[{name:'Value',before:'10k',after:'22k'}]}]}};
    previewPolls=0;
+   if(mappedMode)pendingPreview.pcb_preview.items=[{ref:body.refs[0],kind:'replace',before:'Local:Old',after:'Local:Adapted',needs_ack:true,
+    pad_mapping:[{source:'1',target:'A',align:false}],extra_pads:['9'],max_error_mm:.1,
+    differences:[{number:'1',fields:['geometry'],before:{shape:'circle'},after:{shape:'rect'}}],
+    dropped_terminals:[{number:'10',net_name:'signal',net_assigned:true,same_net_objects:{segment:1,arc:0,via:0,zone:0},
+     physical_connection:'未核验物理接触',warning:'检查连接与 DRC'}]}];
    await route.fulfill({json:{ok:true,job_id:'preflight',done:false,stage:'queued',message:'Waiting for verified PCB IPC'}});
   });
   await page.route('**/api/design_sync_job?*',async route=>{
@@ -62,6 +67,17 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   }
   await page.locator('[data-design-close]').click();
   await page.setViewportSize({width:1440,height:920});
+  mappedMode=true;
+  await page.locator('#designSyncMenu').click();await page.locator('[data-design-destination="pcb"]').click();
+  await page.getByText('焊盘对应与编号',{exact:true}).waitFor();
+  await page.getByText('焊盘对应与编号',{exact:true}).click();
+  await page.getByText('原端子 1 ← 目标原编号 A → 保存编号 1 · 不参与对齐，仍继承网络',{exact:true}).waitFor();
+  await page.getByText('焊盘几何差异',{exact:true}).click();
+  assert.match(await page.locator('[data-design-changes]').innerText(),/circle.*→.*rect/s);
+  for(const name of ['geometry','movement','drops'])await page.locator(`[data-design-${name}]`).check();
+  assert.equal(await page.locator('[data-design-apply]').isDisabled(),true,'connected terminal needs another confirmation');
+  await page.locator('[data-design-connected]').check();assert.equal(await page.locator('[data-design-apply]').isEnabled(),true);
+  await page.locator('[data-design-close]').click();mappedMode=false;
   await page.locator('#designSyncScope').selectOption('all');
   await page.locator('#rows tr[data-refs="R2"] .row-sync-menu summary').click();
   await page.locator('#rows tr[data-refs="R2"] [data-action="sync-both"]').click();

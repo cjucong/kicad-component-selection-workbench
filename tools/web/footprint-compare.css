@@ -111,6 +111,13 @@
 .fp-history button:disabled { color:#b1bdc3; cursor:default; }
 .fp-history svg, .fp-adjust-tools svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .fp-adjust-tools { border-bottom:1px solid #d9e0e5; padding:6px 9px; background:#fafcfc; }
+.fp-pad-mapping { padding:6px 9px; border-bottom:1px solid #d9e0e5; }
+.fp-pad-mapping summary { cursor:pointer; }
+.fp-pad-mapping > label { display:flex; gap:6px; margin-top:8px; }
+.fp-mapping-head, .fp-mapping-row { display:grid; grid-template-columns:70px minmax(140px,1fr) 90px; align-items:center; gap:10px; padding:3px 0; }
+.fp-mapping-head { font-weight:600; margin-top:8px; }
+[data-fp-mapping-rows] { max-height:220px; overflow:auto; }
+[data-fp-drop-label] { color:#a43a24; display:flex; gap:6px; }
 .fp-adjust-actions, .fp-adjust-values { display:flex; flex-wrap:wrap; align-items:center; gap:5px 8px; }
 .fp-adjust-actions { margin-bottom:6px; }
 .fp-adjust-tools button { display:inline-flex; align-items:center; justify-content:center; gap:4px; height:29px; padding:4px 7px; border:1px solid #becbd0; border-radius:3px; background:#fff; color:#304f5c; font:inherit; cursor:pointer; }
@@ -145,9 +152,10 @@
 .fp-library-workspace .fp-body { display:grid; grid-template-columns:220px minmax(0,1fr); grid-template-rows:auto 1fr auto auto; gap:0 14px; }
 .fp-library-workspace .fp-library-search { grid-column:1; grid-row:1; grid-template-columns:minmax(0,1fr); gap:8px; }
 .fp-library-workspace .fp-library-list { grid-column:1; grid-row:2 / 5; min-height:240px; height:100% !important; }
-.fp-library-workspace .fp-comparison { grid-column:2; grid-row:1 / 3; min-width:0; }
+.fp-library-workspace .fp-comparison { grid-column:2; grid-row:1 / 3; min-width:0; min-height:0; overflow:auto; }
 .fp-library-workspace .fp-reference-context { grid-column:2; grid-row:3; margin:8px 0 0; font-size:12px; min-height:18px; }
 .fp-library-workspace .fp-library-ack { grid-column:2; grid-row:4; font-size:12px; }
+.fp-library-workspace .fp-destination { grid-column:1 / -1; grid-row:5; min-width:0; }
 .fp-library-workspace .fp-canvas-status { min-height:280px; }
 .fp-rename-dialog { width:720px; }
 .fp-rename-body { padding:26px 28px; display:grid; gap:19px; }
@@ -167,6 +175,7 @@
   .fp-library-workspace .fp-comparison { grid-column:1; grid-row:3; }
   .fp-library-workspace .fp-reference-context { grid-column:1; grid-row:4; }
   .fp-library-workspace .fp-library-ack { grid-column:1; grid-row:5; }
+  .fp-library-workspace .fp-destination { grid-column:1; grid-row:6; }
   .fp-rename-body { padding:20px 14px; }
   .fp-rename-field { grid-template-columns:54px minmax(0,1fr); gap:8px; }
   .fp-rename-hint { margin-left:62px; }

@@ -174,6 +174,7 @@ def describe(fp):
         geometry.pop('angle', None)
         pads.append({'number': pad.number, 'position_mm': [pad.position.x / 1e6, pad.position.y / 1e6],
                      'uuid': pad.id.value, 'net': str(pad.proto.net),
+                     'rotation_deg': math.remainder(pad.proto.pad_stack.angle.value_degrees, 360),
                      'geometry': geometry,
                      'padstack': b64encode(pad.proto.pad_stack.SerializeToString()).decode('ascii')})
     return {'ref': fp.reference_field.text.value, 'uuid': fp.id.value,
@@ -260,6 +261,11 @@ def replacement(original, target, placement):
     from kipy.board_types import Footprint3DModel, Pad, BoardText, BoardShape, Field, Zone
     from kipy.geometry import Angle, Vector2
     old, result = decode(original['proto']), decode(target['proto'])
+    mapping = placement.get('mapping')
+    if mapping is not None:
+        from part_selection_pad_mapping import validate_mapping
+        mapping = validate_mapping(mapping, [p.number for p in old.definition.pads if p.number],
+                                   [p.number for p in result.definition.pads if p.number])
     supported = (Pad, BoardText, BoardShape, Field, Zone, Footprint3DModel)
     for item in old.definition.items:
         if not isinstance(item, supported):
@@ -287,8 +293,23 @@ def replacement(original, target, placement):
     for field in existing_fields.values():
         result.definition.add_item(field)
     old_pads = {pad.number: pad for pad in old.definition.pads}
+    target_numbers = (dict(mapping['number_map']) if mapping is not None
+                      else {number:number for number in old_pads})
     for pad in result.definition.pads:
-        previous = old_pads[pad.number]
+        original_number = target_numbers.get(pad.number)
+        if original_number is None:
+            if mapping is None:
+                raise ValueError('目标封装存在未映射焊盘：' + pad.number)
+            # Extra target pads are real geometry, but have no electrical
+            # identity until the user explicitly wires them in the PCB.
+            pad.proto.id.value = str(uuid4())
+            pad.proto.net.Clear()
+            pad.proto.symbol_pin.Clear()
+            continue
+        previous = old_pads.get(original_number)
+        if previous is None:
+            raise ValueError('手动焊盘对应缺少原端子：' + original_number)
+        pad.number = original_number
         pad.proto.id.CopyFrom(previous.proto.id)
         pad.proto.net.CopyFrom(previous.proto.net)
         pad.proto.symbol_pin.CopyFrom(previous.proto.symbol_pin)
@@ -630,6 +651,11 @@ class PcbSession:
                     raise ValueError(str(exc)) from publish_error
                 except Exception as exc:
                     last_error = exc
+                    if attempt == 2 and 'actual' in locals():
+                        try:
+                            (backup_dir / 'failed-readback.json').write_text(json.dumps(actual, ensure_ascii=False), encoding='utf-8')
+                        except OSError:
+                            pass
                     if attempt < 2:
                         time.sleep(.15)
             # KiCad 10 exposes no atomic undo-stack ownership check. A generic

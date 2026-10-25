@@ -1,13 +1,13 @@
 // KiCad angles rotate counterclockwise in a canvas whose Y axis points down.
-window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabled, changed}) {
+window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabled, changed, requireMapping=false}) {
   const q = selector => root.querySelector(selector);
   const tools = document.createElement('div');
   tools.className = 'fp-adjust-tools'; tools.dataset.fpAdjust = ''; tools.hidden = true;
   const icon = name => `<svg aria-hidden="true"><use href="#toolbar-icon-${name}"></use></svg>`;
   tools.innerHTML = `<div class="fp-adjust-actions">
-    <div class="fp-adjust-modes" role="group" aria-label="立创封装操作">
-      <button type="button" data-fp-tool="move" title="拖动立创封装" aria-label="拖动立创封装" aria-pressed="true">${icon('move')}</button>
-      <button type="button" data-fp-tool="rotate" title="旋转立创封装" aria-label="旋转立创封装" aria-pressed="false">${icon('rotate-cw')}</button>
+    <div class="fp-adjust-modes" role="group" aria-label="目标封装操作">
+      <button type="button" data-fp-tool="move" title="拖动目标封装" aria-label="拖动目标封装" aria-pressed="true">${icon('move')}</button>
+      <button type="button" data-fp-tool="rotate" title="旋转目标封装" aria-label="旋转目标封装" aria-pressed="false">${icon('rotate-cw')}</button>
       <button type="button" data-fp-tool="pivot" title="设置旋转中心" aria-label="设置旋转中心" aria-pressed="false">${icon('crosshair')}</button>
     </div>
     <button type="button" data-fp-align="center" title="封装中心对齐" aria-label="封装中心对齐">${icon('scan')}<span>中心对齐</span></button>
@@ -22,11 +22,60 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
     <span data-fp-adjust-status role="status"></span>
   </div>`;
   q('.fp-compare-toolbar').after(tools);
+  const mappingPanel = document.createElement('details');
+  mappingPanel.className = 'fp-pad-mapping'; mappingPanel.hidden = true;
+  mappingPanel.innerHTML = `<summary>焊盘对应 / 手动适配</summary>
+    <label><input type="checkbox" data-fp-mapping-enabled>保存工程适配封装（原库保持不变）</label>
+    <div data-fp-mapping-fields hidden><div class="fp-mapping-head"><span>原端子</span><span>目标焊盘</span><span>参与对齐</span></div>
+    <div data-fp-mapping-rows></div><p data-fp-mapping-status role="status"></p>
+    <label data-fp-drop-label hidden><input type="checkbox" data-fp-drop-ack>明确放弃所列原端子；走线不会删除或移动，需检查连接与 DRC</label></div>`;
+  tools.after(mappingPanel);
   const numbers = document.createElement('label'); numbers.className = 'fp-marker-toggle';
   numbers.innerHTML = '<input type="checkbox" data-fp-pad-labels checked>引脚编号';
   q('.fp-compare-toolbar').append(numbers);
   let detail = null, pads = {existing:[], converted:[]}, state = {rotation_deg:0, offset_mm:[0,0]};
   let pivot = [0,0], mode = 'move', gesture = null, valid = true, active = true, initialStatus = '';
+  let mappingRows = [], mappingValid = false, dropValue = '__drop__';
+  const mappingEnabled = () => q('[data-fp-mapping-enabled]').checked && !mappingPanel.hidden;
+  function mappingPlan() {
+    return {schema:1, pairs:mappingRows.filter(row=>row.select.value && row.select.value!==dropValue).map(row=>
+      ({source:row.number,target:row.select.value,align:row.align.checked})),
+      dropped:mappingRows.filter(row=>row.select.value===dropValue).map(row=>row.number)};
+  }
+  function updateMapping() {
+    const plan=mappingPlan(), selected=plan.pairs.map(p=>p.target), a=unique(pads.existing), b=unique(pads.converted);
+    const extras=b?[...b.keys()].filter(n=>!selected.includes(n)):[];
+    const final=[...plan.pairs.map(p=>p.source),...extras];
+    mappingValid=!!a&&!!b&&plan.pairs.length+plan.dropped.length===a.size&&new Set(selected).size===selected.length&&
+      new Set(final).size===final.length&&!extras.some(n=>plan.dropped.includes(n))&&plan.pairs.some(p=>p.align);
+    q('[data-fp-mapping-fields]').hidden=!mappingEnabled();
+    q('[data-fp-drop-label]').hidden=!plan.dropped.length;
+    q('[data-fp-mapping-status]').textContent=!mappingValid?'请完成每个端子的对应或明确放弃，编号不能重复；至少选择一个对齐点':
+      `额外焊盘：${extras.join(', ')||'无'}（保留，未分配网络）${plan.dropped.length?'；放弃原端子：'+plan.dropped.join(', '):''}`;
+    mappingRows.forEach(row=>{row.align.disabled=!row.select.value||row.select.value===dropValue;});
+  }
+  function buildMapping() {
+    mappingRows=[]; const rows=q('[data-fp-mapping-rows]'); rows.replaceChildren();
+    const b=unique(pads.converted);
+    dropValue='__drop__';while(pads.converted.some(p=>p.number===dropValue))dropValue+='_';
+    for(const pad of pads.existing){
+      const row=document.createElement('div');row.className='fp-mapping-row';
+      const name=document.createElement('span');name.textContent=pad.number;
+      const select=document.createElement('select');select.setAttribute('aria-label',`原端子 ${pad.number} 对应目标焊盘`);
+      for(const [value,label] of [['','请选择'],[dropValue,'放弃此端子'],...pads.converted.map(p=>[p.number,p.number])]){
+        const option=document.createElement('option');option.value=value;option.textContent=label;select.append(option);
+      }
+      select.value=b?.has(pad.number)?pad.number:'';
+      const label=document.createElement('label'),align=document.createElement('input');align.type='checkbox';align.checked=true;
+      align.setAttribute('aria-label',`原端子 ${pad.number} 参与对齐`);label.append(align);
+      row.append(name,select,label);rows.append(row);mappingRows.push({number:pad.number,select,align});
+      select.onchange=align.onchange=()=>{q('[data-fp-drop-ack]').checked=false;updateMapping();notify();};
+    }
+    q('[data-fp-mapping-enabled]').checked=false;q('[data-fp-drop-ack]').checked=false;
+    updateMapping();
+  }
+  q('[data-fp-mapping-enabled]').onchange=()=>{updateMapping();setActive(active);notify();};
+  q('[data-fp-drop-ack]').onchange=()=>changed();
   const stage = q('[data-fp-stage=converted]');
   const axis = document.createElement('span'); axis.className = 'fp-rotation-axis'; axis.textContent = '+';
   axis.title = '旋转中心'; axis.hidden = true; stage.append(axis);
@@ -57,7 +106,9 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
   };
   function pairs() {
     const a=unique(pads.existing), b=unique(pads.converted);
-    return !a || !b ? [] : [...a].filter(([n])=>b.has(n)).map(([n,p])=>[p,transformed(b.get(n))]);
+    return !a || !b ? [] : mappingEnabled()?mappingPlan().pairs.filter(p=>p.align&&a.has(p.source)&&b.has(p.target))
+      .map(p=>[a.get(p.source),transformed(b.get(p.target))]):
+      [...a].filter(([n])=>b.has(n)).map(([n,p])=>[p,transformed(b.get(n))]);
   }
   function pointStyle(element, point) {
     const box=detail.view_box;
@@ -75,7 +126,12 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
     stack.style.transform=`translate(${state.offset_mm[0]/box[2]*100}%, ${state.offset_mm[1]/box[3]*100}%) rotate(${-state.rotation_deg}deg)`;
     for (const side of ['existing','converted']) {
       root.querySelectorAll(`[data-fp-pad-number][data-fp-side=${side}]`).forEach((label,i)=>{
-        pointStyle(label,side==='existing'?pads[side][i].position_mm:transformed(pads[side][i].position_mm));
+        const pad=pads[side][i];
+        pointStyle(label,side==='existing'?pad.position_mm:transformed(pad.position_mm));
+        const pair=side==='converted'&&mappingEnabled()?mappingPlan().pairs.find(p=>p.target===pad.number):null;
+        label.textContent=pair&&pair.source!==pad.number?`${pad.number}→${pair.source}`:pad.number;
+        label.title=side==='existing'?`原端子 ${pad.number}`:mappingEnabled()?
+          pair?`目标焊盘 ${pad.number} → 原端子 ${pair.source}`:`额外焊盘 ${pad.number}：保留，首次未分配网络`:`目标焊盘 ${pad.number}`;
       });
     }
     const origin=q('[data-fp-marker-source=converted] [data-fp-origin]');
@@ -85,11 +141,11 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
     pointStyle(axis,pivot);
     if (syncInputs) [state.offset_mm[0],state.offset_mm[1],state.rotation_deg].forEach((v,i)=>inputs[i].value=fmt(v));
     const a=unique(pads.existing), b=unique(pads.converted);
-    const compatible=a&&b&&a.size>0&&a.size===b.size&&[...a.keys()].every(n=>b.has(n));
+    const compatible=mappingEnabled()?mappingValid:a&&b&&a.size>0&&a.size===b.size&&[...a.keys()].every(n=>b.has(n));
     const errors=pairs().map(([p,t])=>Math.hypot(p[0]-t[0],p[1]-t[1]));
     const error=errors.length?Math.max(...errors):null;
     q('[data-fp-adjust-status]').textContent=!valid ? '请输入有效坐标与角度' : !compatible
-      ? `仅预览 · 本地 ${pads.existing.length} / 立创 ${pads.converted.length} 个编号焊盘不匹配，可库封装改名`
+      ? `仅预览 · 原端子 ${pads.existing.length} / 目标焊盘 ${pads.converted.length}；请设置焊盘对应`
       : `本地固定 · ${dirty()?'已手动调整 · ':''}最大偏差 ${error===null?'—':fmt(error)} mm`;
     if (detail.alignment?.ok && compatible) {
       q('[data-fp-alignment]').textContent=dirty()
@@ -97,10 +153,14 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
         : initialStatus;
       q('[data-fp-alignment]').dataset.review=String(dirty()?error>0.025:detail.alignment.requires_review===true);
     }
-    q('[data-fp-align=one]').disabled=![pads.existing,pads.converted].every(list=>list.filter(p=>p.number==='1').length===1);
+    const oneTarget=mappingEnabled()?mappingPlan().pairs.find(p=>p.source==='1')?.target:'1';
+    q('[data-fp-align=one]').disabled=!oneTarget||!a?.has('1')||!b?.has(oneTarget);
     q('[data-fp-align=direction]').disabled=pairs().length<2;
   }
   function notify(syncInputs=true) {
+    if(requireMapping&&dirty()&&!mappingEnabled()){
+      q('[data-fp-mapping-enabled]').checked=true;updateMapping();
+    }
     valid=(syncInputs||valid)&&geometryValid();
     render(syncInputs); changed();
   }
@@ -111,12 +171,13 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
   function setComparison(value) {
     clear(); detail=value;initialStatus=q('[data-fp-alignment]').textContent;
     pads={existing:entries(value.existing_pads),converted:entries(value.converted_pads)};
+    buildMapping();
     for (const side of ['existing','converted']) {
       const labels=document.createElement('div'); labels.className='fp-pad-label-stack'; labels.dataset.fpPadLabelStack=side;
       for (const pad of pads[side]) {
         const label=document.createElement('span'); label.className=`fp-pad-number fp-${side==='existing'?'local':'converted'}-color`;
         label.dataset.fpPadNumber=pad.number; label.dataset.fpSide=side;
-        label.textContent=pad.number; label.title=`${side==='existing'?'本地':'立创'}引脚 ${pad.number}`;
+        label.textContent=pad.number; label.title=`${side==='existing'?'本地':'目标'}引脚 ${pad.number}`;
         labels.append(label);
       }
       q(`[data-fp-stage=${side}]`).append(labels);
@@ -148,8 +209,11 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
       if(Math.hypot(dot,cross)<1e-12){q('[data-fp-adjust-status]').textContent='对应引脚无法确定方向，请手动旋转';return;}
       turn(state.rotation_deg+Math.atan2(cross,dot)*180/Math.PI);
     } else {
-      const a=action==='one'?pads.existing.find(p=>p.number==='1').position_mm:center(pads.existing.map(p=>p.position_mm));
-      const b=action==='one'?transformed(pads.converted.find(p=>p.number==='1').position_mm):center(pads.converted.map(p=>transformed(p.position_mm)));
+      const matched=pairs();
+      if(action==='center'&&!matched.length)return;
+      const oneTarget=mappingEnabled()?mappingPlan().pairs.find(p=>p.source==='1')?.target:'1';
+      const a=action==='one'?pads.existing.find(p=>p.number==='1').position_mm:center(matched.map(p=>p[0]));
+      const b=action==='one'?transformed(pads.converted.find(p=>p.number===oneTarget).position_mm):center(matched.map(p=>p[1]));
       const delta=a.map((v,i)=>v-b[i]);
       state.offset_mm=state.offset_mm.map((v,i)=>v+delta[i]);pivot=pivot.map((v,i)=>v+delta[i]);
     }
@@ -200,18 +264,23 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
   function clear(){
     if(gesture&&stage.hasPointerCapture(gesture.id))stage.releasePointerCapture(gesture.id);
     gesture=null;detail=null;state={rotation_deg:0,offset_mm:[0,0]};valid=true;
-    tools.hidden=true;axis.hidden=true;stage.classList.remove('fp-adjustable');
+    tools.hidden=true;mappingPanel.hidden=true;axis.hidden=true;stage.classList.remove('fp-adjustable');
     numbers.hidden=true;q('.fp-scene').classList.remove('fp-numbered-pads');
     root.querySelectorAll('[data-fp-pad-label-stack]').forEach(e=>e.remove());
     q('[data-fp-source-layers=converted]').style.transform='';
   }
   function setActive(value){
     active=value;
-    tools.hidden=!(active&&enabled&&detail&&!detail.local_only&&!detail.library_comparison&&pads.existing.length&&pads.converted.length);
+    const available=active&&enabled&&detail&&!detail.local_only&&pads.existing.length&&pads.converted.length;
+    mappingPanel.hidden=!available;
+    tools.hidden=!available;
     axis.hidden=tools.hidden;stage.classList.toggle('fp-adjustable',!tools.hidden);
   }
-  return {setComparison,clear,setActive,isValid:()=>valid&&!gesture&&geometryValid(),
+  return {setComparison,clear,setActive,isMapped:mappingEnabled,
+    isValid:()=>valid&&!gesture&&geometryValid()&&(!mappingEnabled()||(mappingValid&&(!mappingPlan().dropped.length||q('[data-fp-drop-ack]').checked))),
     choice(){
+      if(mappingEnabled())return {mapping:mappingPlan(),alignment_transform:absoluteTransform(),
+        dropped_acknowledged:q('[data-fp-drop-ack]').checked};
       if(tools.hidden||!dirty())return {};
       return {alignment_transform:absoluteTransform()};
     }};

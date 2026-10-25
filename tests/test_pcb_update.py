@@ -189,3 +189,22 @@ def test_explicit_center_preview_binds_mode_and_reports_movement(updates):
     assert result['items'][0]['center_error_mm'] <= 1e-9
     assert service.previews[result['preview_id']]['alignment'] == 'center'
     session.apply.assert_not_called()
+
+
+def test_completed_adaptation_rechecks_new_schematic_terminal_even_with_cached_geometry(updates, monkeypatch):
+    service, _, session, library = updates
+    design = service.sources.capture(['R1'])
+    record = design['records']['R1']
+    record['footprint_change']['adaptation']={'mapping':{'extras':['9']}}
+    design['terminals']={'R1':['1','2','9']}
+    original=session.snapshot.return_value['parts']['R1']
+    original['footprint']='Local:New'
+    source=service._source(['R1'],design)
+    record=deepcopy(record);record.setdefault('field_overrides',{})['footprint']='Local:New'
+    key=service._completion_key('R1',original,record,source)
+    service.completed_geometry[key]={'geometry':'same','targets':[{'path':str(library),
+        'hash':session.read_library.return_value['source_hash']}]}
+    monkeypatch.setattr('part_selection_pcb.geometry_signature', lambda part:'same')
+    with pytest.raises(ValueError, match='已有端子同号'):
+        service.preview(['R1'],'',source=design)
+    session.read_library.assert_not_called()

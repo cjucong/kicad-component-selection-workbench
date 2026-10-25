@@ -38,6 +38,19 @@ def test_pad_shape_and_size_difference_is_reported_not_rejected():
     assert result['differences'][0]['number'] == '1'
 
 
+@pytest.mark.parametrize('extra_rotation', [0,.01])
+def test_fitted_pad_orientation_handles_nm_rounding_but_reports_real_change(extra_rotation):
+    source,target=shape(),shape()
+    for a,b in zip(source['pads'],target['pads']):
+        x=b['position_mm'][0]
+        a['position_mm']=[round(x*math.cos(math.radians(37)),6),round(-x*math.sin(math.radians(37)),6)]
+        a['rotation_deg']=37+extra_rotation
+        b['rotation_deg']=0
+    result=solve_placement(source,target)
+    assert result['ok'] and result['max_error_mm']<.000001
+    assert bool(result['differences']) is bool(extra_rotation)
+
+
 @pytest.mark.parametrize('problem', ['duplicate', 'missing', 'pitch', 'coincident', 'side', 'nonfinite'])
 def test_unsafe_mapping_is_rejected(problem):
     source, target = shape(), shape()

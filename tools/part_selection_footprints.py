@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from kicad_sexpr import parse_sexpr
 from part_selection_footprint_geometry import reference_layout_difference, validate_alignment_transform
+from part_selection_pad_mapping import validate_mapping
 from part_selection_library import IMPORT_LOCK, LibraryImporter, checked_path, digest, table_text
 from part_selection_runtime import runtime_directory
 
@@ -158,6 +159,8 @@ class FootprintChoices:
             original_id = entry.get('placement', {}).get('footprint', before[ref]) if entry else before[ref]
             evidence[ref] = make_footprint_change(operation=operation, before=original_id,
                 after=result['footprint'], source=source, target=target_info)
+            if result.get('adaptation'):
+                evidence[ref]['adaptation'] = deepcopy(result['adaptation'])
         return evidence
 
     def libraries(self):
@@ -191,7 +194,7 @@ class FootprintChoices:
                     shutil.rmtree(state['work'], ignore_errors=True)
                 del self.previews[key]
 
-    def prepare_library(self, existing_ids, package=''):
+    def prepare_library(self, existing_ids, package='', *, refs=()):
         with IMPORT_LOCK:
             self._expire()
             libs = self.libraries()
@@ -214,15 +217,31 @@ class FootprintChoices:
                 except (ValueError, OSError):
                     continue
             key = uuid4().hex
+            work, board = None, None
+            baseline_ids = originals
+            if refs:
+                work = Path(tempfile.mkdtemp(prefix='library-footprint-', dir=runtime_directory(self.root)))
+                try:
+                    board, instances = self._pcb_references(refs, work)
+                    existing.extend(instances)
+                    if instances:
+                        baseline_ids = [entry['id'] for entry in instances]
+                except Exception:
+                    shutil.rmtree(work, ignore_errors=True)
+                    raise
             self.previews[key] = {
-                'kind': 'library', 'time': time.monotonic(), 'work': None,
+                'kind': 'library', 'time': time.monotonic(), 'work': work, 'board': board,
                 'catalog': catalog, 'existing': existing, 'original_ids': originals,
+                'baseline_ids': baseline_ids,
                 'tables': {n: (self.root / n).read_bytes() if (self.root / n).exists() else None
                            for n in ('fp-lib-table', 'sym-lib-table')},
             }
             default = next((i for i in originals if i in catalog), '')
             return {'ok': True, 'kind': 'library', 'preview_id': key, 'libraries': list(libs),
                     'original_ids': originals, 'default_id': default, 'package': package,
+                    'default_library': next((i.split(':')[0] for i in originals if ':' in i), next(iter(libs), '')),
+                    'suggested_name': '', 'baseline_ids': baseline_ids,
+                    'default_reference_id': baseline_ids[0] if baseline_ids else default,
                     'items': [{'id': i, 'library': i.split(':', 1)[0]} for i in catalog]}
 
     def library_detail(self, preview_id, identifier, render=False):
@@ -422,6 +441,8 @@ class FootprintChoices:
                          'module': module, 'symbol': symbol, 'module_hash': digest(module), 'symbol_hash': digest(symbol),
                          'existing': existing, 'original_ids': list(existing_ids), 'baseline_ids':baseline_ids,
                          'alignment_ids':alignment_ids,'board':board_state,'compatible': compatible, 'info': info,
+                         'reference_numbers': originals[0]['numbers'] if originals else [],
+                         'target_numbers': info['numbers'],
                          'tables': {n: (self.root / n).read_bytes() if (self.root / n).exists() else None for n in ('fp-lib-table', 'sym-lib-table')}}
                 self.previews[preview_id] = state
                 return {'ok': True, 'preview_id': preview_id, 'c_code': code, 'suggested_name': suggested,
@@ -431,21 +452,25 @@ class FootprintChoices:
                         'default_library': 'DSMU' if 'DSMU' in libs else next(iter(libs), ''),
                         'libraries': list(libs), 'existing': [{k: v for k, v in e.items() if k not in ('path', 'hash')} for e in existing],
                         'compatible': compatible, 'converted_svg': '', 'converted_info': info, 'comparison_available': True,
+                        'reference_numbers': state['reference_numbers'], 'target_numbers': state['target_numbers'],
+                        'mapping_required': not compatible,
                         'metrics': ['焊盘数量', '焊盘编号', '单焊盘尺寸', '钻孔'],
                         'warning': '' if compatible else '原封装缺失或焊盘编号不同，不能直接采用转换封装；请先人工核对。'}
         except Exception:
             shutil.rmtree(work, ignore_errors=True)
             raise
 
-    def _alignment(self, state, identifier, transform=None):
+    def _alignment(self, state, identifier, transform=None, mapping=None, target=None):
         from part_selection_footprint_geometry import align_module
         if transform is not None:
             transform = validate_alignment_transform(transform)
         entry = next((e for e in state['existing'] if e['id'] == identifier
-                      and e['id'] in state.get('alignment_ids',state['original_ids'])), None)
+                      and (mapping is not None or e['id'] in state.get('alignment_ids',state['original_ids']))), None)
         if entry is None:
             raise ValueError('请选择预览中的兼容封装作为配准基准')
         baseline_ids = state.get('baseline_ids',state['original_ids'])
+        if mapping is not None and identifier not in baseline_ids:
+            raise ValueError('手动焊盘对应必须使用该行的原实例或原绑定库作为基准')
         originals = [e for e in state['existing'] if e['id'] in baseline_ids]
         if not originals or len(originals) != len(set(baseline_ids)):
             missing = sorted(set(baseline_ids) - {e['id'] for e in originals})
@@ -455,11 +480,21 @@ class FootprintChoices:
             difference = reference_layout_difference(original['path'].read_text(encoding='utf-8-sig'), baseline)
             if difference:
                 raise ValueError(original['id'] + ' 与 ' + originals[0]['id'] + '：' + difference + '；请先拆行后分别配准')
+        module = target['path'] if target else state['module']
+        info = target if target else state['info']
+        if mapping is None and transform is not None and set(entry['numbers']) == set(info['numbers']):
+            mapping = {'schema':1, 'pairs':[{'source':n,'target':n,'align':True} for n in entry['numbers']], 'dropped':[]}
+        if mapping is not None and identifier not in baseline_ids:
+            raise ValueError('手动焊盘对应必须使用该行的原实例或原绑定库作为基准')
+        if mapping is not None:
+            mapping = validate_mapping(mapping, entry['numbers'], info['numbers'])
         cache = state.setdefault('aligned', {})
-        key = (identifier if transform is None else
-               (identifier, transform['rotation_deg'].hex(),
-                *(value.hex() for value in transform['offset_mm'])))
+        key = json.dumps([identifier, str(module), digest(module), transform, mapping], sort_keys=True)
+        if target is None and mapping is None and transform is None:
+            key = identifier
         if key not in cache:
+            if state['work'] is None:
+                state['work'] = Path(tempfile.mkdtemp(prefix='footprint-align-', dir=runtime_directory(self.root)))
             index = len(cache)
             folder = checked_path(state['work'], state['work'] / ('v' + str(index)))
             folder.mkdir()
@@ -467,18 +502,21 @@ class FootprintChoices:
             options = {'method': 'center'}
             if transform is not None:
                 options['transform'] = transform
-            result = align_module(state['module'], entry['path'], output, **options)
+            if mapping is not None:
+                options['mapping'] = mapping
+            result = align_module(module, entry['path'], output, **options)
             cache[key] = {'alignment': result, 'path': output if result.get('ok') else None,
-                          'hash': digest(output) if result.get('ok') else None, 'work': folder}
+                          'hash': digest(output) if result.get('ok') else None, 'work': folder,
+                          'mapping': mapping, 'raw_target': {'hash':digest(module), 'id': target['id'] if target else state['converted']['footprint']}}
         return cache[key], entry
 
-    def comparison(self, preview_id, identifier, target_identifier=None):
+    def comparison(self, preview_id, identifier, target_identifier=None, mapping=None):
         from part_selection_footprint_geometry import render_comparison
         with IMPORT_LOCK:
             self.context(preview_id)
             state = self.previews[preview_id]
             if target_identifier is not None:
-                if state.get('kind') != 'library' or identifier not in state['original_ids']:
+                if state.get('kind') != 'library' or identifier not in state.get('baseline_ids', state['original_ids']):
                     raise ValueError('请选择原绑定库封装作为比较基准')
                 self._verify(state)
                 reference = next((e for e in state['existing'] if e['id'] == identifier), None)
@@ -488,19 +526,28 @@ class FootprintChoices:
                     raise ValueError('请先读取工程库目标封装')
                 cache = state.setdefault('library_comparisons', {})
                 pair = (identifier, target_identifier)
+                if mapping is not None:
+                    mapping = validate_mapping(mapping, reference['numbers'], target['numbers'])
+                pair = (identifier, target_identifier, json.dumps(mapping, sort_keys=True) if mapping else '')
                 if pair not in cache:
                     if state['work'] is None:
                         state['work'] = Path(tempfile.mkdtemp(prefix='local-footprint-', dir=runtime_directory(self.root)))
                     output = state['work'] / uuid4().hex
                     output.mkdir()
                     # Compare native library coordinates without rigid alignment or publication.
-                    rendered = render_comparison(reference['path'], target['path'], output)
+                    target_path = target['path']
+                    if mapping:
+                        aligned, reference = self._alignment(state, reference['id'], mapping=mapping, target=target)
+                        if not aligned['alignment']['ok']:
+                            raise ValueError(aligned['alignment']['reason'])
+                        target_path = aligned['path']
+                    rendered = render_comparison(reference['path'], target_path, output)
                     if rendered.get('ok') is False:
                         raise ValueError('库封装比较预览失败：' + str(rendered.get('reason') or '渲染不可用'))
                     self._verify(state)
                     cache[pair] = {**rendered, 'library_comparison': True,
                                    'reference_id': identifier, 'target_id': target_identifier,
-                                   'compatible': target['compatible'],
+                                   'compatible': target['compatible'] or bool(mapping), 'mapping': mapping,
                                    'reference_numbers': reference['numbers'], 'target_numbers': target['numbers']}
                 self._verify(state)
                 return deepcopy(cache[pair])
@@ -523,7 +570,7 @@ class FootprintChoices:
             if entry is None:
                 raise ValueError('请选择预览列表中的封装')
             try:
-                aligned, entry = self._alignment(state, identifier)
+                aligned, entry = self._alignment(state, identifier, mapping=mapping)
             except ValueError as exc:
                 # Rendering never authorizes publication. Incompatible numbering
                 # or grouped layouts still need an inspectable native preview.
@@ -545,7 +592,8 @@ class FootprintChoices:
             return deepcopy({**aligned['comparison'], 'reference_id': identifier,
                              'alignment': aligned['alignment'],
                              'preview_only': not aligned['alignment'].get('ok', False),
-                             'reference_numbers': entry['numbers'], 'target_numbers': state['info']['numbers']})
+                             'reference_numbers': entry['numbers'], 'target_numbers': state['info']['numbers'],
+                             'mapping': mapping})
 
     def bind(self, preview_id, context):
         with IMPORT_LOCK:
@@ -578,8 +626,8 @@ class FootprintChoices:
     def _choice_transform(choice):
         if 'alignment_transform' not in choice:
             return None
-        if choice.get('source') != 'converted':
-            raise ValueError('alignment_transform is only valid for a converted footprint')
+        if choice.get('source') != 'converted' and not (choice.get('source') == 'existing' and choice.get('mapping')):
+            raise ValueError('alignment_transform requires converted geometry or an explicit library mapping')
         return validate_alignment_transform(choice['alignment_transform'])
 
     def changes_geometry(self, choice):
@@ -595,9 +643,16 @@ class FootprintChoices:
             originals = [e for e in state['existing'] if e['id'] in baseline_ids]
             if choice.get('source') == 'existing':
                 entry = next(e for e in state['existing'] if e['id'] == choice.get('existing_id'))
-                target = entry['path']
+                if choice.get('mapping'):
+                    reference_id = choice.get('reference_id') or baseline_ids[0]
+                    aligned, _ = self._alignment(state, reference_id, transform, mapping=choice.get('mapping'), target=entry)
+                    if not aligned['alignment'].get('ok'):
+                        raise ValueError('封装配准失败：' + aligned['alignment']['reason'])
+                    target = aligned['path']
+                else:
+                    target = entry['path']
             else:
-                aligned, _ = self._alignment(state, choice.get('existing_id'), transform)
+                aligned, _ = self._alignment(state, choice.get('existing_id'), transform, choice.get('mapping'))
                 if transform is not None and not aligned['alignment'].get('ok'):
                     raise ValueError('封装配准失败：' + str(aligned['alignment'].get('reason') or '无法可靠匹配焊盘'))
                 target = aligned['path'] or state['module']
@@ -613,7 +668,7 @@ class FootprintChoices:
         if state.get('kind') not in ('library', 'rename'):
             files += [(state['work'], state['module'], state['module_hash']),
                       (state['work'], state['symbol'], state['symbol_hash'])]
-            files += [(state['work'], value['path'], value['hash']) for value in state.get('aligned', {}).values() if value['path']]
+        files += [(state['work'], value['path'], value['hash']) for value in state.get('aligned', {}).values() if value['path']]
         for boundary, path, expected in files:
             checked_path(boundary, path)
             if not path.exists() or digest(path) != expected:
@@ -646,8 +701,19 @@ class FootprintChoices:
                     raise ValueError('请先选择并读取库封装')
                 if choice.get('acknowledged') is not True:
                     raise ValueError('请确认已核对尺寸、焊盘编号和引脚功能')
-                if not entry['compatible']:
+                if not entry['compatible'] and not choice.get('mapping'):
                     raise ValueError('焊盘编号不一致或原封装不可读取，禁止直接替换')
+                if choice.get('mapping'):
+                    mapping = validate_mapping(choice['mapping'],
+                                               next(e for e in state['existing'] if e['id'] == (choice.get('reference_id') or state.get('baseline_ids', state['original_ids'])[0]))['numbers'],
+                                               entry['numbers'])
+                    reference_id = choice.get('reference_id') or state.get('baseline_ids', state['original_ids'])[0]
+                    aligned, reference = self._alignment(state, reference_id, transform, mapping=mapping, target=entry)
+                    if not aligned['alignment'].get('ok'):
+                        raise ValueError('封装配准失败：' + str(aligned['alignment'].get('reason') or '无法可靠匹配焊盘'))
+                    if mapping['dropped'] and choice.get('dropped_acknowledged') is not True:
+                        raise ValueError('请明确确认放弃原端子：' + ', '.join(mapping['dropped']))
+                    return self._commit_mapped_library(state, choice, entry, aligned, mapping)
                 return {'footprint': entry['id'], 'reused': True}
             if choice.get('source') == 'existing' and state.get('kind') != 'rename':
                 entry = next((e for e in state['existing'] if e['id'] == choice.get('existing_id')), None)
@@ -691,12 +757,14 @@ class FootprintChoices:
                 source = baseline_text
                 if state['work'] is None:
                     state['work'] = Path(tempfile.mkdtemp(prefix='footprint-rename-', dir=runtime_directory(self.root)))
-            elif not state['compatible']:
+            elif not state['compatible'] and not choice.get('mapping'):
                 raise ValueError('焊盘编号不一致或原封装不可读取，禁止直接替换')
             else:
-                aligned, _ = self._alignment(state, choice.get('existing_id'), transform)
+                aligned, _ = self._alignment(state, choice.get('existing_id'), transform, choice.get('mapping'))
                 if not aligned['alignment'].get('ok'):
                     raise ValueError('封装配准失败：' + str(aligned['alignment'].get('reason') or '无法可靠匹配焊盘'))
+                if (aligned.get('mapping') or {}).get('dropped') and choice.get('dropped_acknowledged') is not True:
+                    raise ValueError('请明确确认放弃原端子：' + ', '.join(aligned['mapping']['dropped']))
                 source = aligned['path'].read_text(encoding='utf-8-sig')
             if choice.get('collision', 'ask') not in ('ask', 'overwrite'):
                 raise ValueError('请选择覆盖或另存新名称')
@@ -726,6 +794,12 @@ class FootprintChoices:
                 raise ValueError('Invalid target library mode')
             pretty = checked_path(self.root, pretty)
             target = checked_path(self.root, pretty / (name + '.kicad_mod'))
+            adapted = not renaming and aligned.get('mapping') is not None
+            protected_ids, protected_paths = self._adaptation_sources(state)
+            if adapted and nickname + ':' + name in protected_ids:
+                raise ValueError('工程适配须使用新名称，不能覆盖原基准封装')
+            if adapted and target.resolve() in protected_paths:
+                raise ValueError('工程适配不能通过另一个库名覆盖原基准封装')
             def equivalent(path):
                 actual = path.read_text(encoding='utf-8-sig')
                 if renaming:
@@ -826,6 +900,8 @@ class FootprintChoices:
             else:
                 result['symbol'] = symbol_lib + ':' + state['converted']['symbol'].split(':', 1)[1]
                 result['alignment'] = aligned['alignment']
+                if aligned.get('mapping') is not None:
+                    result['adaptation'] = self._adaptation(aligned)
                 reference = next(e for e in state['existing'] if e['id']==choice['existing_id'])
                 result['alignment_reference'] = {'id':reference['id'],
                     'source':reference.get('source','library'),
@@ -834,3 +910,112 @@ class FootprintChoices:
                 published.extend([symbol_path, self.root / 'sym-lib-table'])
             state.update(result=result, choice=deepcopy(choice), published={p: digest(p) for p in published}, rollback=original)
             return deepcopy(result)
+
+    def _adaptation_sources(self, state, target_entry=None):
+        baseline_ids = set(state['original_ids']) | set(state.get('baseline_ids', state['original_ids']))
+        entries = [e for e in state['existing'] if e['id'] in baseline_ids or e is target_entry]
+        ids = {e.get('placement', {}).get('footprint', e['id']) for e in entries} | baseline_ids
+        paths = {e['path'].resolve() for e in entries}
+        libraries = self.libraries()
+        for identifier in ids:
+            if ':' not in identifier:
+                continue
+            library, name = identifier.split(':', 1)
+            if library in libraries:
+                paths.add((libraries[library] / (item_name(name) + '.kicad_mod')).resolve())
+        return ids, paths
+
+    def _commit_mapped_library(self, state, choice, entry, aligned, mapping):
+        """Publish a mapped library copy; never mutate the selected source item."""
+        libs = self.libraries()
+        nickname = item_name(choice.get('target_library') or entry['id'].split(':', 1)[0])
+        name = item_name(choice.get('name') or (entry['id'].split(':', 1)[1] + '_mapped'))
+        mode = choice.get('target_mode', 'existing')
+        if mode == 'existing':
+            if nickname not in libs:
+                raise ValueError('请选择工程已注册的目标封装库')
+            pretty = libs[nickname]
+        elif mode == 'new':
+            folder = choice.get('target_folder','Libraries/DSMU')
+            if not isinstance(folder,str) or PureWindowsPath(folder).is_absolute() or Path(folder).is_absolute() or ':' in folder:
+                raise ValueError('新库目录必须是工程内的相对路径')
+            pretty = checked_path(self.root, self.root / folder / (nickname + '.pretty'))
+            if nickname in libs or pretty.exists():
+                raise ValueError('新封装库已经存在，请选择合并或更换库名')
+        else:
+            raise ValueError('库封装适配请选择合并到现有库或新建工程库')
+        target = checked_path(self.root, pretty / (name + '.kicad_mod'))
+        protected_ids, protected_paths = self._adaptation_sources(state, entry)
+        if nickname + ':' + name in protected_ids:
+            raise ValueError('工程适配须另存名称，不能覆盖原绑定封装')
+        if target.resolve() in protected_paths:
+            raise ValueError('工程适配须另存名称，不能覆盖原始目标或原基准封装')
+        if choice.get('collision', 'ask') not in ('ask','overwrite'):
+            raise ValueError('请选择覆盖或另存新名称')
+        source = aligned['path'].read_text(encoding='utf-8-sig')
+        atom = parse_sexpr(source, 'footprint').children[1]
+        source = source[:atom.start] + json.dumps(name) + source[atom.end:]
+        target_before = target.read_bytes() if target.exists() else None
+        if target_before is not None and target_before != source.encode('utf-8'):
+            offer = state.get('collision_offer')
+            identity = {k:v for k,v in choice.items() if k not in ('collision','collision_token')}
+            if not (choice.get('collision') == 'overwrite' and offer and choice.get('collision_token') == offer['token']
+                    and offer['choice'] == identity and digest(target) == offer['hash']):
+                token = uuid4().hex
+                state['collision_offer'] = {'token':token,'choice':deepcopy(identity),'hash':digest(target)}
+                return {'conflict': {'footprint':nickname + ':' + name, 'name':name, 'token':token}}
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        backup = runtime_directory(self.root) / 'part_selection_library_backups' / stamp
+        backup.mkdir(parents=True)
+        writes = {target:source.encode('utf-8')}
+        table = checked_path(self.root,self.root/'fp-lib-table')
+        updated_table = table_text(table,nickname,'${KIPRJMOD}/'+pretty.relative_to(self.root).as_posix(),'fp_lib_table').encode('utf-8')
+        if not table.exists() or table.read_bytes() != updated_table:
+            writes[table] = updated_table
+        original = {path:path.read_bytes() if path.exists() else None for path in writes}
+        for index,(path,data) in enumerate(original.items()):
+            if data is not None:
+                (backup / str(index)).write_bytes(data)
+        (backup / 'transaction.json').write_text(json.dumps({'footprint':nickname + ':' + name,
+            'mapping':mapping}, ensure_ascii=False, indent=2), encoding='utf-8')
+        self._verify(state)
+        if (target.read_bytes() if target.exists() else None) != target_before:
+            raise ValueError('目标封装发生并发变化，请重新确认')
+        touched=[]
+        try:
+            for path,data in writes.items():
+                path.parent.mkdir(parents=True,exist_ok=True)
+                if (path.read_bytes() if path.exists() else None) != original[path]:
+                    raise ValueError('文件发生并发变化，拒绝覆盖')
+                staged = state['work'] / ('publish-' + uuid4().hex)
+                staged.write_bytes(data)
+                if original[path] is None:
+                    with path.open('xb') as output:
+                        output.write(data)
+                else:
+                    os.replace(staged,path)
+                touched.append(path)
+        except Exception as exc:
+            conflicts=[]
+            for path in reversed(touched):
+                if not path.exists() or path.read_bytes()!=writes[path]:
+                    conflicts.append(str(path));continue
+                if original[path] is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original[path])
+            if conflicts:
+                raise RuntimeError('并发编辑已保留；请根据备份恢复：'+str(backup)) from exc
+            raise
+        result = {'footprint':nickname + ':' + name, 'target_path':str(target.parent.relative_to(self.root).as_posix()),
+                  'reused':False, 'overwritten':target_before is not None, 'backup':str(backup.resolve()),
+                  'adaptation':self._adaptation(aligned), 'alignment':aligned['alignment']}
+        state.update(result=result, choice=deepcopy(choice),
+                     published={path:digest(path) for path in writes}, rollback=original)
+        return deepcopy(result)
+
+    @staticmethod
+    def _adaptation(aligned):
+        return {'schema':1, 'mapping':deepcopy(aligned['mapping']),
+                'transform':{key:deepcopy(aligned['alignment'][key]) for key in ('rotation_deg', 'offset_mm')},
+                'raw_target':deepcopy(aligned['raw_target']), 'pose':'reference-local'}

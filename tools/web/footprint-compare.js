@@ -210,7 +210,8 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     let closed = false, sequence = 0, controller = null, detail = null, libraryDetail = null;
     let localOnly = options.manage === true;
     const adjustment = window.mountFootprintAdjustment?.(overlay, {
-      enabled: !options.library && !options.readonly,
+      enabled: !options.readonly,
+      requireMapping: !options.readonly,
       changed: () => { q('[data-fp-ack]').checked = false; refresh(); }
     });
     const selectedEntry = () => options.library ? preview.items.find(e => e.id === q('[data-fp-items]').value)
@@ -235,16 +236,22 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
         return;
       }
       if (options.library) {
-        q('.fp-destination').hidden = true;
+        const mapped = adjustment?.isMapped() === true;
+        q('.fp-destination').hidden = !mapped;
         q('.fp-sources').hidden = true;
-        q('.fp-apply').disabled = !libraryDetail?.compatible || !q('[data-fp-ack]').checked;
+        q('[data-fp-library-label]').hidden = mode() !== 'existing';
+        q('[data-fp-new-label]').hidden = q('[data-fp-folder-label]').hidden = mode() !== 'new';
+        q('[name=fp-mode][value=independent]').closest('label').hidden=true;
+        const library=mode()==='new'?q('[data-fp-new-library]').value.trim():q('[data-fp-library]').value;
+        q('[data-fp-final]').textContent = mapped ? '目标：'+library+':'+q('[data-fp-name]').value.trim() : '';
+        q('.fp-apply').disabled = !(mapped ? detail && adjustment.isValid() && q('[data-fp-name]').value.trim() && library : libraryDetail?.compatible) || !q('[data-fp-ack]').checked;
         q('[data-fp-reference-context]').textContent = libraryDetail
-          ? `${entry.id} · 焊盘 ${libraryDetail.pads} 个 · 编号 ${(libraryDetail.numbers || []).join(', ')}${libraryDetail.compatible ? '' : ' · 焊盘编号不匹配，不能替换'}` : '';
+          ? `${entry.id} · 焊盘 ${libraryDetail.pads} 个 · 编号 ${(libraryDetail.numbers || []).join(', ')}${libraryDetail.compatible ? '' : ' · 可通过手动适配替换'}` : '';
         return;
       }
       q('[name=fp-source][value=existing]').disabled = !entry || entry.source === 'pcb';
       q('[name=fp-source][value=rename]').disabled = !entry || !renameIds.has(entry.id);
-      q('[name=fp-source][value=converted]').disabled = localOnly || !reference;
+      q('[name=fp-source][value=converted]').disabled = localOnly || (!reference && !adjustment?.isMapped());
       q('[data-fp-reference-context]').textContent = entry?.source === 'pcb'
         ? `PCB 放置：${entry.placement.position_mm.join(', ')} mm · ${entry.placement.rotation_deg}° · ${entry.placement.back ? '背面' : '正面'}`
         : reference && !original ? '手动库基准：用于恢复旧封装位置，请确认来源正确' : '';
@@ -258,7 +265,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const acknowledged = q('[data-fp-ack]').checked && !!name && !!lib;
       q('.fp-apply').disabled = source() === 'existing' ? !entry || entry.source === 'pcb'
         : !acknowledged || (source() === 'rename' ? !entry || !renameIds.has(entry.id)
-          : localOnly || !reference || !preview.compatible || detail?.alignment?.ok !== true || adjustment?.isValid() === false);
+          : localOnly || (!adjustment?.isMapped() && (!reference || !preview.compatible || detail?.alignment?.ok !== true)) || adjustment?.isValid() === false);
     }
     function clearImages() {
       adjustment?.clear();
@@ -364,11 +371,12 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
           if (closed || token !== sequence) return;
           if (!response.ok || !data.ok) throw new Error(data.error || '无法读取库封装');
           libraryDetail = data.detail;
+          q('[data-fp-name]').value = entry.id.split(':').slice(1).join(':') + '_mapped';
           refresh();
         }
         if (cache.has(entry.id)) { displayComparison(cache.get(entry.id)); return; }
         const response = await fetch('/api/footprint_comparison', {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({preview_id:preview.preview_id, id:options.library ? preview.default_id : entry.id,
+          body:JSON.stringify({preview_id:preview.preview_id, id:options.library ? (preview.default_reference_id || preview.default_id) : entry.id,
             ...(options.library ? {target_id:entry.id} : {})}), signal:controller.signal});
         const data = await response.json();
         if (closed) return;
@@ -430,7 +438,11 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       if (options.readonly) return;
       if (q('.fp-apply').disabled) return;
       if (options.library) {
-        close({preview_id:preview.preview_id, source:'existing', existing_id:selectedEntry().id, acknowledged:true});
+        close({preview_id:preview.preview_id, source:'existing', existing_id:selectedEntry().id, acknowledged:true,
+          reference_id:preview.default_reference_id || preview.default_id,
+          ...(adjustment?.isMapped() ? {target_mode:mode(), target_library:mode()==='new'?q('[data-fp-new-library]').value.trim():q('[data-fp-library]').value,
+            target_folder:q('[data-fp-folder]').value.trim(),
+            name:q('[data-fp-name]').value.trim(), ...adjustment.choice()} : {})});
         return;
       }
       close({preview_id: preview.preview_id, source: source(), existing_id: q('[data-fp-existing]').value,
@@ -454,12 +466,15 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       ack.lastChild.textContent = '已核对尺寸、焊盘编号和引脚功能';
       const filter = () => {
         const library = q('[data-fp-filter-library]').value, text = q('[data-fp-search]').value.trim().toLowerCase();
-        const selected = q('[data-fp-items]').value || preview.default_id;
+        const previous = q('[data-fp-items]').value;
+        const selected = previous || preview.default_id;
         const items = preview.items.filter(e => (!library || e.library === library) && e.id.toLowerCase().includes(text));
         q('[data-fp-items]').innerHTML = items.map(e => `<option value="${escape(e.id)}">${escape(e.label || e.id)}</option>`).join('');
         q('[data-fp-items]').value = items.some(e => e.id === selected) ? selected : items[0]?.id || '';
-        q('[data-fp-ack]').checked = false;
-        void loadComparison();
+        if (!previous || q('[data-fp-items]').value !== previous) {
+          q('[data-fp-ack]').checked = false;
+          void loadComparison();
+        }
       };
       q('[data-fp-search]').oninput = q('[data-fp-filter-library]').onchange = filter;
       q('.fp-apply').textContent = '应用替换';

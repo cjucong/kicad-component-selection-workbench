@@ -683,7 +683,7 @@ class FootprintChoicesTest(unittest.TestCase):
         preview = self.prepare()
         transform = {'rotation_deg': 90, 'offset_mm': [1, 2]}
         calls = []
-        def align(converted, reference, output, *, method, transform=None):
+        def align(converted, reference, output, *, method, transform=None, mapping=None):
             calls.append(deepcopy(transform))
             output.write_text(module('Manual', width=.9), encoding='utf-8')
             return {'ok': True, 'method': 'manual' if transform else method,
@@ -705,6 +705,7 @@ class FootprintChoicesTest(unittest.TestCase):
             self.assertEqual(len(calls), 3, 'Commit must reuse the exact geometry-check stage')
         self.assertEqual(calls, [None, transform, slightly_different])
         self.assertEqual(result['alignment']['offset_mm'], [1, 2])
+        self.assertEqual(result['adaptation']['transform'], transform)
         self.assertTrue(result['alignment']['requires_review'])
         self.assertEqual(geometry((self.pretty/'Manual.kicad_mod').read_text()),
                          geometry(exact['path'].read_text()))
@@ -800,13 +801,16 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertFalse((self.pretty/'Tampered.kicad_mod').exists())
 
     def test_manual_transform_is_bound_into_overwrite_approval(self):
+        destination = self.pretty/'ManualCopy.kicad_mod'
+        destination.write_text(module('ManualCopy', .7112))
         preview = self.prepare()
-        choice = self.choice(preview, alignment_transform={'rotation_deg': 0, 'offset_mm': [0, 0]})
+        choice = self.choice(preview, name='ManualCopy', alignment_transform={'rotation_deg': 0, 'offset_mm': [0, 0]})
         token = self.service.commit(choice)['conflict']['token']
         changed = {**choice, 'alignment_transform': {'rotation_deg': 0, 'offset_mm': [5e-10, 0]}}
         with self.assertRaisesRegex(ValueError, '覆盖确认无效'):
             self.service.commit({**changed, 'collision': 'overwrite', 'collision_token': token})
         self.assertEqual(self.old.read_text(), module('0603', .7112))
+        self.assertEqual(destination.read_text(), module('ManualCopy', .7112))
 
 
 if __name__ == '__main__':

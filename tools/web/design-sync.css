@@ -22,6 +22,7 @@
 .design-sync-panel th:first-child { width:62px; }
 .design-sync-panel th:nth-child(2):not(:last-child) { width:105px; }
 .design-sync-panel td div + div { margin-top:5px; }
+.design-sync-panel td pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; }
 .design-geometry-info { color:#795116; font-size:12px; }
 .design-sync-confirmations { display:grid; gap:10px; margin-top:16px; }
 .design-sync-confirmations label { line-height:1.6; }

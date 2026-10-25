@@ -11,7 +11,8 @@ from uuid import uuid4
 
 from part_selection_design_source import DesignSource
 from part_selection_footprint_changes import classify_footprint_change, board_copper_hashes
-from part_selection_pcb_geometry import solve_placement
+from part_selection_pcb_geometry import solve_placement, adapted_placement, mapped_pad_changes
+from part_selection_pad_mapping import dropped_terminal_report, verify_extra_terminals
 from part_selection_pcb_session import PcbSession, replacement, encode, metadata_replacement, metadata_values, geometry_signature, geometry_matches
 from part_selection_runtime import runtime_directory
 
@@ -198,6 +199,9 @@ class PcbUpdates:
             fields = {item['name']:item['after'] for item in field_changes}
             record = deepcopy(source['records'][ref])
             record.setdefault('field_overrides', {})['footprint'] = source['targets'][ref]
+            adaptation = record.get('footprint_change', {}).get('adaptation')
+            if adaptation:
+                verify_extra_terminals(adaptation['mapping']['extras'], source['design'].get('terminals', {}).get(ref))
             change = classify_footprint_change(record, {**original, 'instance_geometry_hash':copper.get(ref),
                                                         'instance_source_hash':instance_hashes.get(ref)})
             kind = change['kind']
@@ -232,10 +236,47 @@ class PcbUpdates:
             target = libraries[key]
             if target['footprint'] != source['targets'][ref]:
                 raise ValueError('库读取返回了不同的完整封装标识，请重新预检')
-            placement = solve_placement(original, target, alignment=alignment)
+            evidence = record.get('footprint_change', {})
+            adaptation = evidence.get('adaptation')
+            if adaptation:
+                expected = evidence.get('target', {})
+                if expected.get('hash') != target['source_hash'] or Path(expected.get('path', '')).resolve() != Path(target['source_path']).resolve():
+                    raise ValueError(ref + ' 适配封装文件已变化，请重新预览')
+                first = original['footprint'] == evidence.get('before')
+                basis = evidence.get('source', {})
+                if first and basis.get('board') and basis.get('instance_source_hash') != instance_hashes.get(ref):
+                    raise ValueError(ref + ' 原 PCB 实例已变化，请重新预览手动适配')
+                if not basis.get('placement'):
+                    evidence = deepcopy(evidence)
+                    if first:
+                        path = Path(basis.get('path',''))
+                        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != basis.get('hash'):
+                            raise ValueError(ref + ' 原绑定库基准已变化，请重新预览')
+                        baseline = self.session.read_library(evidence['before'], back=original['back'])
+                        pose = solve_placement(original, baseline)
+                        if not pose['ok'] or pose.get('differences'):
+                            raise ValueError(ref + ' 当前 PCB 与原绑定库基准不一致，请重新预览')
+                    else:
+                        pose = original
+                    evidence['source']['placement'] = {k:deepcopy(pose[k]) for k in ('position_mm','rotation_deg','back')}
+                placement = adapted_placement(original, target, evidence)
+                verify_extra_terminals(placement['extras'], source['design'].get('terminals', {}).get(ref))
+                drop_report = dropped_terminal_report(snapshot['text'], ref, placement['dropped']) if first else []
+                common.update(dropped_terminals=drop_report, extra_pads=placement['extras'], manual_adaptation=True,
+                              pad_mapping=deepcopy(adaptation['mapping']['pairs']))
+            else:
+                placement = solve_placement(original, target, alignment=alignment)
             if not placement['ok']:
                 raise ValueError(ref + ' 不能原位替换：' + placement['reason'])
             prototype = self.build(original, target, placement)
+            if adaptation:
+                from part_selection_pcb_session import describe, decode
+                after = describe(decode(prototype))
+                placement.update(mapped_pad_changes(original, after, placement['mapping']))
+                if alignment == 'rigid' and placement['max_error_mm'] > .001 + 1e-12:
+                    raise ValueError(ref + ' 手动适配焊盘移动超过刚体容差 0.001 mm，请使用中心模式核对并明确接受偏移')
+                if original['footprint'] == source['targets'][ref] and not geometry_matches(original, {'proto':prototype}):
+                    raise ValueError(ref + ' 已适配 PCB 几何或位置后来发生变化，请重新预览，不能恢复旧位置')
             if original['footprint'] == source['targets'][ref] and geometry_matches(original, {'proto':prototype}):
                 kind = 'none'
                 common.update(kind='fields' if fields else 'none', needs_ack=False, reason='目标封装几何已在当前 PCB 生效')
@@ -286,6 +327,8 @@ class PcbUpdates:
                 raise ValueError('此预检已执行或结果未能确认，请检查 PCB 后重新预检，不能重复执行')
             if any(item['kind'] == 'unknown' for item in state['items']):
                 raise ValueError('封装改动类型待核对，请先明确选择封装操作')
+            if any(item.get('dropped_terminals') for item in state['items']) and state.get('drops_approved') is not True:
+                raise ValueError('请在本次预检中再次确认放弃原端子及相关网络风险')
             if not self.sources.validate(state['source']['design']):
                 raise ValueError('工作台记录或原理图已改变，请重新预检')
             for target in state['targets']:
@@ -323,11 +366,25 @@ class PcbUpdates:
             state = self.previews.get(preview_id)
             if not state or time.monotonic() - state['time'] > 600 or acknowledged is not True:
                 raise ValueError('请重新预检并明确确认更新 PCB')
+            if any(item.get('dropped_terminals') for item in state['items']) and not state.get('drops_approved'):
+                raise ValueError('请通过同步设计预检明确确认放弃端子及网络风险')
             if state.get('job_id'):
                 return jobs.status(state['job_id'])
             result = jobs.start({'operation': 'pcb-update', 'preview_id': preview_id, 'acknowledged': True})
             state['job_id'] = result['job_id']
             return result
+
+    def approve_drops(self, preview_id, acknowledgments):
+        with self.lock:
+            state = self.previews.get(preview_id)
+            if not state or time.monotonic() - state['time'] > 600 or state['started']:
+                raise ValueError('端子放弃确认已失效，请重新预检')
+            drops = [p for item in state['items'] for p in item.get('dropped_terminals', [])]
+            if drops and acknowledgments.get('dropped_terminals') is not True:
+                raise ValueError('请明确确认放弃原端子')
+            if any(p.get('net_assigned') for p in drops) and acknowledgments.get('connected_terminals') is not True:
+                raise ValueError('放弃已分配网络的端子需要再次确认')
+            state['drops_approved'] = True
 
     def job_id(self, preview_id):
         with self.lock:
@@ -369,7 +426,15 @@ class PcbUpdates:
                 selected = work / 'target.kicad_mod'
                 selected.write_text(source, encoding='utf-8')
                 aligned = work / 'aligned.kicad_mod'
-                result = align_module(selected, Path(records[0]['path']), aligned, method=state['alignment'])
+                item = next(item for item in state['items'] if item['ref'] == ref)
+                if item.get('manual_adaptation'):
+                    # The approved transform is already baked into the module.
+                    # A second fit would hide exactly the movement being reviewed.
+                    aligned.write_bytes(selected.read_bytes())
+                    result = {'ok':True,'method':'manual','rotation_deg':0.0,'offset_mm':[0.0,0.0],
+                              'max_error_mm':item['max_error_mm']}
+                else:
+                    result = align_module(selected, Path(records[0]['path']), aligned, method=state['alignment'])
                 if not result.get('ok'):
                     raise ValueError('比较配准失败：' + str(result.get('reason')))
                 rendered = render_comparison(Path(records[0]['path']), aligned, work / 'svg')

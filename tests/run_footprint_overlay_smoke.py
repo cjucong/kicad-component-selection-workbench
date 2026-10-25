@@ -56,6 +56,92 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='pad-mapping') {
+   for(const library of [false,true]) {
+    await page.evaluate(library=>{
+     window.mappingSample=window.sample;
+     window.sample=id=>({...mappingSample(id),alignment:{ok:false,rotation_deg:0,offset_mm:[0,0],reason:'different pad sets'},
+      existing_pads:Array.from({length:10},(_,i)=>({number:String(i+1),position_mm:[i-4,0]})),
+      converted_pads:Array.from({length:8},(_,i)=>({number:String(i+1),position_mm:[i-4,0]}))});
+     preview.compatible=false;library?openLibrary('library'):openComparison();
+    },library);
+    await page.locator('[data-fp-adjust]').waitFor();
+    await page.locator('.fp-pad-mapping summary').click();
+    await page.locator('[data-fp-mapping-enabled]').check();
+    assert.equal(await page.getByLabel('原端子 9 对应目标焊盘',{exact:true}).inputValue(),'','unmatched originals never silently drop');
+    await page.locator('[data-fp-ack]').check();
+    assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+    for(const n of [9,10])await page.getByLabel(`原端子 ${n} 对应目标焊盘`,{exact:true}).selectOption('__drop__');
+    await page.locator('[data-fp-ack]').check();
+    assert.equal(await page.locator('.fp-apply').isEnabled(),false,'dropping needs separate consent');
+    await page.locator('[data-fp-drop-ack]').check();
+    await page.getByLabel('原端子 8 参与对齐',{exact:true}).uncheck();
+    await page.locator('[data-fp-drop-ack]').check();
+    await page.getByLabel('立创 X 偏移 mm',{exact:true}).fill('0.75');
+    if(library){
+     await page.locator('[data-fp-name]').fill('MappedCopy');
+     const callsBefore=await page.evaluate(()=>calls.length);
+     await page.getByLabel('搜索封装名称',{exact:true}).fill('Local:');
+     assert.equal(await page.evaluate(()=>calls.length),callsBefore,'filtering without changing target keeps the loaded draft');
+     assert.equal(await page.locator('[data-fp-name]').inputValue(),'MappedCopy');
+     assert.equal(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue(),'0.75');
+     assert.equal(await page.getByLabel('原端子 9 对应目标焊盘',{exact:true}).inputValue(),'__drop__');
+     for(const width of [1440,390]) {
+      await page.setViewportSize({width,height:1000});
+      const destination=await page.locator('.fp-destination').boundingBox();
+      const input=await page.locator('[data-fp-name]').boundingBox();
+      assert.ok(input.width>=140,'adapted footprint name input must remain usable: '+input.width);
+      assert.ok(input.x+input.width<=destination.x+destination.width+1);
+     }
+     await page.setViewportSize({width:1440,height:1000});
+    }
+    await page.locator('[data-fp-ack]').check();
+    await page.locator('.fp-apply').click();
+    await page.waitForFunction(()=>window.result!==undefined);
+    const mapped=await page.evaluate(()=>window.result);
+    assert.equal(mapped.source,library?'existing':'converted');
+    assert.deepEqual(mapped.mapping.dropped,['9','10']);
+    assert.equal(mapped.mapping.pairs.find(p=>p.source==='8').align,false,'alignment exclusion still maps electrical identity');
+    assert.deepEqual(mapped.alignment_transform.offset_mm,[0.75,0]);
+    assert.equal(mapped.dropped_acknowledged,true);
+    await page.evaluate(()=>{sample=mappingSample;preview.compatible=true;});
+   }
+   await page.evaluate(()=>{
+    window.mappingSample=window.sample;
+    window.sample=id=>({...mappingSample(id),alignment:{ok:false,rotation_deg:0,offset_mm:[0,0],reason:'different pad sets'},
+     existing_pads:Array.from({length:8},(_,i)=>({number:String(i+1),position_mm:[i-4,0]})),
+     converted_pads:Array.from({length:10},(_,i)=>({number:String(i+1),position_mm:[i-4,0]}))});
+    preview.compatible=false;openComparison();
+   });
+   await page.locator('[data-fp-adjust]').waitFor();
+   await page.locator('.fp-pad-mapping summary').click();await page.locator('[data-fp-mapping-enabled]').check();
+   assert.match(await page.locator('[data-fp-mapping-status]').innerText(),/9, 10.*未分配网络/);
+   await page.locator('[data-fp-ack]').check();assert.equal(await page.locator('.fp-apply').isEnabled(),true);
+   await page.getByLabel('原端子 1 对应目标焊盘',{exact:true}).selectOption('2');
+   await page.locator('[data-fp-ack]').check();assert.equal(await page.locator('.fp-apply').isEnabled(),false,'many to one rejects');
+   await page.getByLabel('原端子 2 对应目标焊盘',{exact:true}).selectOption('1');
+   assert.equal(await page.locator('[data-fp-side=converted][data-fp-pad-number="2"]').innerText(),'2→1');
+   await page.locator('[data-fp-ack]').check();await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.deepEqual(await page.evaluate(()=>result.mapping.pairs[0]),{source:'1',target:'2',align:true});
+   await page.evaluate(()=>{sample=mappingSample;preview.compatible=true;});
+   await page.setViewportSize({width:800,height:640});
+   await page.evaluate(()=>{
+    document.documentElement.classList.add('native-utility-page');
+    window.openFootprintManager({load:async()=>({...structuredClone(preview),kind:'library',default_id:'Local:A',
+      items:preview.existing.slice(0,2).map(e=>({...e,library:'Local'}))})});
+   });
+   const libraryPane=page.locator('[data-fp-page=library]');
+   await libraryPane.locator('.fp-pad-mapping summary').click();
+   await libraryPane.locator('[data-fp-mapping-enabled]').check();
+   const stage=libraryPane.locator('[data-fp-stage=converted]');
+   await stage.scrollIntoViewIfNeeded();
+   assert.equal(await stage.evaluate(e=>{const r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,
+    'native library preview remains reachable for dragging below the mapping editor');
+   await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));
+   await page.evaluate(()=>document.documentElement.classList.remove('native-utility-page'));
+   await page.setViewportSize({width:1440,height:1000});
+  }
   if(check==='all'||check==='native-layout') {
    await page.evaluate(()=>{
     document.documentElement.classList.add('native-utility-page');
@@ -104,12 +190,12 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    await page.getByRole('button',{name:'设置旋转中心',exact:true}).click();
    const pivotBounds=await canvas.boundingBox();
    await page.mouse.click(pivotBounds.x+pivotBounds.width*.6,pivotBounds.y+pivotBounds.height/2);
-   assert.equal(await page.getByRole('button',{name:'旋转立创封装',exact:true}).getAttribute('aria-pressed'),'true');
+   assert.equal(await page.getByRole('button',{name:'旋转目标封装',exact:true}).getAttribute('aria-pressed'),'true');
    await page.getByLabel('立创旋转角度',{exact:true}).fill('90');
    assert.ok(Math.abs(Number(await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue())-1)<0.01,'rotation around a user pivot moves the origin: '+await page.getByLabel('立创 X 偏移 mm',{exact:true}).inputValue());
    assert.ok(Math.abs(Number(await page.getByLabel('立创 Y 偏移 mm',{exact:true}).inputValue())-1)<0.01);
    await page.getByRole('button',{name:'重置手动调整',exact:true}).click();
-   await page.getByRole('button',{name:'旋转立创封装',exact:true}).click();
+   await page.getByRole('button',{name:'旋转目标封装',exact:true}).click();
    const rotationBounds=await canvas.boundingBox();
    await page.mouse.move(rotationBounds.x+rotationBounds.width*.6,rotationBounds.y+rotationBounds.height/2);await page.mouse.down();
    await page.mouse.move(rotationBounds.x+rotationBounds.width/2,rotationBounds.y+rotationBounds.height*.7,{steps:8});await page.mouse.up();
@@ -128,6 +214,7 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    const result=await page.evaluate(()=>result);
    assert.equal(result.alignment_transform.rotation_deg,90);
    assert.deepEqual(result.alignment_transform.offset_mm,[2.25,1.5],'persist the composed raw-to-reference transform');
+   assert.equal(result.mapping.pairs.length,2,'compatible converted manual gestures retain durable adaptation evidence');
    await page.evaluate(()=>openComparison());await page.locator('[data-fp-adjust]').waitFor();
    await page.getByRole('button',{name:'设置旋转中心',exact:true}).click();
    const customPivot=await canvas.boundingBox();
@@ -197,7 +284,7 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    await page.locator('[data-fp-ack]').check();
    assert.equal(await page.locator('.fp-apply').isEnabled(),false,'composed absolute offset also respects backend bounds');
    await page.getByRole('button',{name:'重置手动调整',exact:true}).click();
-   await page.getByRole('button',{name:'拖动立创封装',exact:true}).click();
+   await page.getByRole('button',{name:'拖动目标封装',exact:true}).click();
    await page.mouse.move(safetyBounds.x+safetyBounds.width/2,safetyBounds.y+safetyBounds.height/2);await page.mouse.down();
    await page.mouse.move(safetyBounds.x+safetyBounds.width*.6,safetyBounds.y+safetyBounds.height/2);
    await safetyCanvas.evaluate(e=>e.releasePointerCapture(1));await page.mouse.up();

@@ -14,8 +14,10 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 from kicad_sexpr import parse_sexpr
+from part_selection_pad_mapping import adapt_numbers, validate_mapping
 
 
 _TOLERANCE = 0.025
@@ -145,6 +147,59 @@ def estimate_alignment(converted_source: str, reference_source: str, *, method='
         return _failure(f'Invalid footprint geometry: {exc}')
 
 
+def estimate_mapped_alignment(converted_source: str, reference_source: str, mapping: dict, *, method='center') -> dict:
+    """Estimate a transform from an explicitly selected subset of pad pairs.
+
+    The target may contain extra pads and the original may contain explicitly
+    dropped pads.  Only ``alignment_pairs`` determine the pose; the transform
+    is applied to the complete target footprint afterwards.
+    """
+    try:
+        if method not in ('rigid','center'):
+            return _failure('Unknown alignment method')
+        converted = _pad_positions(_parse_module(converted_source))
+        reference = _pad_positions(_parse_module(reference_source))
+        pairs = mapping.get('alignment_pairs')
+        if not pairs:
+            return _failure('至少选择一个参与对齐的焊盘')
+        points = [converted[target] for source, target in pairs]
+        targets = [reference[source] for source, target in pairs]
+        count = len(points)
+        cx, cy = (math.fsum(p[axis] for p in points) / count for axis in (0, 1))
+        rx, ry = (math.fsum(p[axis] for p in targets) / count for axis in (0, 1))
+        p = [(x-cx, y-cy) for x,y in points]
+        q = [(x-rx, y-ry) for x,y in targets]
+        if count > 1:
+            dot = math.fsum(x*u+y*v for (x,y),(u,v) in zip(p,q))
+            cross = math.fsum(y*u-x*v for (x,y),(u,v) in zip(p,q))
+            if math.hypot(dot, cross) < 1e-12:
+                return _failure('对应焊盘无法确定方向')
+            angle = math.atan2(cross, dot)
+        else:
+            angle = 0.0
+        c, s = math.cos(angle), math.sin(angle)
+        rotated = [(c*x+s*y, -s*x+c*y) for x,y in points]
+        if method == 'center':
+            def center(values):
+                return [(min(v[i] for v in values)+max(v[i] for v in values))/2 for i in (0,1)]
+            a, b = center(rotated), center(targets)
+            dx, dy = b[0]-a[0], b[1]-a[1]
+        else:
+            dx, dy = rx-c*cx-s*cy, ry+s*cx-c*cy
+        error = max(math.hypot(c*x+s*y+dx-u, -s*x+c*y+dy-v)
+                    for (x,y),(u,v) in zip(points,targets))
+        matches = error <= _TOLERANCE + 1e-12
+        return {'ok': matches or method == 'center', 'rotation_deg': math.degrees(angle),
+                'offset_mm': [dx,dy], 'max_error_mm': error, 'method': method,
+                'requires_review': not matches,
+                'mapping': {'alignment_pairs': [list(pair) for pair in pairs]},
+                'reason': '手动焊盘对应已配准，请检查未参与对齐的焊盘' if method == 'center' else
+                          '手动焊盘对应满足刚体对齐' if matches else
+                          '手动焊盘对应的间距超过刚体容差'}
+    except (ValueError, TypeError, OverflowError, KeyError) as exc:
+        return _failure(f'Invalid mapped footprint geometry: {exc}')
+
+
 def validate_alignment_transform(transform):
     """Copy a bounded, absolute raw-converted-to-reference KiCad transform."""
     if not isinstance(transform, dict) or set(transform) != {'rotation_deg', 'offset_mm'}:
@@ -245,7 +300,7 @@ def _outside_project(path):
             raise ValueError('Geometry work/output must be outside a KiCad project')
 
 
-def align_module(converted: Path, reference: Path, output: Path, *, method='rigid', transform=None) -> dict:
+def align_module(converted: Path, reference: Path, output: Path, *, method='rigid', transform=None, mapping=None) -> dict:
     """Write a staging library module using pcbnew, or copy identity bytes.
 
     Inputs are never overwritten. Nonidentity inputs are conservatively
@@ -261,11 +316,34 @@ def align_module(converted: Path, reference: Path, output: Path, *, method='rigi
         _outside_project(output)
         raw = converted.read_bytes()
         source = raw.decode('utf-8-sig')
+        original_source = source
         target = reference.read_text(encoding='utf-8-sig')
+        if mapping is not None:
+            mapping = validate_mapping(mapping, list(_pad_positions(_parse_module(target))),
+                                       list(_pad_positions(_parse_module(source))))
+            source = adapt_numbers(source, mapping)
+            raw = source.encode('utf-8')
         _validate_supported(source, allow_models=True)
         _validate_supported(target, allow_models=True)
-        result = (estimate_alignment(source, target, method=method) if transform is None
-                  else manual_alignment(source, target, transform))
+        if mapping is not None:
+            result = estimate_mapped_alignment(original_source, target, mapping, method=method)
+            if transform is not None:
+                transform = validate_alignment_transform(transform)
+                angle = math.radians(transform['rotation_deg'])
+                c, s = math.cos(angle), math.sin(angle)
+                errors = []
+                converted_positions = _pad_positions(_parse_module(original_source))
+                reference_positions = _pad_positions(_parse_module(target))
+                for source_number, target_number in mapping['alignment_pairs']:
+                    x, y = converted_positions[target_number]
+                    u, v = reference_positions[source_number]
+                    errors.append(math.hypot(c*x+s*y+transform['offset_mm'][0]-u,
+                                             -s*x+c*y+transform['offset_mm'][1]-v))
+                result = {**result, **transform, 'method': 'manual',
+                          'max_error_mm': max(errors), 'requires_review': max(errors) > _TOLERANCE}
+        else:
+            result = (estimate_alignment(source, target, method=method) if transform is None
+                      else manual_alignment(source, target, transform))
         if not result['ok']:
             return result
         identity = abs(result['rotation_deg']) < 1e-9 and max(map(abs,result['offset_mm'])) < 1e-9
@@ -274,7 +352,9 @@ def align_module(converted: Path, reference: Path, output: Path, *, method='rigi
             output.write_bytes(raw)
         else:
             _validate_supported(source)
-            _run_worker({'operation': 'align', 'converted': str(converted.resolve()),
+            mapped = output.parent / ('mapped-' + uuid4().hex + '.kicad_mod')
+            mapped.write_bytes(raw)
+            _run_worker({'operation': 'align', 'converted': str(mapped.resolve()),
                          'output': str(output.resolve()), 'rotation_deg': result['rotation_deg'],
                          'offset_mm': result['offset_mm']})
         return result

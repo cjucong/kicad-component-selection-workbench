@@ -2255,12 +2255,14 @@ class PartSelectionApp:
                 return {**result, "library": library}
         mode = payload.get("mode", "library")
         if mode == "library":
-            preview = self.footprint_choices.prepare_library(ids, package)
+            preview = self.footprint_choices.prepare_library(ids, package, refs=refs)
             state = self.footprint_choices.previews[preview["preview_id"]]
             preview.update(c_code=code, suggested_name=ids[0].split(":")[-1] if ids else "",
                 default_library=next((i.split(":")[0] for i in ids if ":" in i), ""),
                 existing=[{k:v for k,v in entry.items() if k not in ("path", "hash")} for entry in state["existing"]],
-                alignment_ids=ids, default_reference_id=preview["default_id"], compatible=False)
+                alignment_ids=state.get("baseline_ids", ids), default_reference_id=(state.get("baseline_ids") or [preview["default_id"]])[0],
+                compatible=False, reference_numbers=(next((e['numbers'] for e in state['existing'] if e['id'] in state.get('baseline_ids', ids)), [])),
+                mapping_required=False)
         elif mode == "rename":
             preview = self.footprint_choices.prepare_rename(ids, package, code=code, refs=refs)
         elif mode == "convert":
@@ -2304,7 +2306,7 @@ class PartSelectionApp:
                 actual = self.read_schematic_fields(self.config["schematic_dir"], refs, ("footprint",))
                 ids = list(dict.fromkeys(actual.get(ref, {}).get("footprint", "") for ref in refs))
                 if mode == "library":
-                    preview = self.footprint_choices.prepare_library(ids, str(item.get("package") or ""))
+                    preview = self.footprint_choices.prepare_library(ids, str(item.get("package") or ""), refs=refs)
                 elif mode == "rename":
                     preview = self.footprint_choices.prepare_rename(ids, str(item.get("package") or ""), code=code, refs=refs)
                 else:
@@ -3928,8 +3930,9 @@ def make_handler(app: PartSelectionApp):
                         render=payload.get("render") is True)})
                     return
                 if parsed.path == "/api/footprint_comparison":
+                    options = {"mapping": payload["mapping"]} if payload.get("mapping") is not None else {}
                     json_response(self, {"ok": True, "detail": app.footprint_choices.comparison(
-                        payload.get("preview_id"), payload.get("id"), payload.get("target_id"))})
+                        payload.get("preview_id"), payload.get("id"), payload.get("target_id"), **options)})
                     return
                 if parsed.path == "/api/adopt_schematic_fields":
                     json_response(self, app.adopt_schematic_fields(payload))

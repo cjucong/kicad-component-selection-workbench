@@ -28,14 +28,14 @@ def symbol_pins(definition):
         pin for unit in definition.children_named('symbol') for pin in symbol_pins(unit)]
 
 
-def validate_netlist(text, parts):
+def validate_netlist(text, parts, *, prefix='/'):
     netlist = parse_sexpr(text, 'export')
     actual = {(node.child('ref').arg(), node.child('pin').arg()): net.child('name').arg()
               for net in netlist.child('nets').children_named('net')
               for node in net.children_named('node')}
     for item in parts:
         for number in item['pin_numbers']:
-            expected = '/' + item['ref'] + '_' + number
+            expected = prefix + item['ref'] + '_' + number
             assert actual.get((item['ref'], number)) == expected, (item['ref'], number, 'fixture net', actual)
 
 

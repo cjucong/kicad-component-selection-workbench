@@ -34,6 +34,7 @@ CORE_FILES = (
     "part_selection_pcb_connection.py",
     "part_selection_tool_windows.py", "web/tool-desktop.js",
     "part_selection_footprint_changes.py",
+    "part_selection_pad_mapping.py",
     "web/row-filters.js", "web/row-filters.css",
     "part_selection_specs.py", "web/spec-warnings.js", "web/spec-warnings.css",
     "web/value-parameters.js", "web/value-parameters.css",

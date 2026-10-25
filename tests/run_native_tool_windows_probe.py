@@ -7,6 +7,7 @@ import threading
 import time
 import traceback
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 from http.server import ThreadingHTTPServer
 
@@ -24,7 +25,8 @@ def wait(window, expression, timeout=25):
         if window.evaluate_js(expression) is True:
             return
         time.sleep(.1)
-    raise AssertionError('Native page did not become ready: ' + expression)
+    raise AssertionError('Native page did not become ready: ' + expression + '\n' +
+                         str(window.evaluate_js('document.body.innerText')).strip()[-6000:])
 
 
 def capture(window, path):
@@ -55,10 +57,67 @@ def check_native_edit_settings(window):
     assert getattr(window, '_workbench_edit_menu', None), 'Edit menu handler is not installed'
 
 
+def check_native_mapping(app, tools, report):
+    from part_selection_overrides import load_overrides
+    originals = {path:path.read_bytes() for path in (app.project_root/'Local.pretty').glob('*.kicad_mod')}
+    app.save_override({'refs':'R2','stock_c_code':'C101'})
+
+    def convert(importer, code, progress=None):
+        folder = importer.root/'Libraries'/'DSMU'/'LCSC'/code
+        pretty = folder/f'LCSC_{code}.pretty'
+        pretty.mkdir(parents=True)
+        text = module('Converted').replace('(pad "1"', '(pad "A1"').replace('(pad "2"', '(pad "A2"')
+        (pretty/'Converted.kicad_mod').write_text(text,encoding='utf-8')
+        (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (version 20241209) '
+            f'(generator test) (symbol "Part" (property "Footprint" "LCSC_{code}:Converted")))',encoding='utf-8')
+        return {'footprint':f'LCSC_{code}:Converted','symbol':f'LCSC_{code}:Part','c_code':code}
+
+    for source in ('library','convert'):
+        with patch('part_selection_footprints.LibraryImporter.convert',autospec=True,side_effect=convert):
+            response = tools.main_action('open',{'kind':'footprint','request_id':uuid4().hex,
+                'payload':{'refs':'R2','bom':'__schematic__'}})
+            assert response['ok'], response
+            entries = [e for e in tools.entries.values() if e['kind']=='footprint' and not e['closed']]
+            assert len(entries)==1
+            child = entries[0]['window']
+            wait(child,'!!document.querySelector("[data-fp-tab=convert]")')
+            child.evaluate_js(f'document.querySelector("[data-fp-tab={source}]").click(); true')
+            page = f'[data-fp-page={source}] '
+            if source == 'library':
+                wait(child,"[...document.querySelectorAll('[data-fp-items] option')].some(o=>o.value==='Local:Other')")
+                child.evaluate_js('const s=document.querySelector("[data-fp-items]"); s.value="Local:Other"; s.dispatchEvent(new Event("change",{bubbles:true})); true')
+            wait(child,f'!!document.querySelector("{page}[data-fp-adjust]:not([hidden])")')
+            child.evaluate_js(f'const p=document.querySelector("{page}.fp-pad-mapping"); p.open=true; p.querySelector("[data-fp-mapping-enabled]").click(); true')
+            targets = ('2','1') if source == 'library' else ('A1','A2')
+            for number, target in enumerate(targets,1):
+                child.evaluate_js('const s=document.querySelector('+json.dumps(page+f'[aria-label="原端子 {number} 对应目标焊盘"]')+'); '
+                    f's.value={json.dumps(target)}; s.dispatchEvent(new Event("change",{{bubbles:true}})); true')
+            child.evaluate_js(f'const n=document.querySelector("{page}[data-fp-name]"); n.value="NativeMapped_{source}"; '
+                'n.dispatchEvent(new Event("input",{bubbles:true})); true')
+            child.evaluate_js(f'const x=document.querySelector("{page}[data-fp-dx]"); x.value="0.1"; '
+                'x.dispatchEvent(new Event("input",{bubbles:true})); true')
+            child.evaluate_js(f'document.querySelector("{page}[data-fp-ack]").click(); true')
+            wait(child,f'document.querySelector("{page}.fp-apply").disabled===false')
+            capture(child,report/f'mapping-{source}-native.png')
+            assert child.evaluate_js(f'const e=document.querySelector("{page}[data-fp-stage=converted]"); '
+                'e.scrollIntoView({block:"center"}); const r=e.getBoundingClientRect(); '
+                'e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))'), 'Mapping editor hides native preview'
+            child.evaluate_js(f'document.querySelector("{page}.fp-apply").click(); true')
+            for _ in range(250):
+                if entries[0]['closed']: break
+                time.sleep(.1)
+            assert entries[0]['closed'], source+' mapping did not save/close'
+            record = load_overrides(app.overrides_path)['R2']
+            assert record['field_overrides']['footprint']==f'Local:NativeMapped_{source}', record
+            assert record['stock_c_code']=='C101'
+            assert (app.project_root/'Local.pretty'/f'NativeMapped_{source}.kicad_mod').is_file()
+    assert all(path.read_bytes()==data for path,data in originals.items()), 'Original library entries changed'
+
+
 def run(report):
     import webview
     result = {'passed':False,'checks':{},'timings_ms':{}}
-    with temporary_project(prefix='native-tools-') as directory:
+    with temporary_project(prefix='native-tools-', short_paths=True) as directory:
         root = Path(directory)
         pretty = root/'Local.pretty'
         pretty.mkdir()
@@ -226,6 +285,8 @@ def run(report):
                 wait(main,'window.nativeUpdateProbe?.ok === true')
                 assert lifecycle.update_busy is False
                 result['checks']['native_update_network_does_not_block_tools']=True
+                check_native_mapping(app,tools,report)
+                result['checks']['native_mapping_both_sources_and_project_copy']=True
                 tools.check_exit(); tools.cancel_exit()
                 for ref in ('R1','R2'):
                     assert tools.main_action('open',{'kind':'footprint','request_id':uuid4().hex,

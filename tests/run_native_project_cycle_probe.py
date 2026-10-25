@@ -261,18 +261,18 @@ def run(report):
                 expected=(math.cos(angle)*x+math.sin(angle)*y+.75,-math.sin(angle)*x+math.cos(angle)*y-1.25)
                 assert math.dist(manual_pads[number],expected)<=.000002,(number,manual_pads[number],expected)
             manual_before=session.snapshot(root,['R1'])
-            preview=app.design_sync.preview({'refs':['R1'],'destination':'both','alignment':'rigid'})
+            preview=app.design_sync.preview({'refs':['R1'],'destination':'both','alignment':'center'})
             state=finished(app.design_sync,app.design_sync.start(preview['preview_id'],{}))
             assert state['stage']=='awaiting_pcb_confirmation',state
             token=state['pcb_preview']['preview_id']
             replacements=app.pcb_updates.previews[token]['replacements']
-            done=finished(app.design_sync,app.design_sync.continue_pcb(state['job_id'],token,{'geometry':True}))
+            done=finished(app.design_sync,app.design_sync.continue_pcb(state['job_id'],token,{'geometry':True,'pad_movement':True}))
             assert done['stage']=='complete' and done['result']['saved'],done
             from run_native_pcb_in_place_probe import check_replacement
             from part_selection_pcb_session import outside_parts
             manual_after=session.snapshot(root,['R1'])
             check_replacement(decode(manual_before['parts']['R1']['proto']),decode(manual_after['parts']['R1']['proto']),
-                              decode(replacements[0]['proto']),persisted=True)
+                              decode(replacements[0]['proto']),persisted=True,allow_pad_motion=True)
             selected={manual_before['parts']['R1']['uuid']}
             assert outside_parts(manual_before['text'],selected)==outside_parts(manual_after['text'],selected)
             results['checks']['manual_transform_published_schematic_pcb_saved_reopened']=True

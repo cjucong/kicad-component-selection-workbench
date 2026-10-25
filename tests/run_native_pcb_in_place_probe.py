@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 
-def native_build(root):
+def native_build(root, *, manual_mapping=False):
     import pcbnew as p
     root = Path(root)
     board = p.BOARD()
@@ -32,11 +32,14 @@ def native_build(root):
     directory = root / 'Local.pretty'
     directory.mkdir()
     sheet, new_root, top_sheet, out_sheet = (str(uuid4()) for _ in range(4))
-    symbols, definitions, defined = [], [], set()
+    symbols, definitions, defined, labels = [], [], set(), []
     from kicad_sexpr import parse_sexpr
-    for ref, angle, back, count in [('R1', 37, False, 2), ('R2', -25, False, 2), ('U1', 90, True, 4)]:
-        def raw(name, size):
-            pad_xy = [(-1, 0), (1, 0)] if count == 2 else [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+    cases = [('R1', 37, False, 8), ('R2', -25, False, 10), ('U1', 90, True, 8), ('U2', -17, True, 10)] if manual_mapping else [('R1', 37, False, 2), ('R2', -25, False, 2), ('U1', 90, True, 4)]
+    for index, (ref, angle, back, count) in enumerate(cases):
+        def raw(name, size, pad_count=count):
+            pad_xy = ([(-1, 0), (1, 0)] if pad_count == 2 else
+                      [(-1, -1), (1, -1), (1, 1), (-1, 1)] if pad_count == 4 else
+                      [(i//5*8-4, (i%5-2)*2.5) for i in range(pad_count)])
             pads = ''.join(f'(pad "{i}" smd rect (at {x} {y}) (size {size} {size}) '
                            '(layers "F.Cu" "F.Paste" "F.Mask"))'
                            for i, (x, y) in enumerate(pad_xy, 1))
@@ -53,12 +56,13 @@ def native_build(root):
         board.Add(old)
         old.SetReference(ref)
         old.SetValue('fixture value')
-        old.SetField('LCSC', 'C12345')
+        c_code = 'C12346' if manual_mapping and ref == 'U2' else 'C12345'
+        old.SetField('LCSC', c_code)
         old.SetField('LCSC_URL', 'https://so.szlcsc.com/global.html?k=C12345')
         old.SetField('Comment', 'fixture comment ' + ref)
         symbol_id = str(uuid4())
         old.SetPath(p.KIID_PATH('/' + top_sheet + '/' + out_sheet + '/' + symbol_id))
-        library_file, entry_name = ('Device', 'R') if ref.startswith('R') else ('Connector_Generic', 'Conn_01x04')
+        library_file, entry_name = ('Connector_Generic', f'Conn_01x{count:02d}') if manual_mapping else (('Device', 'R') if ref.startswith('R') else ('Connector_Generic', 'Conn_01x04'))
         library_text = (Path(p.__file__).parents[3] / 'share' / 'kicad' / 'symbols' / (library_file + '.kicad_sym')).read_text(encoding='utf-8')
         definition = next(node for node in parse_sexpr(library_text, 'kicad_symbol_lib').children_named('symbol') if node.arg() == entry_name)
         block = library_text[definition.start:definition.end]
@@ -68,13 +72,21 @@ def native_build(root):
         if lib_id not in defined:
             definitions.append(block[:start] + json.dumps(lib_id) + block[end:])
             defined.add(lib_id)
-        symbols.append(f'(symbol (lib_id "{lib_id}") (at 50 50 0) (unit 1) (in_bom yes) '
+        sx = 50 + index*40 if manual_mapping else 50
+        if manual_mapping:
+            from run_native_footprint_workflow import symbol_pins
+            for pin in symbol_pins(definition):
+                number, at = pin.child('number').arg(), pin.child('at')
+                x, y = sx+float(at.arg()), 50-float(at.arg(2))
+                labels.append(f'(global_label "{ref}_{number}" (shape input) (at {x:.6f} {y:.6f} 0) '
+                    f'(effects (font (size 1.27 1.27))) (uuid "{uuid4()}"))')
+        symbols.append(f'(symbol (lib_id "{lib_id}") (at {sx} 50 0) (unit 1) (in_bom yes) '
             f'(on_board yes) (dnp no) (uuid "{symbol_id}") '
             f'(property "Reference" "{ref}" (at 50 50 0) (effects (font (size 1.27 1.27)))) '
             '(property "Value" "fixture value" (at 50 52 0) (effects (font (size 1.27 1.27)))) '
             f'(property "Footprint" "Local:Original_{ref}" (at 50 54 0) (effects (font (size 1.27 1.27)) (hide yes))) '
             f'(property "Comment" "fixture comment {ref}" (at 50 56 0) (effects (font (size 1.27 1.27)) (hide yes))) '
-            '(property "LCSC" "C12345" (at 50 58 0) (effects (font (size 1.27 1.27)) (hide yes))) '
+            f'(property "LCSC" "{c_code}" (at 50 58 0) (effects (font (size 1.27 1.27)) (hide yes))) '
             '(property "LCSC_URL" "https://so.szlcsc.com/global.html?k=C12345" (at 50 60 0) (effects (font (size 1.27 1.27)) (hide yes))) '
             f'(instances (project "Probe" (path "/{sheet}/{top_sheet}/{out_sheet}" (reference "{ref}") (unit 1)))))')
         if back:
@@ -83,7 +95,7 @@ def native_build(root):
         old.SetPosition(p.VECTOR2I(p.FromMM(100 if ref == 'U1' else 80), p.FromMM(100 if ref == 'R2' else 80)))
         old.Reference().SetPosition(old.GetPosition() + p.VECTOR2I(p.FromMM(3), p.FromMM(5)))
         for pad in old.Pads():
-            net = p.NETINFO_ITEM(board, '/' + ref + '_' + pad.GetNumber())
+            net = p.NETINFO_ITEM(board, ('' if manual_mapping else '/') + ref + '_' + pad.GetNumber())
             board.Add(net)
             pad.SetNet(net)
             track = p.PCB_TRACK(board)
@@ -96,6 +108,10 @@ def native_build(root):
         target = raw('Standard_' + ref, .9)
         target.SetFPID(p.LIB_ID('Local', 'Standard_' + ('R1' if ref == 'R2' else ref)))
         p.PCB_IO_KICAD_SEXPR().FootprintSave(str(directory), target)
+        if manual_mapping:
+            mapped = raw('Mapped_' + ref, .9, 10 if count == 8 else 8)
+            mapped.SetFPID(p.LIB_ID('Local', 'Mapped_' + ref))
+            p.PCB_IO_KICAD_SEXPR().FootprintSave(str(directory), mapped)
         if ref != 'R2':
             centered = raw('Center_' + ref, .9)
             centered.SetFPID(p.LIB_ID('Local', 'Center_' + ref))
@@ -128,7 +144,7 @@ def native_build(root):
           (property "Sheetfile" "Parts.kicad_sch" (at 30 62 0) (effects (font (size 1.27 1.27))))
           (instances (project "Probe" (path "/{sheet}/{top_sheet}" (page "3"))))))''', encoding='utf-8')
     (root / 'Parts.kicad_sch').write_text(f'(kicad_sch (version 20250114) (generator "eeschema") '
-        f'(uuid "{uuid4()}") (paper "A4") (lib_symbols ' + ''.join(definitions) + ') ' + ''.join(symbols) + ')', encoding='utf-8')
+        f'(uuid "{uuid4()}") (paper "A4") (lib_symbols ' + ''.join(definitions) + ') ' + ''.join(symbols) + ''.join(labels) + ')', encoding='utf-8')
     (root / 'fp-lib-table').write_text('(fp_lib_table (lib (name "Local") (type "KiCad") '
         '(uri "${KIPRJMOD}/Local.pretty") (options "") (descr "")))', encoding='utf-8')
 
