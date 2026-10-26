@@ -178,10 +178,10 @@ class FootprintChoices:
         target = checked_path(self.root, self.libraries()[nickname] / (item_name(name) + '.kicad_mod'))
         target_info = {'path': str(target), 'hash': digest(target)}
         operation = 'rename' if result.get('renamed') else 'replace'
-        board_hashes = (board_copper_hashes(Path(state['board']['path']).read_text(encoding='utf-8-sig'), refs)
-                        if state.get('board') else {})
-        source_hashes = (board_copper_hashes(Path(state['board']['path']).read_text(encoding='utf-8-sig'),
-                                           refs, include_instance=True) if state.get('board') else {})
+        board_text = Path(state['board']['path']).read_text(encoding='utf-8-sig') if state.get('board') else None
+        board_hashes = board_copper_hashes(board_text, refs) if board_text is not None else {}
+        source_hashes = (board_copper_hashes(board_text, refs, include_instance=True, stroke_style='solid')
+                         if board_text is not None else {})
         entries = state['existing']
         originals = state.get('baseline_ids', state['original_ids'])
         evidence = {}

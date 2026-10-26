@@ -10,7 +10,7 @@ import time
 from uuid import uuid4
 
 from part_selection_design_source import DesignSource
-from part_selection_footprint_changes import classify_footprint_change, board_copper_hashes
+from part_selection_footprint_changes import classify_footprint_change, board_copper_hashes, board_source_hash_variants, recover_legacy_source_hashes
 from part_selection_pcb_geometry import solve_placement, adapted_placement, mapped_pad_changes
 from part_selection_pad_mapping import dropped_terminal_report, verify_extra_terminals
 from part_selection_pcb_session import PcbSession, replacement, encode, metadata_replacement, metadata_values, geometry_signature, geometry_matches
@@ -124,6 +124,7 @@ class PcbUpdates:
         self.lock = threading.RLock()
         self.previews = OrderedDict()
         self.completed_geometry = {}
+        self.legacy_source_hashes = {}
 
     def _source(self, refs, source=None):
         source = source or self.sources.capture(refs)
@@ -177,12 +178,25 @@ class PcbUpdates:
         notify('read_complete', 'PCB 实时内容和所选封装读取完成')
         notify('identity', '正在核对原理图实例与 PCB 关联')
         copper_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
-            'source', {}).get('instance_geometry_hash')]
+            'source', {}).get('instance_geometry_hash') and not source['records'][ref].get(
+            'footprint_change', {}).get('source', {}).get('instance_source_hash')]
         copper = board_copper_hashes(snapshot['text'], copper_refs) if copper_refs else {}
         instance_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
             'source', {}).get('instance_source_hash')]
-        instance_hashes = board_copper_hashes(snapshot['text'], instance_refs,
-                                             include_instance=True) if instance_refs else {}
+        instance_hashes = board_source_hash_variants(snapshot['text'], instance_refs) if instance_refs else {}
+        legacy_sources = {ref:source['records'][ref]['footprint_change']['source'] for ref in instance_refs
+                          if source['records'][ref]['footprint_change']['source']['instance_source_hash']
+                          not in instance_hashes.get(ref, ())}
+        if legacy_sources:
+            notify('source_evidence', '正在核验旧封装记录与原始 PCB 备份的等价内容')
+            root = Path(self.app.project_root).resolve()
+            owned_sources = {ref:data for ref, data in legacy_sources.items()
+                             if Path(data.get('board', {}).get('path', '')).resolve().parent == root}
+            runtime = runtime_directory(root)
+            candidates = [Path(data['board']['path']) for data in owned_sources.values()]
+            candidates.extend(sorted(runtime.glob('pcb-save-*/disk-before.kicad_pcb'),
+                                     key=lambda path:path.stat().st_mtime_ns, reverse=True))
+            recover_legacy_source_hashes(owned_sources, instance_hashes, candidates, self.legacy_source_hashes)
         replacements, targets, items = [], [], []
         libraries = {}
         for index, ref in enumerate(refs):
@@ -202,7 +216,8 @@ class PcbUpdates:
             record.setdefault('field_overrides', {})['footprint'] = source['targets'][ref]
             adaptation = record.get('footprint_change', {}).get('adaptation')
             change = classify_footprint_change(record, {**original, 'instance_geometry_hash':copper.get(ref),
-                                                        'instance_source_hash':instance_hashes.get(ref)})
+                'instance_source_hash':next(iter(instance_hashes.get(ref, ())), None),
+                'instance_source_hash_variants':instance_hashes.get(ref, ())})
             kind = change['kind']
             if adaptation:
                 extras = adaptation['mapping']['extras']
@@ -262,7 +277,7 @@ class PcbUpdates:
                     raise ValueError(ref + ' 适配封装文件已变化，请重新预览')
                 first = original['footprint'] == evidence.get('before')
                 basis = evidence.get('source', {})
-                if first and basis.get('board') and basis.get('instance_source_hash') != instance_hashes.get(ref):
+                if first and basis.get('board') and basis.get('instance_source_hash') not in instance_hashes.get(ref, ()):
                     raise ValueError(ref + ' 原 PCB 实例已变化，请重新预览手动适配')
                 if not basis.get('placement'):
                     evidence = deepcopy(evidence)

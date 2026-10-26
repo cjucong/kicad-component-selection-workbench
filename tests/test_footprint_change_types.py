@@ -1,5 +1,6 @@
 """Explicit footprint intent survives save/undo; names never establish intent."""
 from copy import deepcopy
+import pytest
 
 from part_selection_overrides import load_overrides, save_overrides
 from test_row_footprint import footprint_app, prepare, choice
@@ -124,3 +125,88 @@ def test_rename_source_binds_instance_uuid_and_graphics_not_editable_labels():
         'source':{'instance_source_hash':original}}}
     assert classify_footprint_change(record, {'footprint':'Local:Old','instance_source_hash':original})['kind'] == 'rename'
     assert classify_footprint_change(record, {'footprint':'Local:Old','instance_source_hash':'different'})['kind'] == 'unknown'
+
+
+@pytest.mark.parametrize('current', ['Local:Old', 'Local:New'])
+@pytest.mark.parametrize('old_style,new_style', [('default','solid'), ('solid','default')])
+def test_rename_stroke_aliases_preserve_legacy_identity(current, old_style, new_style):
+    from part_selection_footprint_changes import board_copper_hashes, board_source_hash_variants, classify_footprint_change
+    text = '''(kicad_pcb (footprint "Local:Old" (uuid "instance") (layer "B.Cu") (at 10 20 90)
+      (property "Reference" "R1") (path "/sheet/symbol")
+      (fp_line (start 0 0) (end 1 1) (stroke (width 0.1) (type STYLE)) (layer "B.SilkS"))
+      (pad "1" smd rect (at 1 0) (size 1 2) (layers "B.Cu"))))'''
+    before = text.replace('STYLE', old_style)
+    after = text.replace('STYLE', new_style).replace('Local:Old', current)
+    source_hash = board_copper_hashes(before, ['R1'], include_instance=True)['R1']
+    variants = board_source_hash_variants(after, ['R1'])['R1']
+    record = {'field_overrides':{'footprint':'Local:New'}, 'footprint_change':{
+        'schema':1, 'operation':'rename', 'before':'Local:Old', 'after':'Local:New',
+        'source':{'instance_source_hash':source_hash}}}
+    live = {'footprint':current, 'instance_source_hash':variants[0], 'instance_source_hash_variants':variants}
+    assert classify_footprint_change(record, live)['kind'] == ('rename' if current == 'Local:Old' else 'none')
+    for old, new in [('"instance"','"other"'), ('/sheet/symbol','/sheet/other'),
+                     ('(at 10 20 90)', '(at 10 21 90)'), ('(layer "B.Cu")', '(layer "F.Cu")'),
+                     ('(size 1 2)', '(size 1 3)'), ('(end 1 1)', '(end 2 2)'),
+                     ('(width 0.1)', '(width 0.2)'), ('(type '+new_style+')', '(type dash)'),
+                     ('(pad "1"', '(pad "2"')]:
+        changed = board_source_hash_variants(after.replace(old, new), ['R1'])['R1']
+        assert classify_footprint_change(record, {**live, 'instance_source_hash':changed[0],
+            'instance_source_hash_variants':changed})['kind'] == 'unknown', (old, new)
+
+
+def test_new_rename_evidence_canonicalizes_mixed_stroke_aliases_only():
+    from part_selection_footprint_changes import board_copper_hashes, board_source_hash_variants
+    text = '''(kicad_pcb (footprint "Local:Old" (uuid "instance") (layer "F.Cu")
+      (property "Reference" "R1")
+      (fp_rect (start 0 0) (end 1 1) (stroke (width 0.1) (type default)) (layer "F.SilkS"))
+      (fp_line (start 2 2) (end 3 3) (stroke (width 0.2) (type solid)) (layer "F.Fab"))
+      (pad "1" smd rect (at 0 0) (size 1 2) (layers "F.Cu") (custom (type default)))))'''
+    canonical = board_copper_hashes(text, ['R1'], include_instance=True, stroke_style='solid')['R1']
+    saved = text.replace('(type default)) (layer', '(type solid)) (layer')
+    assert canonical in board_source_hash_variants(saved, ['R1'])['R1']
+    assert canonical not in board_source_hash_variants(saved.replace('(custom (type default))',
+        '(custom (type solid))'), ['R1'])['R1'], 'Only a stroke/type alias may be normalized'
+
+
+@pytest.mark.parametrize('problem', ['', 'pad', 'uuid', 'width', 'board_hash', 'instance_hash', 'missing'])
+def test_mixed_legacy_source_requires_verified_original_board(scratch_project, problem):
+    import hashlib
+    from part_selection_footprint_changes import board_copper_hashes, board_source_hash_variants, recover_legacy_source_hashes
+    old = '''(kicad_pcb (footprint "Local:Old" (uuid "instance") (layer "F.Cu") (at 1 2)
+      (property "Reference" "R1")
+      (fp_line (start 0 0) (end 1 1) (stroke (width 0.1) (type default)) (layer "F.SilkS"))
+      (fp_line (start 2 0) (end 3 1) (stroke (width 0.1) (type solid)) (layer "F.Fab"))
+      (pad "1" smd rect (at 0 0) (size 1 2) (layers "F.Cu"))))'''
+    saved = old.replace('(type default)', '(type solid)')
+    source_hash = board_copper_hashes(old, ['R1'], include_instance=True)['R1']
+    original = scratch_project/'original.kicad_pcb'
+    if problem != 'missing':
+        original.write_bytes(old.encode())
+    source = {'instance_source_hash':source_hash, 'board':{'hash':hashlib.sha256(old.encode()).hexdigest()}}
+    if problem == 'board_hash':source['board']['hash'] = 'other-board'
+    elif problem == 'instance_hash':source['instance_source_hash'] = 'other-instance'
+    elif problem == 'pad':saved = saved.replace('(size 1 2)', '(size 1 3)')
+    elif problem == 'uuid':saved = saved.replace('"instance"', '"other"')
+    elif problem == 'width':saved = saved.replace('(width 0.1)', '(width 0.2)')
+    live = board_source_hash_variants(saved, ['R1'])
+    assert source_hash not in live['R1'], 'Fixture must exercise mixed legacy spelling recovery'
+    cache = {}
+    recover_legacy_source_hashes({'R1':source}, live, [original], cache)
+    assert (source_hash in live['R1']) is (not problem)
+    # A cached source proof must compare the next current state again.
+    changed = board_source_hash_variants(saved.replace('(at 1 2)', '(at 3 4)'), ['R1'])
+    recover_legacy_source_hashes({'R1':source}, changed, [], cache)
+    assert source_hash not in changed['R1']
+
+
+def test_source_alias_variants_parse_the_board_once(monkeypatch):
+    import kicad_sexpr
+    from part_selection_footprint_changes import board_source_hash_variants
+    calls = []
+    parse = kicad_sexpr.parse_sexpr
+    def tracked(*args):
+        calls.append(True)
+        return parse(*args)
+    monkeypatch.setattr(kicad_sexpr, 'parse_sexpr', tracked)
+    board_source_hash_variants('(kicad_pcb (footprint "Local:Old" (property "Reference" "R1")))', ['R1'])
+    assert len(calls) == 1

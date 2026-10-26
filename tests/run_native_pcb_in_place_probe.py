@@ -369,7 +369,7 @@ def workbench_flow(root, report, session, *, center=False):
         app.design_sync.close()
 
 
-def run_probe(report, extra_checks=None, *, long_path=False, manager_width=None):
+def run_probe(report, extra_checks=None, *, long_path=False, manager_width=None, after_reopen_checks=None):
     from _scratch import temporary_project
     from part_selection_footprint_geometry import _find_kicad_python
     from kipy import KiCad
@@ -660,6 +660,10 @@ def run_probe(report, extra_checks=None, *, long_path=False, manager_width=None)
             for ref in ('R1', 'R2', 'U1'):
                 check_replacement(live[ref], decode(reopened['parts'][ref]['proto']), live[ref], persisted=True)
             results['checks']['saved_and_reopened'] = True
+            if after_reopen_checks is not None:
+                results['stage'] = 'after_reopen_checks'
+                client, board, _ = session._board(open_if_closed=False)
+                after_reopen_checks(root, report, session, client, board, results)
             results['functional_passed'] = True
             results['stage'] = 'complete'
         except Exception as exc:

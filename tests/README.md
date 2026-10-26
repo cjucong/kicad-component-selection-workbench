@@ -1,5 +1,7 @@
 # 插件回归测试
 
+改名来源实线兼容：`test_footprint_change_types.py` 与 `test_pcb_field_updates.py` 覆盖 `default` / `solid` 等价、尚未改名/已改名的原生预检，以及位置/方向/正反面/UUID/路径/焊盘/图形/线宽/虚线变化的拒绝。混合旧哈希必须先核对原 PCB 文件 SHA-256 和原实例哈希；缺失/损坏备份不放行，缓存不能掩盖之后的移动。`run_native_rename_source_probe.py --report-dir <工程外目录>` 专门执行真实正背面实例的工作台改名、原理图同步、PCB 更新、保存关闭重开与服务重建，确认旧版实线哈希及新版规范哈希均正确识别无变化，保持完整实例和走线；不读取无关标准库或执行转换。完整 `run_native_grouped_footprint_probe.py` 也包含同一保存重开回归阶段。两者都只使用可清理的合成工程，不接受生产工程参数。
+
 历史额外焊盘重复同步：`test_pad_mapping_native_types.py` 使用原生 protobuf 跑实际 PCB 预检，区分已接网/字段修改/服务重启与首次冲突、缺失、重复及真实几何变化；`test_pcb_native_types.py` 覆盖舍入改变图形排序、多重集数量及非贪心匹配，不放宽嵌套节点顺序。`run_native_pad_mapping_probe.py` 增加符号由 8 扩到 10 脚、真实 F8 接网、保存重开及重复预检的网络/UUID 保留检查。若系统禁止定位输入，可显式使用 `--allow-navigation-unavailable` 记录导航失败后继续 PCB 验证；此模式不代表导航通过，默认仍要求导航完成。
 
 `test_footprint_overlay_ui.py` 的 `viewport` 场景使用真实 Chromium 滚轮/右键/按钮，验证两个来源的鼠标锚点缩放、同比例并排、滚轮平移、缩放上限、展开/Esc/窄屏，以及缩放后的毫米拖动。查看操作不能清除确认、发起网络读取或改变配准；切换封装重置视图。

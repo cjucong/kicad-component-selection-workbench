@@ -182,3 +182,67 @@ session.read_library.assert_not_called()
     result = subprocess.run([str(python),'-B','-c','ROOT='+repr(str(scratch_project))+'\nOPERATION='+repr(operation)+'\nLOCKED='+repr(locked)+'\n'+setup+script],
         capture_output=True,text=True,encoding='utf-8',timeout=20)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('current', ['Old', 'Renamed'])
+@pytest.mark.parametrize('edit', ['style_only', 'pad', 'graphic', 'identity',
+                                'mixed_style_only', 'mixed_pad', 'missing_backup', 'bad_backup'])
+def test_live_preflight_accepts_stroke_alias_but_not_real_source_changes(scratch_project, current, edit):
+    script = r'''
+import hashlib, json, threading
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+from part_selection_pcb import PcbUpdates
+from part_selection_footprint_changes import board_copper_hashes
+root=Path(ROOT)
+fp.definition.id.name=CURRENT
+fp.proto.symbol_path.path.add().value='symbol'
+text='(kicad_pcb (footprint "Local:Old" (uuid "'+fp.id.value+'") (property "Reference" "R1") (path "/symbol") (layer "F.Cu") (at 12 34) (fp_line (start 0 0) (end 1 1) (stroke (width 0.1) (type default)) (layer "F.SilkS")) (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))))'
+mixed=EDIT.startswith('mixed_') or EDIT.endswith('_backup')
+if mixed:
+ text=text.replace('(pad "1"','(fp_line (start 2 0) (end 3 1) (stroke (width 0.1) (type solid)) (layer "F.Fab")) (pad "1"')
+ if EDIT!='missing_backup':
+  from part_selection_runtime import runtime_directory
+  backup=runtime_directory(root)/'pcb-save-fixture'/'disk-before.kicad_pcb'
+  backup.parent.mkdir(parents=True)
+  backup.write_bytes(text.encode() if EDIT!='bad_backup' else b'(kicad_pcb)')
+legacy=board_copper_hashes(text,['R1'],include_instance=True)['R1']
+live=text.replace('(type default)','(type solid)').replace('Local:Old','Local:'+CURRENT)
+if EDIT in ('pad','mixed_pad'):live=live.replace('(size 1 1)','(size 1 2)')
+elif EDIT=='graphic':live=live.replace('(end 1 1)','(end 2 2)')
+elif EDIT=='identity':live=live.replace(fp.id.value,'another-instance')
+snapshot={'session_id':'one','text':live,'parts':{'R1':describe(fp)}}
+session=SimpleNamespace(snapshot=Mock(return_value=snapshot),
+ read_library=Mock(side_effect=AssertionError('metadata launched library reader')),apply=Mock(return_value={'ok':True}))
+app=SimpleNamespace(project_root=root,config={'schematic_dir':root},overrides_path=root/'records.json',selection_save_lock=threading.RLock())
+(root/'Test.kicad_pro').write_text('{}')
+(root/'Test.kicad_sch').write_text('(kicad_sch (uuid "root") (symbol (uuid "symbol") (property "Reference" "R1") (property "Value" "100k") (property "Footprint" "Local:Renamed") (instances (project "Test" (path "/root" (reference "R1"))))))')
+app.overrides_path.write_text(json.dumps({'R1':{'field_overrides':{'footprint':'Local:Renamed'},'footprint_change':{
+ 'schema':1,'operation':'rename','before':'Local:Old','after':'Local:Renamed',
+ 'source':{'board':{'path':str(root/'Test.kicad_pcb'),'hash':hashlib.sha256(text.encode()).hexdigest()},'instance_source_hash':legacy}}}}))
+service=PcbUpdates(app,session=session)
+preview=service.preview(['R1'],'__schematic__')
+item=preview['items'][0]
+allowed=EDIT in ('style_only','mixed_style_only')
+assert preview['blocked'] is (not allowed),preview
+assert item['kind']==('unknown' if not allowed else 'rename' if CURRENT=='Old' else 'none'),preview
+if allowed:
+ assert service.apply(preview['preview_id'],True)['ok']
+ if CURRENT=='Renamed':session.apply.assert_not_called()
+ else:session.apply.assert_called_once()
+else:
+ try:service.apply(preview['preview_id'],True)
+ except ValueError:pass
+ else:raise AssertionError('Actual source edit was silently accepted')
+ session.apply.assert_not_called()
+session.read_library.assert_not_called()
+'''
+    python = runtime()
+    if python is None:
+        pytest.skip('KiCad desktop kipy runtime required')
+    setup = SCRIPT.split("if MODE=='rename':")[0]
+    result = subprocess.run([str(python),'-B','-c','ROOT='+repr(str(scratch_project))+
+        '\nCURRENT='+repr(current)+'\nEDIT='+repr(edit)+'\n'+setup+script],
+        capture_output=True,text=True,encoding='utf-8',timeout=20)
+    assert result.returncode == 0, result.stderr

@@ -5,15 +5,20 @@ import hashlib
 import json
 
 
-def board_copper_hashes(text, refs, *, include_instance=False):
-    """Pose and complete pad definitions from the PCB's own saved/live serialization."""
+def _board_hashes(text, refs, *, include_instance, stroke_styles):
     from kicad_sexpr import parse_sexpr
     ignored = {'uuid','tstamp','net','pinfunction','pintype'}
-    def data(node):
+    refs = set(refs)
+    def data(node, style, parent=''):
         if node.head in ignored:
             return None
+        # KiCad serializes its default solid stroke as either spelling.
+        # Do not normalize unrelated type tokens or any dashed/dotted stroke.
+        if (style and parent == 'stroke' and node.head == 'type'
+                and len(node.children) == 2 and node.arg() in ('default', 'solid')):
+            return ['type', style]
         if node.children:
-            return [value for child in node.children if (value := data(child)) is not None]
+            return [value for child in node.children if (value := data(child, style, node.head)) is not None]
         if text[node.start:node.start+1] != '"':
             try:
                 number = Decimal(node.value)
@@ -34,12 +39,81 @@ def board_copper_hashes(text, refs, *, include_instance=False):
         heads = {'pad','at','layer'}
         if include_instance:
             heads.update(('fp_line','fp_arc','fp_circle','fp_rect','fp_poly','zone','model','path'))
-        values = sorted(json.dumps(data(n), ensure_ascii=True) for n in fp.children if n.head in heads)
-        if include_instance:
-            identity = fp.child('uuid') or fp.child('tstamp')
-            values.append('instance:' + (identity.arg() if identity else ''))
-        result[ref] = hashlib.sha256(json.dumps(values).encode()).hexdigest()
+        hashes = []
+        for style in stroke_styles:
+            values = sorted(json.dumps(data(n, style), ensure_ascii=True) for n in fp.children if n.head in heads)
+            if include_instance:
+                identity = fp.child('uuid') or fp.child('tstamp')
+                values.append('instance:' + (identity.arg() if identity else ''))
+            hashes.append(hashlib.sha256(json.dumps(values).encode()).hexdigest())
+        result[ref] = hashes
     return result
+
+
+def board_copper_hashes(text, refs, *, include_instance=False, stroke_style=None):
+    """Pose and complete pad definitions; the default retains legacy exact hashes."""
+    if stroke_style not in (None, 'default', 'solid'):
+        raise ValueError('Unknown canonical stroke style')
+    return {ref: hashes[0] for ref, hashes in _board_hashes(text, refs,
+        include_instance=include_instance, stroke_styles=(stroke_style,)).items()}
+
+
+def board_source_hash_variants(text, refs):
+    """Legacy source identities and canonical stroke aliases, with one PCB parse."""
+    return {ref: list(dict.fromkeys(hashes)) for ref, hashes in _board_hashes(text, refs,
+        include_instance=True, stroke_styles=(None, 'default', 'solid')).items()}
+
+
+def recover_legacy_source_hashes(sources, live_hashes, candidates, cache):
+    """Recover mixed legacy spellings only from hash-verified original PCB bytes.
+
+    A legacy hash cannot be canonicalized by itself. Never guess arbitrary
+    combinations: verify the original board and instance hash before comparing.
+    """
+    pending = {}
+    for ref, source in sources.items():
+        source_hash = source.get('instance_source_hash')
+        hashes = live_hashes.get(ref, [])
+        board_hash = source.get('board', {}).get('hash')
+        key = (board_hash, ref, source_hash)
+        if source_hash and source_hash not in hashes and board_hash:
+            if key in cache:
+                if cache[key] in hashes:
+                    hashes.append(source_hash)
+            else:
+                pending[ref] = (board_hash, source_hash)
+    if not pending:
+        return
+    seen = set()
+    for path in candidates:
+        try:
+            path = path.resolve()
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            content = path.read_bytes()
+        except OSError:
+            continue
+        board_hash = hashlib.sha256(content).hexdigest()
+        refs = [ref for ref, (expected, _) in pending.items() if expected == board_hash]
+        if not refs:
+            continue
+        try:
+            original = _board_hashes(content.decode('utf-8-sig'), refs,
+                                     include_instance=True, stroke_styles=(None, 'solid'))
+        except (UnicodeError, ValueError):
+            continue
+        for ref in refs:
+            source_hash = pending[ref][1]
+            # Raw must match, not just another alias or a same-named instance.
+            if ref in original and original[ref][0] == source_hash:
+                canonical = original[ref][-1]
+                cache[(board_hash, ref, source_hash)] = canonical
+                if canonical in live_hashes.get(ref, ()):
+                    live_hashes[ref].append(source_hash)
+                del pending[ref]
+        if not pending:
+            break
 
 
 def make_footprint_change(*, operation: str, before: str, after: str,
@@ -80,6 +154,9 @@ def classify_footprint_change(record: dict, live: dict) -> dict:
     key = ('instance_source_hash' if source.get('instance_source_hash') else
            'instance_geometry_hash' if source.get('instance_geometry_hash') else 'geometry_hash')
     source_hash = source.get(key)
-    if not source_hash or live.get(key) != source_hash:
+    matches = live.get(key) == source_hash
+    if key == 'instance_source_hash':
+        matches = matches or source_hash in live.get('instance_source_hash_variants', ())
+    if not source_hash or not matches:
         return {'kind': 'unknown', 'reason': '原封装几何与改名来源不一致，请重新预检'}
     return {'kind': 'none' if target == current else 'rename', 'reason': '保留当前实例几何'}

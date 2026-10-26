@@ -6,15 +6,83 @@ publication, schematic sync, live IPC PCB update, and undo are real.
 """
 import argparse
 from contextlib import ExitStack
+import ctypes
 from pathlib import Path
 import time
 from unittest.mock import patch
 
-from run_native_pcb_in_place_probe import run_probe, footprint_map, close_owned_schematic, sync_fixture_adapter
+from run_native_pcb_in_place_probe import run_probe, footprint_map, close_owned_schematic, sync_fixture_adapter, windows
 from part_selection_paths import resolve_config
 from part_selection_server import PartSelectionApp
 from part_selection_pcb_session import encode, decode, footprint_bytes, metadata_replacement
 from part_selection_footprint_geometry import _outside_project
+
+
+def saved_rename_checks(root, report, session, client, board, results):
+    """Real save/reopen and service restart must accept legacy/new stroke evidence."""
+    from part_selection_footprint_changes import board_copper_hashes
+    from part_selection_overrides import load_overrides, save_overrides
+    from part_selection_pcb import PcbUpdates
+    from part_selection_pcb_session import persisted_footprint_matches
+    app = PartSelectionApp(resolve_config(root))
+    app.pcb_updates.session = session
+    refs = ['R1', 'U1']
+    for ref, part in session.snapshot(root, refs)['parts'].items():
+        app.save_field_override({'refs':ref,'bom':'__schematic__',
+                                'field_overrides':{'footprint':part['footprint']}})
+    sync_fixture_adapter(app, refs)
+    close_owned_schematic(results['pid'])
+    before = session.snapshot(root, refs)
+    tracks = [t.proto.SerializeToString() for t in board.get_tracks()]
+    try:
+        for ref in refs:
+            preview = app.row_footprint({'refs':ref,'bom':'__schematic__','mode':'rename'})['preview']
+            reference = preview.get('default_reference_id') or preview['default_id']
+            app.footprint_choices.library_detail(preview['preview_id'], reference)
+            app.row_footprint({'footprint_choice':{'preview_id':preview['preview_id'],
+                'source':'rename','existing_id':reference,'target_mode':'existing',
+                'target_library':'Local','name':'SavedRename_'+ref,'acknowledged':True,'scope_acknowledged':True}})
+        records = load_overrides(app.overrides_path)
+        disk = (root/'Probe.kicad_pcb').read_text(encoding='utf-8-sig')
+        canonical = board_copper_hashes(disk, refs, include_instance=True, stroke_style='solid')
+        assert all(records[ref]['footprint_change']['source']['instance_source_hash'] == canonical[ref] for ref in refs)
+        # Recreate evidence issued by old versions; only the hash spelling changes.
+        legacy = board_copper_hashes(disk, refs, include_instance=True, stroke_style='default')
+        records['R1']['footprint_change']['source']['instance_source_hash'] = legacy['R1']
+        save_overrides(app.overrides_path, records)
+        sync_fixture_adapter(app, refs)
+        close_owned_schematic(results['pid'])
+        renamed = session.snapshot(root, refs)
+        for ref in refs:
+            expected = metadata_replacement(before['parts'][ref], footprint='Local:SavedRename_'+ref)
+            assert footprint_bytes(decode(renamed['parts'][ref]['proto'])) == footprint_bytes(decode(expected))
+        assert tracks == [t.proto.SerializeToString() for t in board.get_tracks()]
+        saved = session.save_verified(renamed, report/'rename-save-verified')
+        assert saved['ok'], saved
+        for handle, title in windows(results['pid']):
+            if 'Probe' in title and 'PCB' in title:
+                ctypes.windll.user32.PostMessageW(handle, 0x0010, 0, 0)
+        for _ in range(60):
+            if not any('Probe' in title and 'PCB' in title for _, title in windows(results['pid'])):
+                break
+            time.sleep(.25)
+        else:
+            raise AssertionError('Owned renamed fixture PCB did not close')
+        assert session.connection.ensure(open_if_closed=True)['state'] == 'connected'
+        reopened = session.snapshot(root, refs)
+        for ref in refs:
+            assert persisted_footprint_matches(decode(renamed['parts'][ref]['proto']),
+                                               decode(reopened['parts'][ref]['proto']))
+        restarted = PcbUpdates(app, session=session)
+        check = restarted.preview(refs, '__schematic__', alignment='rigid')
+        assert not check['blocked'] and all(item['kind'] == 'none' for item in check['items']), check
+        assert restarted.apply(check['preview_id'], True)['no_changes']
+        assert session.snapshot(root, refs) == reopened, 'Repeated rename modified the reopened fixture'
+        results['checks']['legacy_and_canonical_rename_save_reopen_restart_noop'] = True
+    finally:
+        app.search_jobs.close()
+        app.selection_jobs.close()
+        app.design_sync.close()
 
 
 def same_parts(first, second):
@@ -226,4 +294,4 @@ if __name__=='__main__':
     except ValueError as exc:
         parser.error(str(exc))
     report.mkdir(parents=True,exist_ok=True)
-    raise SystemExit(run_probe(report,extra_checks=grouped_checks))
+    raise SystemExit(run_probe(report,extra_checks=grouped_checks,after_reopen_checks=saved_rename_checks))
