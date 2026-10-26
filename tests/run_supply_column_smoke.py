@@ -35,12 +35,28 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.match(await row.locator('.supply-counts').innerText(),/商城库存/);
   assert.equal(await row.locator('.supply-delivery').innerText(),'发货：1-3个工作日');
   assert.equal(await row.locator('.supply-delivery').isVisible(),true);
+  assert.equal(await row.getAttribute('data-stock-issue'),'1');
+  assert.match(await row.locator('.supply-dispatch-warning').innerText(),/交期异常/);
+  const initialKeys=String(await row.getAttribute('data-filter-key'));
+  assert(initialKeys.includes('stock_issue')&&!initialKeys.includes('stock_normal'));
   await page.evaluate(()=>{
    const tr=document.querySelector('#rows tr[data-refs="C1"]');
    setStockCells(tr,{...currentRows[0].stock,delivery:'现货最快4小时发货',delivery_schema:1,
     delivery_source_url:'https://so.szlcsc.com/global.html?k=C100'});
   });
   assert.equal(await row.locator('.supply-delivery').innerText(),'发货：现货最快4小时发货');
+  assert.equal(await row.getAttribute('data-stock-issue'),'0');
+  assert.equal(await row.locator('.supply-dispatch-warning').count(),0);
+  await page.evaluate(()=>{
+   const tr=document.querySelector('#rows tr[data-refs="C1"]');
+   setStockCells(tr,{...currentRows[0].stock,stock:'201000',delivery:'9-14个工作日'});
+  });
+  assert.equal(await row.getAttribute('data-stock-issue'),'1');
+  assert.match(await row.locator('.supply-counts').innerText(),/201000/);
+  assert.equal(await row.locator('.supply-delivery').innerText(),'发货：9-14个工作日');
+  await page.locator('[data-filter="stock_issue"]').click();
+  assert.equal(await row.isVisible(),true);
+  await page.locator('[data-filter="all"]').click();
   const shippingSource=row.getByRole('link',{name:'发货时间来源',includeHidden:true});
   assert.equal(await shippingSource.getAttribute('href'),'https://so.szlcsc.com/global.html?k=C100');
   await page.evaluate(()=>{

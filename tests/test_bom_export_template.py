@@ -120,6 +120,23 @@ def test_empty_export_retains_template_header(scratch_project):
     assert columns[:10] == TEMPLATE_COLUMNS
 
 
+@pytest.mark.parametrize("export_filter", ["stock_issue", "current_filter"])
+def test_shipping_later_than_four_hours_is_included_in_stock_issue_export(scratch_project, export_filter):
+    delayed = make_row("U46")
+    delayed["stock"].update(stock="201000", delivery="9-14个工作日")
+    ready = make_row("U1")
+    ready["stock"].update(delivery="现货最快4小时发货", delivery_schema=1)
+    result, _, rows = export_rows(scratch_project, [delayed, ready,
+        make_row("C9", value="NC")], export_filter=export_filter, active_filters=["stock_issue"])
+    assert result["count"] == 1
+    assert rows[0]["位号"] == "U46"
+    assert rows[0]["Stock"] == "201000"
+    assert rows[0]["Delivery"] == "9-14个工作日"
+    assert rows[0]["ReviewStatus"] == "Confirmed"
+    result, _, rows = export_rows(scratch_project, [delayed], export_filter="low_stock")
+    assert result["count"] == 0 and rows == []
+
+
 def test_missing_design_value_falls_back_to_matching_product_specification(scratch_project):
     row = make_row(value="", footprint="0603")
     row["stock"].pop("package")

@@ -613,11 +613,76 @@ def row_is_nc(row: dict[str, object]) -> bool:
 def stock_number(stock: object) -> float | None:
     if not isinstance(stock, dict):
         return None
+    return stock_quantity(stock.get("stock"))
+
+
+def stock_quantity(value: object) -> float | None:
     try:
-        number = float(str(stock.get("stock", "")).replace(",", "").strip())
+        number = float(str(value if value is not None else "").replace(",", "").strip())
         return number if math.isfinite(number) and number >= 0 else None
-    except ValueError:
+    except (TypeError, ValueError):
         return None
+
+
+_DELIVERY_HOURS_RE = re.compile(
+    r"(\d+(?:\.\d+)?)(?:\s*[-~～至到]\s*(\d+(?:\.\d+)?))?\s*小时(?:内)?(?:发货)?"
+)
+_EXPLICIT_DELAYED_DELIVERY_RE = re.compile(
+    r"(?:\d+(?:\.\d+)?(?:\s*[-~～至到]\s*\d+(?:\.\d+)?)?\s*(?:个)?工作日|"
+    r"\d+(?:\.\d+)?\s*天(?:后|发货)?|"
+    r"\b\d+(?:\.\d+)?(?:\s*[-~]\s*\d+(?:\.\d+)?)?\s*days?\b|"
+    r"订货|海外代购|预售|定制)",
+    re.IGNORECASE,
+)
+
+
+def stock_delivery_schema_is_verified(stock: object) -> bool:
+    return isinstance(stock, dict) and str(stock.get("delivery_schema") or "") == "1"
+
+
+def stock_immediate_number(stock: object) -> float | None:
+    return stock_quantity(stock.get("immediate_stock")) if isinstance(stock, dict) else None
+
+
+def stock_delivery_hours(stock: object) -> float | None:
+    if not isinstance(stock, dict):
+        return None
+    match = _DELIVERY_HOURS_RE.search(str(stock.get("delivery") or ""))
+    if not match:
+        return None
+    return max(float(match.group(1)), float(match.group(2) or match.group(1)))
+
+
+def stock_dispatch_within_four_hours(stock: object) -> bool:
+    if not isinstance(stock, dict) or not stock.get("ok") or not stock_delivery_schema_is_verified(stock):
+        return False
+    immediate = stock_immediate_number(stock)
+    if immediate is not None and immediate > 0:
+        return True
+    hours = stock_delivery_hours(stock)
+    return hours is not None and hours <= 4
+
+
+def stock_delivery_is_delayed(stock: object) -> bool:
+    """Return true only when source evidence says dispatch cannot meet the four-hour rule."""
+    if not isinstance(stock, dict):
+        return False
+    if isinstance(stock.get("entries"), list):
+        return bool(stock["entries"]) and any(
+            stock_delivery_is_delayed(item.get("stock")) for item in stock["entries"]
+        )
+    if not stock.get("ok") or stock_dispatch_within_four_hours(stock):
+        return False
+    immediate = stock_immediate_number(stock)
+    if stock_delivery_schema_is_verified(stock) and immediate == 0:
+        return True
+    delivery = str(stock.get("delivery") or "").strip()
+    if not delivery or delivery == "发货时间待核实":
+        return False
+    hours = stock_delivery_hours(stock)
+    if hours is not None:
+        return hours > 4
+    return bool(_EXPLICIT_DELAYED_DELIVERY_RE.search(delivery))
 
 
 def row_stock_is_low(row: dict[str, object]) -> bool:
@@ -658,7 +723,7 @@ def row_stock_is_issue(row: dict[str, object]) -> bool:
         return any(row_stock_is_issue({"stock": item.get("stock")}) for item in stock["entries"])
     if isinstance(stock, dict) and stock.get("ok") and stock_number(stock) is None:
         return True
-    return row_stock_is_low(row) or row_stock_is_error(row)
+    return row_stock_is_low(row) or row_stock_is_error(row) or stock_delivery_is_delayed(stock)
 
 
 def row_stock_is_normal(row: dict[str, object]) -> bool:
@@ -674,6 +739,7 @@ def row_stock_is_normal(row: dict[str, object]) -> bool:
         and stock.get("ok")
         and stock_number(stock) is not None
         and stock_number(stock) >= 100
+        and not stock_delivery_is_delayed(stock)
     )
 
 
@@ -5699,6 +5765,37 @@ function stockNumber(stock) {{
   return Number.isFinite(number) && number >= 0 ? number : Number.NaN;
 }}
 
+function stockDeliverySchemaIsVerified(stock) {{
+  return String(stock?.delivery_schema ?? "") === "1";
+}}
+
+function stockImmediateNumber(stock) {{
+  return stockNumber({{stock: stock?.immediate_stock}});
+}}
+
+function stockDeliveryHours(stock) {{
+  const match = String(stock?.delivery || "").match(new RegExp({json.dumps(_DELIVERY_HOURS_RE.pattern, ensure_ascii=False)}));
+  return match ? Math.max(Number(match[1]), Number(match[2] || match[1])) : Number.NaN;
+}}
+
+function stockDispatchWithinFourHours(stock) {{
+  if (!stock?.ok || !stockDeliverySchemaIsVerified(stock)) return false;
+  if (stockImmediateNumber(stock) > 0) return true;
+  const hours = stockDeliveryHours(stock);
+  return Number.isFinite(hours) && hours <= 4;
+}}
+
+function stockDeliveryIsDelayed(stock) {{
+  if (Array.isArray(stock?.entries)) return stock.entries.some(item => stockDeliveryIsDelayed(item.stock || {{}}));
+  if (!stock?.ok || stockDispatchWithinFourHours(stock)) return false;
+  if (stockDeliverySchemaIsVerified(stock) && stockImmediateNumber(stock) === 0) return true;
+  const delivery = String(stock?.delivery || "").trim();
+  if (!delivery || delivery === "发货时间待核实") return false;
+  const hours = stockDeliveryHours(stock);
+  if (Number.isFinite(hours)) return hours > 4;
+  return new RegExp({json.dumps(_EXPLICIT_DELAYED_DELIVERY_RE.pattern, ensure_ascii=False)}, "i").test(delivery);
+}}
+
 function stockIsLow(stock) {{
   if (Array.isArray(stock?.entries)) return stock.entries.some(item => stockIsLow(item.stock || {{}}));
   const number = stockNumber(stock);
@@ -5708,7 +5805,7 @@ function stockIsLow(stock) {{
 function stockIsIssue(stock) {{
   if (Array.isArray(stock?.entries)) return stock.entries.some(item => stockIsIssue(item.stock || {{}}));
   if (stock?.ok && !Number.isFinite(stockNumber(stock))) return true;
-  if (stockIsLow(stock)) return true;
+  if (stockIsLow(stock) || stockDeliveryIsDelayed(stock)) return true;
   return !!(stockAlreadyQueried(stock) && !stock?.ok);
 }}
 
@@ -5772,6 +5869,7 @@ function stockVisual(stock) {{
   if (stock.ok && !Number.isFinite(number)) return {{pill: "stock-wait", text: "库存待核实", detailClass: ""}};
   const lowStock = stock.ok && number < 100;
   if (lowStock) return {{pill: "stock-low", text: "低库存", detailClass: "low-stock"}};
+  if (stockDeliveryIsDelayed(stock)) return {{pill: "stock-low", text: "交期异常", detailClass: "low-stock"}};
   if (stock.ok) return {{pill: "stock-ok", text: "有库存", detailClass: ""}};
   if (["待查询", "查询中"].includes(status)) return {{pill: "stock-wait", text: status, detailClass: ""}};
   return {{pill: "stock-bad", text: status || "异常", detailClass: "bad"}};
@@ -5830,6 +5928,7 @@ function renderStockCell(stock, row = null) {{
   const market = Array.isArray(stock?.entries) ? '<span>商城库存 待核实</span>' : renderStock(stock);
   const delivery = stockDeliveryText(stock);
   return `<div class="supply-counts">${{market}}<span data-local-inventory>本地库存 读取中…</span></div>`
+    + (stockDeliveryIsDelayed(stock) ? '<div class="supply-dispatch-warning low-stock">交期异常 · 非 4 小时内发货</div>' : "")
     + (delivery ? `<div class="supply-delivery">${{esc(delivery)}}</div>` : "")
     + (detail.length ? `<details class="stock-details"><summary>供货详情</summary>${{detail.join("<br>")}}</details>` : "");
 }}

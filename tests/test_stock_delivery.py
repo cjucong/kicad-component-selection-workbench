@@ -9,7 +9,10 @@ from unittest.mock import patch
 
 import pytest
 
-from part_selection_server import cache_candidate_stock, render_index, row_filter_keys, row_stock_is_low
+from part_selection_server import (
+    cache_candidate_stock, render_index, row_filter_keys, row_stock_is_low,
+    row_stock_is_issue, row_stock_is_normal, stock_delivery_is_delayed,
+)
 from part_stock_lookup import (
     build_candidate_item,
     candidate_stock_result,
@@ -166,6 +169,74 @@ def test_mixed_code_rows_do_not_export_unknown_stock_as_zero(quantity, low):
     assert row_stock_is_low(row) is low
 
 
+DISPATCH_CASES = [
+    ({"delivery": "9-14个工作日"}, True),
+    ({"delivery": "1-3个工作日"}, True),
+    ({"delivery": "预计3天发货 201000"}, True),
+    ({"delivery": "最快24小时发货"}, True),
+    ({"delivery": "预计4-8小时发货"}, True),
+    ({"delivery": "4.1小时发货"}, True),
+    ({"delivery": "3-5 days"}, True),
+    ({"delivery": "订货/海外代购，交期以立创页面为准"}, True),
+    ({"delivery": "现货最快4小时发货", "delivery_schema": 1}, False),
+    ({"delivery": "2-4小时内发货", "delivery_schema": 1}, False),
+    ({"delivery": "2小时发货", "delivery_schema": 1}, False),
+    ({"delivery": "1-3个工作日；可立即发货 20", "immediate_stock": "20", "delivery_schema": 1}, False),
+    ({"delivery": "1-3个工作日", "immediate_stock": "20"}, True),
+    ({"delivery": "发货时间待核实", "immediate_stock": 0, "delivery_schema": 1}, True),
+    ({"delivery": "发货时间待核实"}, False),
+    ({"delivery": ""}, False),
+]
+
+
+@pytest.mark.parametrize("fields, delayed", DISPATCH_CASES)
+def test_four_hour_dispatch_rule_includes_high_stock_without_changing_quantity(fields, delayed):
+    stock = {"ok": True, "c_code": "C8655", "stock": "201000", **fields}
+    row = {"value": "100nF", "stock": stock, "review_status": "Confirmed"}
+    before = json.dumps(row, sort_keys=True)
+    assert stock_delivery_is_delayed(stock) is delayed
+    assert row_stock_is_issue(row) is delayed
+    assert row_stock_is_normal(row) is not delayed
+    assert ("stock_issue" in row_filter_keys(row)) is delayed
+    assert ("stock_normal" in row_filter_keys(row)) is not delayed
+    assert row_stock_is_low(row) is False
+    assert json.dumps(row, sort_keys=True) == before
+
+
+def test_delayed_dispatch_mixed_codes_and_nc_filter():
+    stock = {"ok": True, "stock": "201000", "delivery": "9-14个工作日"}
+    row = {"value": "100nF", "stock": {"entries": [{"stock": stock}]}}
+    assert "stock_issue" in row_filter_keys(row)
+    assert "stock_normal" not in row_filter_keys(row)
+    assert "stock_issue" not in row_filter_keys({**row, "value": "NC"})
+    assert "stock_issue" not in row_filter_keys({**row, "comment": "DNP"})
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")
+def test_frontend_four_hour_dispatch_matches_backend_filter_and_badges():
+    html = render_index(SimpleNamespace(project_root=Path(__file__).resolve().parents[1], config={}))
+    names = ("stockNumber|stockQuantity|stockIsLow|stockIsIssue|stockAlreadyQueried|stockVisual|"
+             "stockDeliverySchemaIsVerified|stockImmediateNumber|stockDeliveryHours|"
+             "stockDispatchWithinFourHours|stockDeliveryIsDelayed")
+    helpers = re.findall(r'function (?:' + names + r')\([^\n]*\) \{.*?\n\}', html, re.S)
+    cases = [{"stock": {"ok": True, "c_code": "C8655", "stock": "201000", **fields}, "delayed": delayed}
+             for fields, delayed in DISPATCH_CASES]
+    script = "const assert=require('node:assert/strict');\n" + "\n".join(helpers)
+    script += "\nfor (const {stock,delayed} of " + json.dumps(cases) + ") {\n"
+    script += r'''
+ assert.equal(stockIsIssue(stock),delayed,JSON.stringify(stock));
+ assert.equal(stockDeliveryIsDelayed(stock),delayed,JSON.stringify(stock));
+ assert.equal(stockIsLow(stock),false);
+ assert.equal(stockVisual(stock).text,delayed?'交期异常':'有库存');
+}
+assert.equal(stockNumber({stock:0}),0);
+assert.equal(stockIsIssue({entries:[{stock:{ok:true,stock:'201000',delivery:'9-14个工作日'}}]}),true);
+'''
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True,
+                            text=True, encoding="utf-8", timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 def test_old_cache_removes_fabricated_fast_dispatch_without_writing_records(scratch_project):
     path = Path(scratch_project) / "stock.json"
     old = {"C123": {"ok": True, "c_code": "C123", "stock": "500", "channel": "现货",
@@ -187,7 +258,8 @@ def test_old_cache_removes_fabricated_fast_dispatch_without_writing_records(scra
 def test_main_supply_surfaces_dispatch_time_and_never_labels_total_stock_ready():
     root = Path(__file__).resolve().parents[1]
     html = render_index(SimpleNamespace(project_root=root, config={}))
-    names = "renderStock|renderStockCell|stockDeliveryText"
+    names = ("renderStock|renderStockCell|stockDeliveryText|stockNumber|stockDeliverySchemaIsVerified|"
+             "stockImmediateNumber|stockDeliveryHours|stockDispatchWithinFourHours|stockDeliveryIsDelayed")
     helpers = re.findall(r'function (?:' + names + r')\([^\n]*\) \{.*?\n\}', html, re.S)
     script = "const assert=require('node:assert/strict');\n" + "\n".join(helpers) + r'''
 const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -216,7 +288,9 @@ assert.doesNotMatch(renderStockCell({...deferred,c_code:''}),/发货：1-3/);
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")
 def test_unknown_stock_does_not_get_a_ready_or_sufficient_badge():
     html = render_index(SimpleNamespace(project_root=Path(__file__).resolve().parents[1], config={}))
-    names = "stockNumber|stockIsLow|stockIsIssue|stockAlreadyQueried|stockVisual"
+    names = ("stockNumber|stockIsLow|stockIsIssue|stockAlreadyQueried|stockVisual|"
+             "stockDeliverySchemaIsVerified|stockImmediateNumber|stockDeliveryHours|"
+             "stockDispatchWithinFourHours|stockDeliveryIsDelayed")
     helpers = re.findall(r'function (?:' + names + r')\([^\n]*\) \{.*?\n\}', html, re.S)
     script = "const assert=require('node:assert/strict');\n" + "\n".join(helpers) + r'''
 for(const quantity of ['',null,'待核实','NaN','Infinity']) {
