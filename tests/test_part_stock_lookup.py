@@ -224,6 +224,121 @@ class FetchCacheTest(unittest.TestCase):
             now.return_value = 160.0
             self.assertEqual(cache.get(("model", 3), lambda: ["fresh"]), ["fresh"])
 
+    def test_cancelled_stock_owner_does_not_cancel_unrelated_shared_search(self):
+        from concurrent.futures import CancelledError
+        group = stock_lookup.StockQueryGroup()
+        cache = stock_lookup._FetchCache()
+        started, waiting, release = threading.Event(), threading.Event(), threading.Event()
+
+        def load_stock():
+            started.set()
+            self.assertTrue(release.wait(3))
+            return ['cancelled owner']
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            owner = executor.submit(group.run, lambda: cache.get(('same', 8), load_stock))
+            self.assertTrue(started.wait(3))
+            pending = cache._inflight[('same', 8)]
+            original_result = pending.result
+
+            def wait(*args, **kwargs):
+                waiting.set()
+                return original_result(*args, **kwargs)
+
+            with patch.object(pending, 'result', side_effect=wait):
+                search = executor.submit(cache.get, ('same', 8), lambda: ['search retry'])
+                self.assertTrue(waiting.wait(3))
+                group.cancel()
+                release.set()
+                with self.assertRaises(CancelledError):
+                    owner.result(timeout=3)
+                self.assertEqual(search.result(timeout=3), ['search retry'])
+
+    def test_cancelled_stock_does_not_replace_cache_or_poison_next_query(self):
+        from concurrent.futures import CancelledError
+        from _scratch import temporary_project
+        group = stock_lookup.StockQueryGroup()
+        with temporary_project(prefix='cancel-stock-cache-') as root:
+            path = Path(root) / 'stock.json'
+            original = {'C100': {'ok': True, 'stock': '123', 'c_code': 'C100'}}
+            stock_lookup.save_stock_cache(path, original)
+            before = path.read_bytes()
+
+            def fetch(code):
+                group.cancel()
+                return {'ok': True, 'stock': '0', 'c_code': code}
+
+            with self.assertRaises(CancelledError):
+                group.run(lambda: stock_lookup.lookup_stock_with_cache(path, 'C100', fetch))
+            self.assertEqual(path.read_bytes(), before)
+            result = group.run(lambda: stock_lookup.lookup_stock_with_cache(path, 'C100',
+                lambda code: {'ok': True, 'stock': '321', 'c_code': code}))
+            self.assertEqual(result['stock'], '321')
+
+    def test_exit_cancels_wait_inside_http_without_writing_late_result(self):
+        from concurrent.futures import CancelledError
+        from _scratch import temporary_project
+        group = stock_lookup.StockQueryGroup()
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def blocked_urlopen(*args, **kwargs):
+            started.set()
+            try:
+                self.assertTrue(release.wait(3))
+                raise OSError('test offline')
+            finally:
+                finished.set()
+
+        with temporary_project(prefix='cancel-stock-http-') as root:
+            path = Path(root) / 'stock.json'
+            with patch('part_stock_lookup.urllib.request.urlopen', side_effect=blocked_urlopen), \
+                    ThreadPoolExecutor(max_workers=1) as executor:
+                request = executor.submit(group.run, lambda: stock_lookup.lookup_stock_with_cache(path, 'C100'))
+                try:
+                    self.assertTrue(started.wait(3))
+                    group.cancel()
+                    with self.assertRaises(CancelledError):
+                        request.result(timeout=.5)
+                    self.assertFalse(path.exists())
+                finally:
+                    release.set()
+                    self.assertTrue(finished.wait(3))
+
+    def test_duplicate_stock_requests_share_entire_http_query(self):
+        from _scratch import temporary_project
+        started, waiting, release = threading.Event(), threading.Event(), threading.Event()
+        group = stock_lookup.StockQueryGroup()
+        calls = []
+
+        def fetch(code):
+            calls.append(code)
+            started.set()
+            self.assertTrue(release.wait(3))
+            return {'ok': True, 'stock': '100', 'c_code': code}
+
+        with temporary_project(prefix='shared-stock-http-') as root:
+            path = Path(root) / 'stock.json'
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(group.run, lambda: stock_lookup.lookup_stock_with_cache(path, 'C100', fetch))
+                try:
+                    self.assertTrue(started.wait(3))
+                    pending = next(iter(stock_lookup._STOCK_FETCH_CACHE._inflight.values()))
+                    original_result = pending.result
+
+                    def wait(*args, **kwargs):
+                        waiting.set()
+                        return original_result(*args, **kwargs)
+
+                    with patch.object(pending, 'result', side_effect=wait):
+                        second = executor.submit(group.run, lambda: stock_lookup.lookup_stock_with_cache(path, 'C100', fetch))
+                        self.assertTrue(waiting.wait(3))
+                        release.set()
+                        self.assertEqual(first.result(timeout=3)['stock'], '100')
+                        self.assertEqual(second.result(timeout=3)['stock'], '100')
+                finally:
+                    release.set()
+        self.assertEqual(calls, ['C100'])
+
 
 class PartStockLookupTest(unittest.TestCase):
     def domestic_product_fixture(self):

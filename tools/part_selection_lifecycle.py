@@ -31,6 +31,7 @@ class ServiceLifecycle:
     def shutdown(self, token):
         if not self.token or not hmac.compare_digest(self.token, str(token)):
             raise ValueError('后台身份不匹配，不能关闭其他窗口或工程的后台')
+        self.app.stock_queries.cancel()
         with self.app.settings_gate.lock:
             if self.app.settings_gate.active > 1:
                 raise DesktopExitPending('仍有数据请求正在处理，完成后自动退出')
@@ -44,6 +45,7 @@ class ServiceLifecycle:
 
     def owner_exited(self):
         # A crashed host must not leave a service behind or interrupt a write.
+        self.app.stock_queries.cancel()
         while not self.app.settings_gate.stopping:
             try:
                 with self.app.settings_gate.lock:

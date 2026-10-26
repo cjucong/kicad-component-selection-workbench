@@ -110,7 +110,7 @@ def child(root, phase):
                 elif phase=='uninitialized':
                     window.evaluate_js("delete window.requestDesktopExit; document.querySelector('#rows').replaceChildren(); null")
                     window.destroy()
-                elif phase=='close':
+                elif phase in ('close', 'stock-close'):
                     window.evaluate_js("document.querySelector('#openPluginUpdates').click(); null")
                     while not window.evaluate_js("document.querySelector('#pluginVersion').textContent.includes(" + json.dumps(VERSION) + ")"):
                         if time.monotonic()>deadline:
@@ -125,6 +125,26 @@ def child(root, phase):
                     assert window.evaluate_js("document.querySelector('#pathSourceSchematic').checked && !document.querySelector('#pathAdvanced').open"), 'Unexpected settings defaults'
                     window.evaluate_js("document.querySelector('#pathSettingsDialog [data-close-paths]').click()")
                     window.evaluate_js("const input=document.querySelector('#rows [data-field=value]'); input.value='220nF'; input.dispatchEvent(new Event('input',{bubbles:true}));")
+                    if phase == 'stock-close':
+                        window.evaluate_js("""
+                            const savedFetch = window.fetch.bind(window);
+                            window.stockReadAborted = false;
+                            window.fetch = (url, options) => String(url).startsWith('/api/stock?')
+                              ? new Promise((resolve, reject) => {
+                                  options.signal.addEventListener('abort', () => {
+                                    window.stockReadAborted = true;
+                                    reject(new DOMException('Cancelled', 'AbortError'));
+                                  }, {once:true});
+                                }) : savedFetch(url, options);
+                            requestStock('C100').catch(() => {});
+                            null;
+                        """)
+                        original_destroy = window.destroy
+                        def verify_destroy():
+                            if kwargs['js_api']._lifecycle.allow_close:
+                                assert window.evaluate_js('window.stockReadAborted === true'), 'Stock read still active during native close'
+                            original_destroy()
+                        window.destroy = verify_destroy
                     # Real WinForms Closing must defer, flush JS edits and release the port.
                     window.destroy()
                 else:
@@ -138,6 +158,8 @@ def child(root, phase):
                     lifecycle._stop_backend()
                 finally:
                     lifecycle.allow_close = True
+                    if phase == 'stock-close' and 'original_destroy' in locals():
+                        window.destroy = original_destroy
                     window.destroy()
 
         window.events.loaded += exercise
@@ -164,6 +186,7 @@ def main():
     parser.add_argument('--child',type=Path)
     parser.add_argument('--phase',default='close')
     parser.add_argument('--only-candidate',action='store_true')
+    parser.add_argument('--lifecycle-only',action='store_true')
     args = parser.parse_args()
     if args.child:
         child(args.child,args.phase)
@@ -178,7 +201,10 @@ def main():
         flags = {'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}
         env = {**os.environ,'PYTHONDONTWRITEBYTECODE':'1',
                'KICAD_PART_SELECTION_HOME':str(root.parent / 'desktop'), 'PYTHONIOENCODING':'utf-8'}
-        for phase in (('candidate',) if args.only_candidate else ('close','restart','uninitialized','candidate')):
+        phases = ('candidate',) if args.only_candidate else ('close','stock-close','restart','uninitialized')
+        if not args.only_candidate and not args.lifecycle_only:
+            phases += ('candidate',)
+        for phase in phases:
             try:
                 result = subprocess.run([str(args.python),'-B',str(Path(__file__).resolve()),'--child',str(root),'--phase',phase],
                     capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90,env=env,**flags)
@@ -187,17 +213,20 @@ def main():
             if result.returncode:
                 raise AssertionError(result.stdout+'\n'+result.stderr)
             assert (root / (phase+'.ok')).exists()
+            print(phase+': passed', flush=True)
         if not args.only_candidate:
             assert (root / 'final.ok').exists(), (root / 'restarted.log').read_text(errors='replace')
             records = json.loads((root / 'BOM/part_selection_overrides.json').read_text(encoding='utf-8'))
             assert records['C1']['field_overrides']['value']=='220nF'
         assert (root / 'sample.kicad_sch').read_text()==schematic
-        checks = {'real_webview2':'passed','native_candidate_move_restore_close':'passed',
-                  'native_candidate_save_refresh':'passed','busy_selection_exit_protection':'passed',
-                  'production_cad_written':False}
+        checks = {'real_webview2':'passed','production_cad_written':False}
+        if not args.lifecycle_only:
+            checks.update(native_candidate_move_restore_close='passed',
+                          native_candidate_save_refresh='passed',busy_selection_exit_protection='passed')
         if not args.only_candidate:
             checks.update(native_close_autosave='passed',port_release_and_reopen='passed',
-                          restart_and_exit_menu='passed',uninitialized_window_close='passed')
+                          restart_and_exit_menu='passed',uninitialized_window_close='passed',
+                          pending_stock_native_close='passed')
         print(json.dumps(checks))
 
 

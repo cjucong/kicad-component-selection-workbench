@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
@@ -58,6 +59,52 @@ def test_shutdown_does_not_interrupt_other_request(app):
     assert not app.settings_gate.stopping
 
 
+def test_exit_cancels_stock_read_waiters_but_not_active_writes(app):
+    from concurrent.futures import CancelledError
+    from part_selection_lifecycle import DesktopExitPending, ServiceLifecycle
+    from part_stock_lookup import _FetchCache, check_stock_cancelled
+    started, cancelled, release = threading.Event(), threading.Event(), threading.Event()
+    cache = _FetchCache(max_inflight=1)
+
+    def blocked_fetch(code):
+        started.set()
+        while not release.wait(0.02):
+            check_stock_cancelled()
+        return {'ok': True, 'c_code': code}
+
+    def request():
+        try:
+            with patch('part_selection_server.lookup_stock_with_cache', side_effect=lambda path, code:
+                       cache.get((code, 1), lambda: blocked_fetch(code))):
+                app.stock('C100')
+        except CancelledError:
+            cancelled.set()
+
+    worker = threading.Thread(target=request)
+    worker.start()
+    try:
+        assert started.wait(2)
+        server = Mock()
+        lifecycle = ServiceLifecycle(app, server, 'secret')
+        app.settings_gate.active = 2
+        with pytest.raises(DesktopExitPending):
+            lifecycle.shutdown('secret')
+        assert cancelled.wait(1), 'Exit is still held hostage by stock network reads'
+        assert not app.settings_gate.stopping, 'Unrelated write must still block shutdown'
+    finally:
+        release.set()
+        worker.join(timeout=2)
+        app.settings_gate.active = 0
+
+
+def test_wrong_exit_identity_does_not_cancel_stock_reads(app):
+    from part_selection_lifecycle import ServiceLifecycle
+    with patch.object(app.stock_queries, 'cancel') as cancel:
+        with pytest.raises(ValueError, match='身份'):
+            ServiceLifecycle(app, Mock(), 'secret').shutdown('other')
+    cancel.assert_not_called()
+
+
 def test_unmanaged_server_has_no_shutdown_authority(app):
     from part_selection_lifecycle import ServiceLifecycle
     with pytest.raises(ValueError, match='身份'):
@@ -105,6 +152,74 @@ def test_http_shutdown_auth_busy_and_real_port_release(app):
         if thread.is_alive():
             server.shutdown()
         thread.join(timeout=4)
+        server.server_close()
+
+
+def test_http_exit_drains_stock_while_network_is_still_blocked(app):
+    from concurrent.futures import ThreadPoolExecutor
+    from part_selection_lifecycle import ServiceLifecycle
+    server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(app))
+    app.lifecycle = ServiceLifecycle(app, server, 'secret')
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def blocked_network(*args, **kwargs):
+        started.set()
+        try:
+            assert release.wait(4)
+            raise OSError('test offline')
+        finally:
+            finished.set()
+
+    def serve():
+        try:
+            server.serve_forever(poll_interval=.02)
+        finally:
+            server.server_close()
+
+    service = threading.Thread(target=serve)
+    service.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+
+    def stock_request():
+        with urlopen(base+'/api/stock?code=C100', timeout=3) as response:
+            return json.load(response)
+
+    def shutdown(token):
+        with urlopen(Request(base+'/api/desktop_shutdown', data=b'{}',
+                headers={'Content-Type':'application/json','X-Desktop-Token':token}), timeout=2) as response:
+            return json.load(response)
+
+    try:
+        with patch('part_stock_lookup.urllib.request.urlopen', side_effect=blocked_network), \
+                ThreadPoolExecutor(max_workers=1) as executor:
+            stock = executor.submit(stock_request)
+            assert started.wait(2)
+            with pytest.raises(HTTPError):
+                shutdown('wrong')
+            assert not stock.done()
+            try:
+                shutdown('secret')
+            except HTTPError as pending:
+                assert json.load(pending)['retryable']
+            assert stock.result(timeout=1)['cancelled']
+            assert not finished.is_set(), 'Waiter should drain without waiting for network I/O'
+            deadline = time.monotonic()+1
+            while not app.settings_gate.stopping:
+                try:
+                    assert shutdown('secret')['ok']
+                except HTTPError:
+                    assert time.monotonic() < deadline
+                    time.sleep(.02)
+            service.join(timeout=2)
+            assert not service.is_alive()
+            assert not app.stock_cache_path.exists()
+    finally:
+        release.set()
+        if started.is_set():
+            assert finished.wait(2)
+        if service.is_alive():
+            server.shutdown()
+        service.join(timeout=2)
         server.server_close()
 
 
@@ -367,6 +482,8 @@ function setup(){
      getElementById:id=>({addEventListener:(_,handler)=>buttons[id]=handler})},
    setState:(...args)=>calls.push(args),closeToolbarMenus:()=>{},
    flushRowEdits:async()=>{calls.push('saved');},
+   cancelStockQueries:()=>calls.push('cancel stock'),
+   cancelRowStockQueries:()=>calls.push('cancel row stock'),
    window:{confirm:()=>context.discard,hasUnsavedPathSettings:()=>context.dirty,
      pywebview:{api:{finish_exit:async restart=>{calls.push(['exit',restart]);return {ok:true};}}}}};
  vm.runInNewContext(source,context);
@@ -382,7 +499,12 @@ function setup(){
   if(mode==='backendFailure')c.window.pywebview.api.finish_exit=async()=>({ok:false,error:'busy backend'});
   await c.window.requestDesktopExit(true);
   assert.strictEqual(c.document.body.inert,false,mode);
-  if(mode==='success')assert.deepStrictEqual(calls.slice(0,1),['saved']);
+  if(mode==='success'){
+   assert(calls.includes('saved'));
+   assert(calls.includes('cancel stock'));
+   assert(calls.includes('cancel row stock'));
+   assert(calls.indexOf('saved')<calls.findIndex(call=>Array.isArray(call)&&call[0]==='exit'));
+  }
   if(mode==='success')assert(calls.some(call=>Array.isArray(call)&&call[0]==='exit'&&call[1]===true));
   else assert(!calls.some(call=>Array.isArray(call)&&call[0]==='exit'),mode);
   if(mode==='saveFailure'){

@@ -63,3 +63,40 @@ def test_live_and_saved_default_views_both_migrate_supply_columns():
         function = re.search(r'function '+name+r'\(\) \{.*?\n\}', html, re.S).group()
         assert 'migrateSupplyColumns(' in function
 
+
+@pytest.mark.skipif(not shutil.which('node'), reason='Node.js required')
+def test_stock_exit_abort_keeps_shared_queries_and_new_retry_isolated():
+    source = page().split('const pendingStockRequests = new Map();', 1)[1].split('\nasync function refreshRowStock', 1)[0]
+    script = r'''
+const assert=require('node:assert/strict');
+const window={}, requests=[];
+const fetch=(url, options)=>new Promise((resolve,reject)=>{
+ requests.push({url,resolve});
+ options.signal.addEventListener('abort',()=>reject(new DOMException('cancelled','AbortError')),{once:true});
+});
+const pendingStockRequests = new Map();
+''' + source + r'''
+(async()=>{
+ const first=requestStock('C100'), shared=requestStock('C100');
+ assert.strictEqual(first,shared);
+ assert.equal(requests.length,1);
+ const observed=first.catch(error=>error.name);
+ cancelRowStockQueries();
+ const retry=requestStock('C100');
+ assert.notStrictEqual(retry,first);
+ assert.equal(await observed,'AbortError');
+ assert.strictEqual(pendingStockRequests.get('C100'),retry,'old cleanup removed retry');
+ assert.equal(pendingStockControllers.size,1);
+ requests[1].resolve({ok:true,json:async()=>({stock:{stock:'123',c_code:'C100'}})});
+ assert.equal((await retry).stock,'123');
+ await Promise.resolve();
+ assert.equal(pendingStockRequests.size,0);
+ assert.equal(pendingStockControllers.size,0);
+ window.desktopExitPreparing=true;
+ await assert.rejects(requestStock('C200'),{name:'AbortError'});
+ assert.equal(requests.length,2,'exit started another query');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    result = subprocess.run(['node','-e',script],capture_output=True,text=True,encoding='utf-8',timeout=10)
+    assert result.returncode == 0, result.stderr
+

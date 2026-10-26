@@ -18,8 +18,12 @@
       if (window.pluginUpdateBusy) throw new Error('正在检查或下载插件更新，请完成后再关闭');
       if (document.querySelector('[data-composing="1"]')) throw new Error('请先完成输入法编辑');
       if (window.hasUnsavedPathSettings?.() && !window.confirm('路径配置尚未保存，放弃这些配置改动并退出？')) return;
+      window.desktopExitPreparing = true;
+      cancelStockQueries();
+      cancelRowStockQueries();
       document.body.inert = true;
       await flushRowEdits();
+      cancelRowStockQueries();
       setState(restart ? '正在重启工作台…' : '正在退出工作台…', 'status');
       const deadline = Date.now() + 60000;
       while (true) {
@@ -33,6 +37,7 @@
       setState(error.message || String(error), 'error');
     } finally {
       document.body.inert = wasInert;
+      window.desktopExitPreparing = false;
       exiting = false;
     }
   };

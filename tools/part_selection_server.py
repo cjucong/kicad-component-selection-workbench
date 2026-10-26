@@ -24,6 +24,7 @@ import webbrowser
 from copy import deepcopy
 from dataclasses import asdict
 from collections import OrderedDict
+from concurrent.futures import CancelledError
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -74,6 +75,7 @@ from part_selection_overrides import (
     save_overrides,
 )
 from part_stock_lookup import (
+    StockQueryGroup,
     candidate_stock_result,
     enrich_rows_with_cached_stock,
     enrich_rows_with_stock,
@@ -1581,6 +1583,7 @@ class PartSelectionApp:
         apply_runtime_settings(self.config)
         self.settings_gate = SettingsGate()
         self.lifecycle = None
+        self.stock_queries = StockQueryGroup()
         self.project_root = self.config["project_root"]
         self.bom_dir = self.config["bom_dir"]
         self.overrides_path = self.config["output_overrides"]
@@ -1889,7 +1892,7 @@ class PartSelectionApp:
         return sort_bom_rows(rows)
 
     def stock(self, c_code: str) -> dict[str, object]:
-        return lookup_stock_with_cache(self.stock_cache_path, c_code)
+        return self.stock_queries.run(lambda: lookup_stock_with_cache(self.stock_cache_path, c_code))
 
     def check_specs(self, payload: dict[str, object]) -> dict[str, object]:
         requests = payload.get('rows', [])
@@ -3986,7 +3989,10 @@ def make_handler(app: PartSelectionApp):
                 return
             if parsed.path == "/api/stock":
                 c_code = parse_qs(parsed.query).get("code", [""])[0]
-                json_response(self, {"stock": app.stock(c_code)})
+                try:
+                    json_response(self, {"stock": app.stock(c_code)})
+                except CancelledError:
+                    json_response(self, {"ok": False, "cancelled": True, "error": "库存查询已取消"})
                 return
             if parsed.path == "/api/lcsc_search":
                 query = parse_qs(parsed.query)
@@ -5060,7 +5066,7 @@ function beginStockQueryRun() {{
 }}
 
 function isActiveStockRun(run) {{
-  return run && run.id === stockQueryRunId && !run.signal.aborted;
+  return !window.desktopExitPreparing && run && run.id === stockQueryRunId && !run.signal.aborted;
 }}
 
 const UI_STORAGE_KEY = "pxie4137_part_selection_ui_v2";
@@ -6810,16 +6816,28 @@ async function exportPumpTable() {{
 }}
 
 const pendingStockRequests = new Map();
+const pendingStockControllers = new Map();
+function cancelRowStockQueries() {{
+  for (const controller of pendingStockControllers.values()) controller.abort();
+  pendingStockControllers.clear();
+  pendingStockRequests.clear();
+}}
 function requestStock(code) {{
+  if (window.desktopExitPreparing) return Promise.reject(new DOMException("正在退出", "AbortError"));
   if (!pendingStockRequests.has(code)) {{
+    const controller = new AbortController();
+    pendingStockControllers.set(code, controller);
     const promise = (async () => {{
-      const res = await fetch(`/api/stock?code=${{encodeURIComponent(code)}}`);
+      const res = await fetch(`/api/stock?code=${{encodeURIComponent(code)}}`, {{signal: controller.signal}});
       const data = await res.json();
       if (!res.ok || data.ok === false) throw new Error(data.error || "库存查询失败");
       return data.stock || {{status:"查询失败", c_code:code}};
     }})();
     pendingStockRequests.set(code, promise);
-    promise.finally(() => {{ if (pendingStockRequests.get(code) === promise) pendingStockRequests.delete(code); }}).catch(() => {{}});
+    promise.finally(() => {{
+      if (pendingStockRequests.get(code) === promise) pendingStockRequests.delete(code);
+      if (pendingStockControllers.get(code) === controller) pendingStockControllers.delete(code);
+    }}).catch(() => {{}});
   }}
   return pendingStockRequests.get(code);
 }}

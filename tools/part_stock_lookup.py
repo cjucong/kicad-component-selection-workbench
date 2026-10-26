@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
-from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, FIRST_COMPLETED, as_completed, wait
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, FIRST_COMPLETED, as_completed, wait, TimeoutError as FutureTimeout
 from copy import deepcopy
 from datetime import datetime
 from html import unescape
@@ -37,6 +37,70 @@ _STOCK_CACHE_LOCKS: dict[Path, threading.Lock] = {}
 _STOCK_CACHE_LOCKS_LOCK = threading.Lock()
 _DOMESTIC_BROWSER_LOCK = threading.Lock()
 _SEARCH_SOURCE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lcsc-source")
+_STOCK_QUERY_SCOPE = threading.local()
+_STOCK_READ_SLOTS = threading.BoundedSemaphore(4)
+
+
+def check_stock_cancelled():
+    event = getattr(_STOCK_QUERY_SCOPE, 'cancelled', None)
+    if event is not None and event.is_set():
+        raise CancelledError('Stock query cancelled')
+
+
+class StockQueryGroup:
+    """Cancel network-only requests without interrupting edits or cache commits."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        with self._lock:
+            self._cancelled.set()
+            self._cancelled = threading.Event()
+
+    def run(self, callback):
+        previous = getattr(_STOCK_QUERY_SCOPE, 'cancelled', None)
+        with self._lock:
+            _STOCK_QUERY_SCOPE.cancelled = self._cancelled
+        try:
+            check_stock_cancelled()
+            return callback()
+        finally:
+            _STOCK_QUERY_SCOPE.cancelled = previous
+
+
+def _run_stock_read(fetcher, code):
+    cancelled = getattr(_STOCK_QUERY_SCOPE, 'cancelled', None)
+    if cancelled is None:
+        return fetcher(code)
+    while not _STOCK_READ_SLOTS.acquire(timeout=0.1):
+        check_stock_cancelled()
+    pending = Future()
+
+    def read():
+        _STOCK_QUERY_SCOPE.cancelled = cancelled
+        try:
+            check_stock_cancelled()
+            pending.set_result(fetcher(code))
+        except BaseException as exc:
+            pending.set_exception(exc)
+        finally:
+            _STOCK_READ_SLOTS.release()
+
+    # Only network reads may outlive their waiter, never cache or design writes.
+    worker = threading.Thread(target=read, daemon=True, name='stock-network-read')
+    try:
+        worker.start()
+    except BaseException:
+        _STOCK_READ_SLOTS.release()
+        raise
+    while True:
+        check_stock_cancelled()
+        try:
+            return pending.result(timeout=0.1)
+        except FutureTimeout:
+            if pending.done():
+                raise
 
 
 class _FetchCache:
@@ -46,13 +110,14 @@ class _FetchCache:
         self._max_entries = max_entries
         self._ttl = ttl
         self._max_inflight = max_inflight
-        self._entries: OrderedDict[tuple[str, int], tuple[float, Any]] = OrderedDict()
-        self._inflight: dict[tuple[str, int], Future] = {}
+        self._entries: OrderedDict[tuple[Any, ...], tuple[float, Any]] = OrderedDict()
+        self._inflight: dict[tuple[Any, ...], Future] = {}
         self._condition = threading.Condition()
 
-    def get(self, key: tuple[str, int], loader: Callable[[], Any], force: bool = False) -> Any:
+    def get(self, key: tuple[Any, ...], loader: Callable[[], Any], force: bool = False) -> Any:
         with self._condition:
             while True:
+                check_stock_cancelled()
                 cached = self._entries.get(key)
                 if cached is not None and not force:
                     expires, value = cached
@@ -69,12 +134,28 @@ class _FetchCache:
                     self._inflight[key] = pending
                     owner = True
                     break
-                self._condition.wait()
+                self._condition.wait(0.1)
 
         if not owner:
-            return deepcopy(pending.result())
+            while True:
+                check_stock_cancelled()
+                try:
+                    return deepcopy(pending.result(timeout=0.1))
+                except FutureTimeout:
+                    if pending.done():
+                        raise
+                except CancelledError:
+                    check_stock_cancelled()
+                    # A stock owner can exit while a separate search shares its source.
+                    with self._condition:
+                        while self._inflight.get(key) is pending:
+                            self._condition.wait(0.1)
+                            check_stock_cancelled()
+                    return self.get(key, loader, force)
         try:
+            check_stock_cancelled()
             value = deepcopy(loader())
+            check_stock_cancelled()
             with self._condition:
                 # Do not retain empty/error results: a later search should retry.
                 if value:
@@ -96,6 +177,7 @@ class _FetchCache:
 
 _DOMESTIC_PAGE_CACHE = _FetchCache()
 _PARTNER_PRODUCT_CACHE = _FetchCache()
+_STOCK_FETCH_CACHE = _FetchCache(max_entries=0)
 
 
 OVERSEAS_PROVIDER_LABELS = {
@@ -502,7 +584,10 @@ def fetch_szlcsc_page(c_code: str, timeout: int = 10, force_refresh: bool = Fals
 
 
 def _fetch_szlcsc_page(keyword: str, timeout: int) -> str:
-    with _DOMESTIC_BROWSER_LOCK:
+    while not _DOMESTIC_BROWSER_LOCK.acquire(timeout=0.1):
+        check_stock_cancelled()
+    try:
+        check_stock_cancelled()
         chrome = find_chrome_executable()
         if not chrome:
             return ""
@@ -528,7 +613,10 @@ def _fetch_szlcsc_page(keyword: str, timeout: int) -> str:
             )
         except (OSError, subprocess.TimeoutExpired):
             return ""
+        check_stock_cancelled()
         return completed.stdout.decode("utf-8", errors="replace")
+    finally:
+        _DOMESTIC_BROWSER_LOCK.release()
 
 
 def fetch_szlcsc_domestic_products(c_code: str, timeout: int = 10, force_refresh: bool = False) -> list[dict[str, Any]]:
@@ -1078,6 +1166,7 @@ def query_lcsc_stock(
     timeout: int = 8,
     domestic_fetcher: Callable[[str, int], list[dict[str, Any]]] = fetch_szlcsc_domestic_products,
 ) -> dict[str, str | bool]:
+    check_stock_cancelled()
     c_code = normalize_c_code(c_code)
     if not c_code:
         return stock_status("", "NeedCCode")
@@ -1117,6 +1206,7 @@ def query_lcsc_stock(
             raw = response.read().decode("utf-8", errors="replace")
         data = json.loads(raw)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        check_stock_cancelled()
         for product in domestic_fetcher(c_code, timeout):
             if normalize_c_code(product.get("productCode")) == c_code:
                 result = parse_lcsc_product(c_code, product)
@@ -1125,6 +1215,7 @@ def query_lcsc_stock(
                 return result
         return stock_status(c_code, "QueryFailed", str(exc))
 
+    check_stock_cancelled()
     if data.get("code") != 200:
         for product in domestic_fetcher(c_code, timeout):
             if normalize_c_code(product.get("productCode")) == c_code:
@@ -1136,6 +1227,7 @@ def query_lcsc_stock(
 
     products = ((data.get("result") or {}).get("dataList")) or []
     for product in products:
+        check_stock_cancelled()
         if normalize_c_code(product.get("productCode")) == c_code:
             result = parse_lcsc_product(c_code, product)
             if result.get("price") == "无人民币价":
@@ -1145,6 +1237,7 @@ def query_lcsc_stock(
                     result["source"] = f"{result['source']}+item_price"
             result["error"] = probe_error
             if not result.get("delivery_source_url"):
+                check_stock_cancelled()
                 # Reuse the domestic source cache; never infer dispatch from stock totals.
                 try:
                     domestic = [item for item in domestic_fetcher(c_code, timeout)
@@ -1559,11 +1652,17 @@ def lookup_stock_with_cache(
         return stock_status("", "NeedCCode")
 
     try:
-        result = fetcher(code)
+        check_stock_cancelled()
+        result = _STOCK_FETCH_CACHE.get((str(Path(cache_path).resolve()), code, fetcher),
+                                       lambda: _run_stock_read(fetcher, code))
+        check_stock_cancelled()
+    except CancelledError:
+        raise
     except Exception as exc:
         result = stock_status(code, "QueryFailed", str(exc))
 
     with stock_cache_lock(cache_path):
+        check_stock_cancelled()
         cache = load_stock_cache(cache_path)
         if not result.get("ok") and code in cache and cache[code].get("ok"):
             cached = dict(cache[code])
