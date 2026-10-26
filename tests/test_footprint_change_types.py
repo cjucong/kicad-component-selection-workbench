@@ -221,3 +221,136 @@ def test_source_alias_variants_parse_the_board_once(monkeypatch):
     monkeypatch.setattr(kicad_sexpr, 'parse_sexpr', tracked)
     board_source_hash_variants('(kicad_pcb (footprint "Local:Old" (property "Reference" "R1")))', ['R1'])
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('problem', ['', 'larger', 'pad', 'pose', 'uuid', 'copper', 'unknown',
+                                    'width', 'board_hash', 'instance_hash', 'missing'])
+def test_native_reload_silkscreen_rounding_requires_exact_source(scratch_project, problem):
+    import hashlib
+    from part_selection_footprint_changes import (
+        board_copper_hashes, board_source_hash_variants, recover_legacy_source_hashes)
+    old = '''(kicad_pcb (footprint "Local:Old" (uuid "instance") (layer "F.Cu") (at 1 2)
+      (property "Reference" "R1") (path "/sheet/symbol")
+      (fp_poly (pts (xy 107.036042 -21.345639) (xy 111 -18) (xy 107 -18))
+        (stroke (width 0.15) (type solid)) (fill no) (layer "F.SilkS")
+        (future_metadata (xy 0 0)))
+      (pad "1" smd rect (at 0 0) (size 1 2) (layers "F.Cu"))))'''
+    saved = old.replace('-21.345639', '-21.345638')
+    if problem == 'copper':
+        old = old.replace('F.SilkS', 'F.Cu')
+        saved = saved.replace('F.SilkS', 'F.Cu')
+    source_hash = board_copper_hashes(old, ['R1'], include_instance=True)['R1']
+    original = scratch_project/'original.kicad_pcb'
+    if problem != 'missing':
+        original.write_bytes(old.encode())
+    source = {'instance_source_hash':source_hash,
+              'board':{'hash':hashlib.sha256(old.encode()).hexdigest()}}
+    if problem == 'larger':saved = saved.replace('-21.345638', '-21.345637')
+    elif problem == 'pad':saved = saved.replace('(at 0 0)', '(at 0.000001 0)')
+    elif problem == 'pose':saved = saved.replace('(at 1 2)', '(at 1.000001 2)')
+    elif problem == 'uuid':saved = saved.replace('"instance"', '"other"')
+    elif problem == 'width':saved = saved.replace('(width 0.15)', '(width 0.150001)')
+    elif problem == 'unknown':saved = saved.replace('(future_metadata (xy 0 0))',
+                                                 '(future_metadata (xy 0.000001 0))')
+    elif problem == 'board_hash':source['board']['hash'] = 'wrong-board'
+    elif problem == 'instance_hash':source['instance_source_hash'] = 'wrong-instance'
+    live = board_source_hash_variants(saved, ['R1'])
+    cache = {}
+    # A rejected prior preview must not prevent recovery after undoing its edit.
+    rejected = saved.replace('(size 1 2)', '(size 1 3)')
+    rejected_hashes = board_source_hash_variants(rejected, ['R1'])
+    recover_legacy_source_hashes({'R1':source}, rejected_hashes, [original], cache,
+                                 live_text=rejected)
+    assert source_hash not in rejected_hashes['R1']
+    recover_legacy_source_hashes({'R1':source}, live, [original], cache, live_text=saved)
+    assert (source_hash in live['R1']) is (not problem)
+    changed = saved.replace('(size 1 2)', '(size 1 2.000001)')
+    changed_hashes = board_source_hash_variants(changed, ['R1'])
+    recover_legacy_source_hashes({'R1':source}, changed_hashes, [], cache, live_text=changed)
+    assert source_hash not in changed_hashes['R1'], 'Cached proof must bind the exact live state'
+
+
+@pytest.mark.parametrize('problem', ['', 'board_hash', 'instance_hash', 'missing',
+                                    'pad', 'uuid', 'width', 'larger', 'unknown'])
+def test_reload_recovers_canonical_evidence_from_verified_mixed_strokes(scratch_project, problem):
+    import hashlib
+    from part_selection_footprint_changes import (
+        board_copper_hashes, board_source_hash_variants, recover_legacy_source_hashes)
+
+    old = '''(kicad_pcb (footprint "Local:Old" (uuid "instance") (layer "F.Cu") (at 1 2)
+      (property "Reference" "R1") (path "/sheet/symbol")
+      (fp_line (start 0 0) (end 5 0) (stroke (width 0.15) (type default))
+        (layer "F.SilkS") (future_metadata (xy 0 0)))
+      (fp_line (start 2 0) (end 1 0) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))
+      (pad "1" smd rect (at 0 0) (size 1 2) (layers "F.Cu"))))'''
+    saved = old.replace('(start 0 0)', '(start 0.000001 0)')
+    source_hash = board_copper_hashes(old, ['R1'], include_instance=True, stroke_style='solid')['R1']
+    assert source_hash != board_copper_hashes(old, ['R1'], include_instance=True)['R1'], (
+        'Exercise new canonical evidence, not a legacy raw-source hash')
+    original = scratch_project / 'canonical-original.kicad_pcb'
+    if problem != 'missing':
+        original.write_bytes(old.encode())
+    source = {'instance_source_hash': source_hash,
+              'board': {'hash': hashlib.sha256(old.encode()).hexdigest()}}
+    if problem == 'board_hash':
+        source['board']['hash'] = 'wrong-board'
+    elif problem == 'instance_hash':
+        source['instance_source_hash'] = 'wrong-instance'
+    elif problem == 'pad':
+        saved = saved.replace('(at 0 0)', '(at 0.000001 0)')
+    elif problem == 'uuid':
+        saved = saved.replace('"instance"', '"other"')
+    elif problem == 'width':
+        saved = saved.replace('(width 0.15)', '(width 0.150001)', 1)
+    elif problem == 'larger':
+        saved = saved.replace('(start 0.000001 0)', '(start 0.000002 0)')
+    elif problem == 'unknown':
+        saved = saved.replace('(future_metadata (xy 0 0))',
+                              '(future_metadata (xy 0.000001 0))')
+    live = board_source_hash_variants(saved, ['R1'])
+    assert source_hash not in live['R1'], 'The verified-source recovery path must be exercised'
+    recover_legacy_source_hashes({'R1': source}, live, [original], {}, live_text=saved)
+    assert (source['instance_source_hash'] in live['R1']) is (not problem)
+
+
+@pytest.mark.parametrize('problem', ['', 'larger', 'pad', 'uuid', 'layer', 'width',
+                                    'missing_duplicate', 'reused_duplicate'])
+def test_reload_graphics_pair_as_multiset_preserving_duplicate_counts(scratch_project, problem):
+    import hashlib
+    from part_selection_footprint_changes import (
+        board_copper_hashes, board_source_hash_variants, recover_legacy_source_hashes)
+
+    first = ('(fp_line (start 0 0) (end 5 0) '
+             '(stroke (width 0.15) (type solid)) (layer "F.SilkS"))')
+    second = first.replace('(start 0 0)', '(start 0.000001 0)').replace('(end 5 0)', '(end 1 0)')
+    moved = first.replace('(start 0 0)', '(start 0.000001 0)')
+    prefix = ('(kicad_pcb (footprint "Local:Old" (uuid "instance") (layer "F.Cu") (at 1 2) '
+              '(property "Reference" "R1") (path "/sheet/symbol") ')
+    suffix = '(pad "1" smd rect (at 0 0) (size 1 2) (layers "F.Cu"))))'
+    old = prefix + first + first + second + suffix
+    saved = prefix + moved + moved + second + suffix
+    # Before drift, start sorts the long lines first; after drift, their
+    # starts tie and end sorts the short line first. Positional zip is wrong.
+    if problem == 'larger':
+        saved = saved.replace(moved, moved.replace('0.000001', '0.000002'), 1)
+    elif problem == 'pad':
+        saved = saved.replace('(at 0 0)', '(at 0.000001 0)')
+    elif problem == 'uuid':
+        saved = saved.replace('"instance"', '"other"')
+    elif problem == 'layer':
+        saved = saved.replace('(layer "F.SilkS")', '(layer "F.Fab")', 1)
+    elif problem == 'width':
+        saved = saved.replace('(width 0.15)', '(width 0.150001)', 1)
+    elif problem == 'missing_duplicate':
+        saved = saved.replace(moved, '', 1)
+    elif problem == 'reused_duplicate':
+        saved = saved.replace(moved, second, 1)
+    original = scratch_project / 'multiset-original.kicad_pcb'
+    original.write_bytes(old.encode())
+    source_hash = board_copper_hashes(old, ['R1'], include_instance=True)['R1']
+    source = {'instance_source_hash': source_hash,
+              'board': {'hash': hashlib.sha256(old.encode()).hexdigest()}}
+    live = board_source_hash_variants(saved, ['R1'])
+    assert source_hash not in live['R1'], 'The verified-source recovery path must be exercised'
+    recover_legacy_source_hashes({'R1': source}, live, [original], {}, live_text=saved)
+    assert (source_hash in live['R1']) is (not problem)

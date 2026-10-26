@@ -1,4 +1,4 @@
-"""Scoped, staged design synchronization with explicit post-schematic PCB consent."""
+"""Scoped design synchronization with automatic handoff and explicit risk checks."""
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -67,6 +67,10 @@ class DesignSync:
                 result['pcb_preview'] = self.app.pcb_updates.preview(payload['refs'],payload['bom'],
                     alignment=payload['alignment'],source=source, **options)
                 result['blocked'] = bool(result['pcb_preview'].get('blocked'))
+        # A PCB-only recheck can belong to an already-authorized automatic design
+        # job. Return the same risk decision used by that job's continuation.
+        result['pcb_automatic'] = bool(result['pcb_preview']) and self._can_automate(
+            {**result, 'destination':'design'})
         if payload['destination'] == 'design':
             result['automatic'] = self._can_automate(result)
         notify('validate', '正在核验预检期间的数据版本')
@@ -257,6 +261,8 @@ class DesignSync:
                 raise ValueError('排队期间数据已改变，请重新预检')
             if automatic and phase == 'pcb' and not pcb_only:
                 self.jobs[key]['phase_results']['schematic'] = {'ok':True,'already_synced':True}
+                with self.lock:
+                    self.jobs[key]['_pcb_source'] = deepcopy(state['source'])
                 self._update(key,stage='schematic_current',step_status='skipped',message='原理图已是最新，不重复写入或关闭')
             if phase == 'schematic':
                 self._update(key,stage='schematic',message='正在同步原理图')
@@ -284,14 +290,15 @@ class DesignSync:
                 self._update(key,stage=phase,message='原理图已完成，正在核验当前 PCB')
                 source = (self.sources.after_write(state['source'], state['desired']) if automatic
                           else self.sources.capture(result['refs']))
+                with self.lock:
+                    self.jobs[key]['_pcb_source'] = deepcopy(source)
                 pcb = self.app.pcb_updates.preview(result['refs'],result['bom'],alignment=result['alignment'],source=source,
                     progress=lambda stage,message:self._update(key,stage='pcb_preview:'+stage,message=message))
-                with self.lock:
-                    self.jobs[key]['_pcb_source'] = source
                 next_result = {**result, 'pcb_preview':pcb, 'blocked':bool(pcb.get('blocked'))}
                 if not automatic or not self._can_automate(next_result):
                     self._update(key,done=True,stage='awaiting_pcb_confirmation',needs_confirmation=True,
-                        message='原理图已完成，PCB 存在需要处理的风险' if automatic else '原理图已完成，请核对 PCB 更新后继续',pcb_preview=pcb)
+                        message='原理图已完成，PCB 存在需要处理的风险' if automatic else '原理图已完成，请核对 PCB 更新后继续',
+                        pcb_preview=pcb, pcb_automatic=self._can_automate({**next_result, 'destination':'design'}))
                     return
                 result = next_result
             self._update(key,stage='pcb',message='正在更新有差异的 PCB 器件，完成后自动保存核验')
@@ -395,6 +402,9 @@ class DesignSync:
                 return self.status(job_id)
             if not job['phase_results'].get('schematic',{}).get('ok'):
                 raise ValueError('原理图阶段尚未完成')
+            approved = deepcopy(job.get('_pcb_source'))
+            if not approved or not self.sources.refresh_after_save(approved):
+                raise ValueError('原任务核对后的原理图或选料记录已改变，请重新同步设计，不能续写旧任务 PCB')
             if preview_id == (job.get('pcb_preview') or {}).get('preview_id'):
                 pcb = job['pcb_preview']
                 result = deepcopy(self.previews[job['_preview']]['result'])
@@ -407,7 +417,10 @@ class DesignSync:
             else:
                 token = preview_id
                 state = self._preview(token)
-                if state['result']['destination'] != 'pcb' or state['result']['refs'] != job['refs'] or state.get('job_id'):
+                allowed = ('pcb','design') if job['destination'] == 'design' else ('pcb',)
+                if (state['result']['destination'] not in allowed or state['result']['refs'] != job['refs']
+                        or state.get('job_id') or state['result']['schematic_changes']
+                        or not state['result']['pcb_preview']):
                     raise ValueError('PCB 重试预检必须属于同一组器件且尚未使用')
                 if job['destination'] == 'design':
                     state['result']['destination'] = 'design'

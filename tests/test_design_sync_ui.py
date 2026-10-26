@@ -142,3 +142,69 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
 def test_workbench_scope_menu_and_native_tool_route():
     from run_design_sync_smoke import run_checks
     assert '"ok":true' in run_checks()
+
+
+def test_design_retry_automatically_resumes_once_and_keeps_managed_alignment():
+    source = Path(__file__).resolve().parents[1] / 'tools/web/design-sync.js'
+    script = r'''
+const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs=require('node:fs');
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.route('http://workbench.test/',r=>r.fulfill({body:'<html><body></body></html>'}));
+  await page.goto('http://workbench.test/');
+  await page.evaluate(()=>{
+   window.calls=[];window.continued=false;window.preflights=0;window.risk=false;window.switching=false;
+   window.flushRowEdits=async()=>{};
+   window.fetch=async(path,options)=>{
+    const body=options?.body?JSON.parse(options.body):null; calls.push({path,body});
+    const pcb={preview_id:'pcb-'+preflights,blocked:false,items:[{ref:'R1',kind:'replace',
+      before:'Local:Old',after:'Local:New',needs_ack:true,selection_verified:true,
+      manual_adaptation:true,alignment_source:'management',max_error_mm:.2,field_changes:[],
+      ...(risk?{dropped_terminals:[{number:'9',net_assigned:true,same_net_objects:{segment:0,arc:0,via:0,zone:0}}]}:{})}]};
+    let value;
+    if(path==='/api/start_design_sync_preview') {
+     ++preflights;
+     value={ok:true,job_id:'preflight-'+preflights,done:true,preview:{ok:true,preview_id:'design-'+preflights,
+      destination:body.destination,automatic:preflights===1,pcb_automatic:!risk,blocked:false,
+      schematic_changes:[],pcb_preview:preflights===1?null:pcb}};
+     if(switching && preflights===2) Object.assign(value.preview,{blocked:true,pcb_automatic:false,
+       suggested_destination:'both',pcb_preview:null,schematic_changes:[{ref:'R1',name:'value',before:'10k',after:'22k'}]});
+     if(switching && preflights>=3) value.preview.automatic=false;
+    } else if(path==='/api/start_design_sync') value={ok:true,job_id:'job'};
+    else if(path==='/api/continue_design_sync') {continued=true;value={ok:true,job_id:'job'};}
+    else if(path.startsWith('/api/design_sync_job')) value=continued?
+      {ok:true,job_id:'job',done:true,stage:'complete',phase_results:{schematic:{ok:true},pcb:{ok:true,saved:true}},message:'同步完成'}:
+      {ok:false,job_id:'job',done:true,stage:'partial',phase_results:{schematic:{ok:true}},message:'PCB 连接中断，请重新预检'};
+    else throw Error('unexpected '+path);
+    return {ok:true,json:async()=>value};
+   };
+  });
+  await page.addScriptTag({content:fs.readFileSync(process.env.DESIGN_SYNC_JS,'utf8')});
+  await page.evaluate(()=>window.openDesignSync({refs:['R1'],destination:'design'}));
+  await page.getByRole('button',{name:'重新预检 PCB',exact:true}).waitFor();
+  await page.getByRole('button',{name:'重新预检 PCB',exact:true}).click();
+  await page.waitForFunction(()=>calls.some(c=>c.path==='/api/continue_design_sync'),{},{timeout:3000});
+  await page.waitForFunction(()=>document.querySelector('[data-design-status]').textContent==='同步完成');
+  assert.equal(await page.locator('[data-design-alignment]').isVisible(),false);
+  assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/start_design_sync').length),1);
+  assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/continue_design_sync').length),1);
+  await page.locator('[data-design-close]').click();
+  await page.evaluate(()=>{continued=false;preflights=0;risk=true;return window.openDesignSync({refs:['R1'],destination:'design'});});
+  await page.getByRole('button',{name:'重新预检 PCB',exact:true}).click();
+  await page.locator('[data-design-drops]').waitFor();
+  assert.equal(await page.locator('[data-design-apply]').isEnabled(),false);
+  assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/continue_design_sync').length),1);
+  await page.locator('[data-design-close]').click();
+  await page.evaluate(()=>{continued=false;preflights=0;risk=false;switching=true;return window.openDesignSync({refs:['R1'],destination:'design'});});
+  await page.getByRole('button',{name:'重新预检 PCB',exact:true}).click();
+  await page.getByRole('button',{name:'改为全部同步',exact:true}).click();
+  await page.waitForFunction(()=>preflights===3);
+  assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/start_design_sync_preview').at(-1).body.destination),'design');
+ } finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+    result = subprocess.run(['node', '-e', script], env={**os.environ, 'DESIGN_SYNC_JS': str(source)},
+                            capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stdout + result.stderr

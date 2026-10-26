@@ -154,6 +154,86 @@ def test_design_missing_empty_field_is_not_a_schematic_change():
         service.close()
 
 
+@pytest.mark.parametrize('risk', ['ordinary', 'unverified', 'dropped', 'unknown', 'locked'])
+def test_pcb_retry_reports_automatic_design_continuation_policy(risk):
+    service, app, sources = coordinator()
+    app.design_sync_fields.return_value = deepcopy(sources.capture(['R1'])['fields'])
+    item = {'ref':'R1', 'kind':'replace', 'needs_ack':True,
+            'selection_verified':risk != 'unverified', 'max_error_mm':.2}
+    if risk == 'dropped':
+        item['dropped_terminals'] = [{'number':'9', 'net_assigned':True}]
+    if risk == 'unknown':
+        item['kind'] = 'unknown'
+    app.pcb_updates.preview.return_value.update(items=[item], blocked=risk in ('unknown', 'locked'))
+    try:
+        preview = service.preview({'refs':['R1'], 'destination':'pcb'})
+        assert preview['pcb_automatic'] is (risk == 'ordinary')
+        app.pcb_updates.apply.assert_not_called()
+    finally:
+        service.close()
+
+
+def test_automatic_design_recheck_resumes_waiting_job_without_repeating_schematic():
+    service, app, sources = coordinator()
+    app.sync_design_pcb = Mock(return_value={'ok':True, 'saved':True})
+    app.notify_kicad_schematic_changed = Mock(return_value={'ok':True})
+    app.pcb_updates.preview.return_value['blocked'] = True
+    try:
+        first = service.preview({'refs':['R1'], 'destination':'design'})
+        waiting = await_job(service, service.start(first['preview_id'], {})['job_id'])
+        assert waiting['stage'] == 'awaiting_pcb_confirmation'
+        app.design_sync_fields.return_value = deepcopy(sources.capture(['R1'])['fields'])
+        app.pcb_updates.preview.return_value['blocked'] = False
+        retry = service.preview({'refs':['R1'], 'destination':'design'})
+        assert retry['automatic'] and retry['pcb_automatic']
+        resumed = await_job(service, service.continue_pcb(waiting['job_id'], retry['preview_id'], {})['job_id'])
+        assert resumed['stage'] == 'complete'
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+        app.sync_design_pcb.assert_called_once()
+    finally:
+        service.close()
+
+
+def test_automatic_design_recheck_with_new_schematic_edits_cannot_resume_pcb():
+    service, app, _ = coordinator()
+    app.sync_design_pcb = Mock()
+    app.pcb_updates.preview.return_value['blocked'] = True
+    try:
+        first = service.preview({'refs':['R1'], 'destination':'design'})
+        waiting = await_job(service, service.start(first['preview_id'], {})['job_id'])
+        retry = service.preview({'refs':['R1'], 'destination':'design'})
+        assert retry['schematic_changes']
+        with pytest.raises(ValueError):
+            service.continue_pcb(waiting['job_id'], retry['preview_id'], {})
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+        app.sync_design_pcb.assert_not_called()
+    finally:
+        service.close()
+
+
+def test_fresh_retry_cannot_adopt_unapproved_native_schematic_fields():
+    service, app, sources = coordinator()
+    app.sync_design_pcb = Mock(return_value={'ok':True, 'saved':True})
+    app.pcb_updates.preview.return_value['blocked'] = True
+    try:
+        first = service.preview({'refs':['R1'], 'destination':'design'})
+        waiting = await_job(service, service.start(first['preview_id'], {})['job_id'])
+        current = deepcopy(sources.capture(['R1']))
+        current['fields']['R1']['value'] = 'unapproved native edit'
+        sources.capture.side_effect = lambda refs:deepcopy(current)
+        sources.validate.side_effect = lambda snapshot:snapshot['fields'] == current['fields']
+        sources.refresh_after_save.side_effect = sources.validate.side_effect
+        app.design_sync_fields.return_value = deepcopy(current['fields'])
+        app.pcb_updates.preview.return_value['blocked'] = False
+        retry = service.preview({'refs':['R1'], 'destination':'pcb'})
+        assert retry['pcb_automatic'] and not retry['schematic_changes']
+        with pytest.raises(ValueError):
+            service.continue_pcb(waiting['job_id'], retry['preview_id'], {})
+        app.sync_design_pcb.assert_not_called()
+    finally:
+        service.close()
+
+
 def test_automatic_handoff_rejects_intervening_source_changes():
     service, app, sources = coordinator()
     sources.after_write.side_effect = ValueError('同步阶段交接期间选料记录已改变')

@@ -31,7 +31,7 @@
     if (!refs.length || !destinations[payload.destination]) throw new Error('请选择器件范围及同步目标');
     const state = {payload:{refs,destination:payload.destination,bom:payload.bom || '__schematic__',
       alignment:payload.alignment || 'center'},busy:false,closed:false,sequence:0,job:null,preview:null,
-      continuation:null,polling:false,notified:new Set()};
+      continuation:null,polling:false,automaticWorkflow:payload.destination==='design',notified:new Set()};
     const panel = document.createElement(child ? 'section' : 'dialog');
     panel.className = 'design-sync-panel'; panel.dataset.designPanel = '';
     panel.setAttribute('aria-label','同步设计');
@@ -43,7 +43,7 @@
       <span data-design-elapsed></span></div>
       <ol data-design-steps class="design-sync-steps" aria-label="同步阶段" aria-live="polite"></ol>
       <details data-design-timing hidden><summary>阶段耗时</summary><div data-design-timing-items></div></details>
-      <div class="design-sync-options"><label data-design-alignment-label>封装对齐 <select data-design-alignment aria-label="封装对齐"><option value="center">中心对齐</option><option value="rigid">焊盘原位</option></select></label></div>
+      <div class="design-sync-options"><label data-design-alignment-label hidden>封装对齐 <select data-design-alignment aria-label="封装对齐"><option value="center">中心对齐</option><option value="rigid">焊盘原位</option></select></label></div>
       <div data-design-changes></div>
       <div class="design-sync-confirmations"><label hidden><input type="checkbox" data-design-geometry>已核对目标封装、焊盘编号及引脚功能</label>
       <label hidden><input type="checkbox" data-design-movement>接受焊盘偏移；更新后检查连接与 DRC，走线不会随封装移动</label>
@@ -100,8 +100,8 @@
     }
     function enabled() {
       const pcb = state.preview?.pcb_preview;
-      const geometry = (pcb?.items || []).some(item => item.needs_ack && !(state.payload.destination==='design' && item.selection_verified));
-      const movement = (pcb?.items || []).some(item => item.max_error_mm > .001 && !(state.payload.destination==='design' && item.selection_verified));
+      const geometry = (pcb?.items || []).some(item => item.needs_ack && !(state.automaticWorkflow && item.selection_verified));
+      const movement = (pcb?.items || []).some(item => item.max_error_mm > .001 && !(state.automaticWorkflow && item.selection_verified));
       const drops = (pcb?.items || []).flatMap(item=>item.dropped_terminals || []);
       q('[data-design-apply]').disabled = state.busy || state.loading || !state.preview || state.preview.blocked || pcb?.blocked ||
         (geometry && !q('[data-design-geometry]').checked) || (movement && !q('[data-design-movement]').checked) ||
@@ -115,10 +115,10 @@
     function render(preview) {
       state.preview = preview;
       const pcb = preview.pcb_preview, allItems = pcb?.items || [], items = allItems.filter(item=>item.kind!=='none'), schematic = preview.schematic_changes || [];
-      q('[data-design-alignment-label]').hidden = !items.some(item => item.kind === 'replace');
+      q('[data-design-alignment-label]').hidden = state.automaticWorkflow || !items.some(item => item.kind === 'replace');
       q('[data-design-geometry]').checked = false; q('[data-design-movement]').checked = false;
-      q('[data-design-geometry]').parentElement.hidden = !items.some(item => item.needs_ack && !(state.payload.destination==='design' && item.selection_verified));
-      q('[data-design-movement]').parentElement.hidden = !items.some(item => item.max_error_mm > .001 && !(state.payload.destination==='design' && item.selection_verified));
+      q('[data-design-geometry]').parentElement.hidden = !items.some(item => item.needs_ack && !(state.automaticWorkflow && item.selection_verified));
+      q('[data-design-movement]').parentElement.hidden = !items.some(item => item.max_error_mm > .001 && !(state.automaticWorkflow && item.selection_verified));
       const drops=items.flatMap(item=>item.dropped_terminals || []);
       q('[data-design-drops]').checked=false;q('[data-design-connected]').checked=false;
       q('[data-design-drops]').parentElement.hidden=!drops.length;
@@ -135,13 +135,13 @@
                   ${(item.differences || []).length?`<details><summary>焊盘几何差异</summary>${item.differences.map(p=>`<div>焊盘 ${escape(p.number)} · ${escape(p.fields.join(', '))}<pre>${escape(JSON.stringify(p.before,null,2))} → ${escape(JSON.stringify(p.after,null,2))}</pre></div>`).join('')}</details>`:''}
                   ${(item.extra_pads || []).length?`<div>额外焊盘：${escape(item.extra_pads.join(', '))} · 保留，未分配网络（已有适配实例接网不会被清空）</div>`:''}
                   ${(item.dropped_terminals || []).map(p=>`<div class="design-warning">放弃端子 ${escape(p.number)} · 网络 ${escape(p.net_name || (p.net_assigned?'编号 '+p.net_code:'未分配'))}<br>${escape(p.physical_connection)}<br>同网走线 ${p.same_net_objects.segment+p.same_net_objects.arc} / 过孔 ${p.same_net_objects.via} / 区域 ${p.same_net_objects.zone}<br>${escape(p.warning)}</div>`).join('')}` : ''}</td></tr>`).join('')}</tbody></table>` : '');
-      q('[data-design-safety]').textContent = state.payload.destination === 'schematic' ? '仅写入所选原理图字段，不修改 PCB。' :
-        state.payload.destination === 'design' ? '只更新实际差异并自动保存核验；PCB 保持打开，必要时暂关原理图。' :
+      q('[data-design-safety]').textContent = state.automaticWorkflow ? '沿用封装管理已保存的对齐；预检通过后自动继续，只更新实际差异并保存核验。' :
+        state.payload.destination === 'schematic' ? '仅写入所选原理图字段，不修改 PCB。' :
         state.payload.destination === 'both' && !state.continuation ? '先保存并关闭当前工程，同步原理图后核验 PCB 并确认。' :
         '仅更新所选器件，不改网络或走线。自动保存当前工程（含此前编辑），重新打开并定位。';
       q('[data-design-both]').hidden = preview.suggested_destination !== 'both';
       q('[data-design-refresh]').hidden = !preview.blocked && !pcb?.blocked;
-      q('[data-design-apply]').textContent = state.continuation ? '继续同步 PCB' : destinations[state.payload.destination];
+      q('[data-design-apply]').textContent = state.automaticWorkflow ? '同步设计' : state.continuation ? '继续同步 PCB' : destinations[state.payload.destination];
       status(preview.reason || (items.some(item=>item.blocked_reason) ? '预检受阻：有锁定器件需要更换封装，请在 PCB 解锁后重新预检；本批未写入 PCB' : preview.blocked || pcb?.blocked ? '存在待核对的封装，尚未写入 PCB' :
         !items.length && !schematic.length && state.payload.destination !== 'both' ? '所选字段无需更新' : '已完成预检，请核对改动'));
       enabled();
@@ -184,7 +184,8 @@
         state.loading = false;
         if (state.continuation) state.continuation = result.preview_id;
         render(result);
-        if (state.payload.destination === 'design' && result.automatic) q('[data-design-apply]').click();
+        if ((state.payload.destination === 'design' && result.automatic) ||
+            (state.automaticWorkflow && state.continuation && result.pcb_automatic)) q('[data-design-apply]').click();
       } catch (error) {
         if (!state.closed && generation === state.sequence) {
           state.loading = false; status(error.message,true); q('[data-design-refresh]').hidden = false;
@@ -262,7 +263,10 @@
       }
       await poll();
     };
-    q('[data-design-both]').onclick = () => {state.payload.destination='both';state.continuation=null;void preflight();};
+    q('[data-design-both]').onclick = () => {
+      state.payload.destination=state.automaticWorkflow?'design':'both';
+      state.continuation=null;state.job=null;state.notified.clear();phases({});void preflight();
+    };
     q('[data-design-apply]').onclick = async () => {
       if (q('[data-design-apply]').disabled || state.busy) return;
       busy(true); status('正在提交同步任务…');

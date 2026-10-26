@@ -5,7 +5,7 @@ import hashlib
 import json
 
 
-def _board_hashes(text, refs, *, include_instance, stroke_styles):
+def _board_hashes(text, refs, *, include_instance, stroke_styles, source_data=None):
     from kicad_sexpr import parse_sexpr
     ignored = {'uuid','tstamp','net','pinfunction','pintype'}
     refs = set(refs)
@@ -41,10 +41,14 @@ def _board_hashes(text, refs, *, include_instance, stroke_styles):
             heads.update(('fp_line','fp_arc','fp_circle','fp_rect','fp_poly','zone','model','path'))
         hashes = []
         for style in stroke_styles:
-            values = sorted(json.dumps(data(n, style), ensure_ascii=True) for n in fp.children if n.head in heads)
+            objects = sorted((data(n, style) for n in fp.children if n.head in heads),
+                             key=lambda value: json.dumps(value, ensure_ascii=True))
+            values = [json.dumps(value, ensure_ascii=True) for value in objects]
             if include_instance:
                 identity = fp.child('uuid') or fp.child('tstamp')
                 values.append('instance:' + (identity.arg() if identity else ''))
+            if source_data is not None and style == 'solid':
+                source_data[ref] = objects + values[len(objects):]
             hashes.append(hashlib.sha256(json.dumps(values).encode()).hexdigest())
         result[ref] = hashes
     return result
@@ -64,11 +68,83 @@ def board_source_hash_variants(text, refs):
         include_instance=True, stroke_styles=(None, 'default', 'solid')).items()}
 
 
-def recover_legacy_source_hashes(sources, live_hashes, candidates, cache):
+def _matches_reloaded_graphics(before, after):
+    """Accept at most 1 nm in non-copper drawing points, never pad/pose changes."""
+    if len(before) != len(after):
+        return False
+    layers = {'F.SilkS', 'B.SilkS', 'F.Fab', 'B.Fab', 'F.CrtYd', 'B.CrtYd',
+              'Dwgs.User', 'Cmts.User'}
+    points = {head: {(head, point) for point in names} for head, names in (
+        ('fp_line', ('start', 'end')), ('fp_arc', ('start', 'mid', 'end')),
+        ('fp_circle', ('center', 'end')), ('fp_rect', ('start', 'end')))}
+    points['fp_poly'] = {('fp_poly', 'pts', 'xy')}
+
+    def same(left, right, coordinates, path=()):
+        if left == right:
+            return True
+        if not isinstance(left, list) or not isinstance(right, list) or len(left) != len(right):
+            return False
+        if left and isinstance(left[0], str):
+            path = (*path, left[0])
+        if path in coordinates and left[0] == right[0]:
+            if len(left) != 3:
+                return False
+            try:
+                return all(Decimal(x).is_finite() and Decimal(y).is_finite()
+                           and abs(Decimal(x) - Decimal(y)) <= Decimal('0.000001')
+                           for x, y in zip(left[1:], right[1:]))
+            except (InvalidOperation, TypeError, ValueError):
+                return False
+        return all(same(x, y, coordinates, path) for x, y in zip(left, right))
+
+    def equivalent(left, right):
+        if left == right:
+            return True
+        if not isinstance(left, list) or not isinstance(right, list) or not left:
+            return False
+        head = left[0]
+        layer = next((n[1] for n in left if isinstance(n, list)
+                      and len(n) == 2 and n[0] == 'layer'), None)
+        return head in points and layer in layers and same(left, right, points[head])
+
+    # Native rounding can change sort order. Match the full multiset, including
+    # duplicate counts, rather than comparing unrelated objects by index.
+    candidates = [[j for j, right in enumerate(after) if equivalent(left, right)]
+                  for left in before]
+    matched_left, matched_right = {}, {}
+    for first in range(len(before)):
+        queue, seen, previous, available = [first], {first}, {}, None
+        for index in queue:
+            for target in candidates[index]:
+                if target in previous:
+                    continue
+                previous[target] = index
+                if target not in matched_right:
+                    available = target
+                    break
+                other = matched_right[target]
+                if other not in seen:
+                    seen.add(other)
+                    queue.append(other)
+            if available is not None:
+                break
+        if available is None:
+            return False
+        while available is not None:
+            index = previous[available]
+            prior = matched_left.get(index)
+            matched_left[index], matched_right[available] = available, index
+            available = prior
+    return True
+
+
+def recover_legacy_source_hashes(sources, live_hashes, candidates, cache, *, live_text=None):
     """Recover mixed legacy spellings only from hash-verified original PCB bytes.
 
     A legacy hash cannot be canonicalized by itself. Never guess arbitrary
     combinations: verify the original board and instance hash before comparing.
+    A verified original also permits bounded native reload rounding of drawing
+    points. Copper, placement, instance identity and other fields remain exact.
     """
     pending = {}
     for ref, source in sources.items():
@@ -77,13 +153,14 @@ def recover_legacy_source_hashes(sources, live_hashes, candidates, cache):
         board_hash = source.get('board', {}).get('hash')
         key = (board_hash, ref, source_hash)
         if source_hash and source_hash not in hashes and board_hash:
-            if key in cache:
-                if cache[key] in hashes:
-                    hashes.append(source_hash)
+            if cache.get(key) in hashes:
+                hashes.append(source_hash)
             else:
                 pending[ref] = (board_hash, source_hash)
     if not pending:
         return
+    live_data = {}
+    parsed_live = None
     seen = set()
     for path in candidates:
         try:
@@ -99,17 +176,28 @@ def recover_legacy_source_hashes(sources, live_hashes, candidates, cache):
         if not refs:
             continue
         try:
+            original_data = {}
             original = _board_hashes(content.decode('utf-8-sig'), refs,
-                                     include_instance=True, stroke_styles=(None, 'solid'))
+                                     include_instance=True, stroke_styles=(None, 'solid'),
+                                     source_data=original_data)
         except (UnicodeError, ValueError):
             continue
         for ref in refs:
             source_hash = pending[ref][1]
-            # Raw must match, not just another alias or a same-named instance.
-            if ref in original and original[ref][0] == source_hash:
+            # Verify either the historical raw identity or a newly issued
+            # solid-canonical identity against the hash-verified original.
+            if ref in original and source_hash in original[ref]:
                 canonical = original[ref][-1]
-                cache[(board_hash, ref, source_hash)] = canonical
+                if canonical not in live_hashes.get(ref, ()) and live_text is not None:
+                    if parsed_live is None:
+                        parsed_live = _board_hashes(live_text, pending,
+                            include_instance=True, stroke_styles=('solid',), source_data=live_data)
+                    current = parsed_live.get(ref, [None])[0]
+                    if (current in live_hashes.get(ref, ())
+                            and _matches_reloaded_graphics(original_data[ref], live_data[ref])):
+                        canonical = current
                 if canonical in live_hashes.get(ref, ()):
+                    cache[(board_hash, ref, source_hash)] = canonical
                     live_hashes[ref].append(source_hash)
                 del pending[ref]
         if not pending:

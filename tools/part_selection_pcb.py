@@ -198,7 +198,8 @@ class PcbUpdates:
             candidates = [Path(data['board']['path']) for data in owned_sources.values()]
             candidates.extend(sorted(runtime.glob('pcb-save-*/disk-before.kicad_pcb'),
                                      key=lambda path:path.stat().st_mtime_ns, reverse=True))
-            recover_legacy_source_hashes(owned_sources, instance_hashes, candidates, self.legacy_source_hashes)
+            recover_legacy_source_hashes(owned_sources, instance_hashes, candidates,
+                                         self.legacy_source_hashes, live_text=snapshot['text'])
         replacements, targets, items = [], [], []
         libraries = {}
         for index, ref in enumerate(refs):
@@ -269,6 +270,7 @@ class PcbUpdates:
                 continue
             key = (source['targets'][ref], original['back'])
             if key not in libraries:
+                notify('library', f'正在读取目标库封装 {len(libraries)+1}：{key[0]}（{"背面" if key[1] else "正面"}）')
                 libraries[key] = self.session.read_library(key[0], back=key[1])
             target = libraries[key]
             if target['footprint'] != source['targets'][ref]:
@@ -293,6 +295,7 @@ class PcbUpdates:
                         path = Path(basis.get('path',''))
                         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != basis.get('hash'):
                             raise ValueError(ref + ' 原绑定库基准已变化，请重新预览')
+                        notify('library_reference', f'正在读取原绑定库基准：{evidence["before"]}')
                         baseline = self.session.read_library(evidence['before'], back=original['back'])
                         pose = solve_placement(original, baseline)
                         if not pose['ok'] or pose.get('differences'):

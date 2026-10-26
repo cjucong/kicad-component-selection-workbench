@@ -54,6 +54,15 @@ def test_preview_and_apply_do_not_touch_choice_or_confirmation(updates):
     session.apply.assert_called_once()
 
 
+def test_preflight_reports_the_actual_target_library_read(updates):
+    service, _, session, _ = updates
+    progress = Mock()
+    service.preview(['R1'], '__schematic__', progress=progress)
+    assert any(call.args[0] == 'library' and 'Local:New' in call.args[1]
+               for call in progress.call_args_list)
+    session.read_library.assert_called_once_with('Local:New', back=False)
+
+
 def test_mixed_selection_only_transacts_changed_parts(updates, monkeypatch):
     service, app, session, _ = updates
     snapshot = deepcopy(session.snapshot.return_value)

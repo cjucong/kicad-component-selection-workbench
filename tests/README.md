@@ -1,5 +1,9 @@
 # 插件回归测试
 
+`test_design_sync.py`、`test_design_sync_ui.py` 覆盖保留自动流程意图、重新预检后只续接一次、来源变化拒绝、专项端子风险暂停以及不再重复选择对齐。`run_native_design_keep_open.py --with-footprints --report-dir <工程外目录>` 用真实一次性 KiCad 工程验证字段更新、仅改名、标准库替换、预检故障后续接，以及手动 17° 旋转和平移的实际焊盘坐标；完整核验保存、网络、未选对象与无变化重检，不写生产 CAD。
+
+`test_pcb_library.py` 与 `run_native_library_reader_probe.py --report-dir <工程外目录>` 验证私有 Windows 桌面上的完整原生库读取、当前桌面无读库窗口、复杂焊盘/图形/正背面、256 项 LRU 及哈希失效、失败不回退和本任务进程清理。`test_footprint_change_types.py` 验证可信原始 PCB 的丝印绘图点 1 nm 重载舍入兼容，未知子结构、铜皮、位置、身份和超限仍拒绝，失败缓存不妨碍撤销后重试。
+
 `test_footprint_unify.py` 覆盖不同原点/方向和丝印的铜皮等价、实际间距/尺寸/钻孔/阻焊/机械孔变化拒绝、跨行原子记录保存、撤回、确认和 C 编码保留、来源改变及冲突跳过。`test_footprint_overlay_ui.py` 的 `library-reuse` 场景验证预览调整不隐式生成 `_mapped`；显式适配、放弃/额外端子和转换手动调整仍跑原场景。库存另覆盖两个不同编码同时读取、独立临时浏览器配置及清理；不声称商城单次请求变快。
 
 `python -B tests/run_native_unification_roundtrip.py --report <工程外绝对报告.json>` 使用 KiCad 捆绑 pcbnew 构造正/背面、不同原点和角度的等效两焊盘封装，核验实际批量工作台记录写入，再按正式纯放置求解器调整一次性 PCB 并保存/LoadBoard 回读，保留网络和走线，清理夹具及缓存。它不是 GUI/IPC 事务或工程管理器重开测试。2026-10-26 本轮原生 UI 适配器检查通过选库/同步/原位事务/撤销/显式保存，但管理器重开因文档归属 unknown 未通过；全工程 cycle 在 Search panel unavailable 导航阶段未通过。不要将这些子阶段通过表述为完整 GUI 闭环通过，错误报告保留在工程外。

@@ -27,6 +27,18 @@ def run(report, *, with_footprints=False):
     app = None
     owned = None
     processes = {}
+    def own(pid):
+        process = OwnedProcess(pid)
+        from ctypes import wintypes
+        created, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+        kernel.GetProcessTimes.restype = wintypes.BOOL
+        if not kernel.GetProcessTimes(process.handle, ctypes.byref(created), ctypes.byref(exited),
+                                      ctypes.byref(kernel_time), ctypes.byref(user_time)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        process.probe_started = ((created.dwHighDateTime << 32) | created.dwLowDateTime) / 10000000 - 11644473600
+        return process
     with ExitStack() as stack:
         root = Path(stack.enter_context(temporary_project(prefix='pcb-probe-')))
         ipc = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='keep-ipc-',dir=root.anchor)))
@@ -58,7 +70,7 @@ def run(report, *, with_footprints=False):
                 pids=owned_managers(root)
                 if len(pids)==1:
                     if owned is None:
-                        owned=OwnedProcess(pids[0])
+                        owned=own(pids[0])
                         processes[owned.pid]=owned
                     window_list=windows(pids[0])
                     warnings=[handle for handle,title in window_list if title=='文件打开警告']
@@ -83,7 +95,7 @@ def run(report, *, with_footprints=False):
                 finally:
                     for pid in owned_managers(root):
                         if pid not in processes:
-                            processes[pid]=OwnedProcess(pid)
+                            processes[pid]=own(pid)
             app.run_kicad_script=tracked_script
             session=app.pcb_updates.session
             session.socket='ipc://'+str(ipc/'kicad/api.sock')
@@ -138,24 +150,56 @@ def run(report, *, with_footprints=False):
                     saves.append(saved)
                     return saved
                 app.sync_design_pcb=keep_open_sync
-                for mode, target in [('rename','Local:Renamed_R1'),('library','Local:Standard_R1')]:
+                for mode, target in [('rename','Local:Renamed_R1'),('library','Local:Standard_R1'),
+                                     ('manual','Local:Managed_R1')]:
                     original=session.snapshot(root,['R1'])
-                    choice=app.row_footprint({'refs':'R1','bom':'__schematic__','mode':mode})['preview']
-                    reference=choice['default_id'] if mode=='rename' else target
+                    if mode=='manual':
+                        (report/'manual-before-live.kicad_pcb').write_text(original['text'],encoding='utf-8')
+                        shutil.copy2(root/'Probe.kicad_pcb',report/'manual-before-disk.kicad_pcb')
+                    choice=app.row_footprint({'refs':'R1','bom':'__schematic__',
+                                             'mode':'library' if mode=='manual' else mode})['preview']
+                    reference=choice['default_id'] if mode=='rename' else 'Local:Standard_R1'
                     app.footprint_choices.library_detail(choice['preview_id'],reference)
                     selection={'preview_id':choice['preview_id'], 'existing_id':reference,
                                'source':'rename' if mode=='rename' else 'existing','acknowledged':True}
                     if mode=='rename':
                         selection.update(target_mode='existing',target_library='Local',name='Renamed_R1')
+                    elif mode=='manual':
+                        selection.update(target_mode='existing',target_library='Local',name='Managed_R1',
+                                         mapping={'schema':1,'pairs':[{'source':n,'target':n,'align':True}
+                                                                      for n in ['1','2']], 'dropped':[]},
+                                         alignment_transform={'rotation_deg':17.0,'offset_mm':[.75,-1.25]})
                     app.row_footprint({'footprint_choice':selection})
-                    preview=app.design_sync.preview({'refs':['R1'],'destination':'design','alignment':'rigid'})
+                    preview=app.design_sync.preview({'refs':['R1'],'destination':'design'})
                     assert preview['schematic_changes'] and preview['automatic']
-                    completed=finished(app.design_sync,app.design_sync.start(preview['preview_id'],{}))
+                    native_preview=app.pcb_updates.preview
+                    preview_attempts=[]
+                    def interrupted_preview(*args, **kwargs):
+                        preview_attempts.append(True)
+                        if len(preview_attempts)==1:
+                            raise ValueError('Injected preflight connection interruption; no PCB write')
+                        return native_preview(*args, **kwargs)
+                    with patch.object(app.pcb_updates,'preview',interrupted_preview if mode=='library' else native_preview):
+                        completed=finished(app.design_sync,app.design_sync.start(preview['preview_id'],{}))
+                        if mode=='library':
+                            assert completed['stage']=='partial' and completed['phase_results']['schematic']['ok'],completed
+                            retry=app.design_sync.preview({'refs':['R1'],'destination':'pcb'})
+                            assert retry['pcb_automatic'] and not retry['schematic_changes'],retry
+                            completed=finished(app.design_sync,app.design_sync.continue_pcb(
+                                completed['job_id'],retry['preview_id'],{}))
+                            result['retry_automatically_eligible']=True
                     result[mode+'_job']=completed
+                    if mode=='manual':
+                        from part_selection_overrides import load_overrides
+                        (report/'manual-record.json').write_text(json.dumps(load_overrides(app.overrides_path)['R1'],
+                            ensure_ascii=False,indent=2),encoding='utf-8')
+                        (report/'manual-after-live.kicad_pcb').write_text(session.snapshot(root,['R1'])['text'],encoding='utf-8')
+                        shutil.copy2(root/'Probe.kicad_pcb',report/'manual-after-disk.kicad_pcb')
                     assert completed['stage']=='complete',completed
                     current=session.snapshot(root,['R1'])
                     assert current['parts']['R1']['footprint']==target
-                    token=app.design_sync.jobs[completed['job_id']]['_pcb_source']
+                    token=(app.design_sync.previews[retry['preview_id']]['source'] if mode=='library' else
+                           app.design_sync.jobs[completed['job_id']]['_pcb_source'])
                     assert token['fields']['R1']['footprint']==target
                     if mode=='rename':
                         expected=decode(original['parts']['R1']['proto'])
@@ -166,7 +210,31 @@ def run(report, *, with_footprints=False):
                         updated=next(state for state in reversed(app.pcb_updates.previews.values())
                                      if state.get('replacements'))
                         check_replacement(decode(original['parts']['R1']['proto']),
-                            decode(current['parts']['R1']['proto']),decode(updated['replacements'][0]['proto']),persisted=True)
+                            decode(current['parts']['R1']['proto']),decode(updated['replacements'][0]['proto']),
+                            persisted=True,allow_pad_motion=mode=='manual')
+                        if mode=='manual':
+                            item=next(item for item in updated['items'] if item['ref']=='R1')
+                            assert item['manual_adaptation'] and item['max_error_mm']>.5,item
+                            import math
+                            from part_selection_footprint_geometry import _parse_module, _pad_positions
+                            local=_pad_positions(_parse_module((root/'Local.pretty/Managed_R1.kicad_mod').read_text(encoding='utf-8')))
+                            standard=_pad_positions(_parse_module((root/'Local.pretty/Standard_R1.kicad_mod').read_text(encoding='utf-8')))
+                            delta=math.radians(17.0)
+                            for number,(x,y) in standard.items():
+                                expected=(math.cos(delta)*x+math.sin(delta)*y+.75,
+                                          -math.sin(delta)*x+math.cos(delta)*y-1.25)
+                                assert math.dist(local[number],expected)<.000002
+                            pose=item['position_mm']
+                            assert math.dist(current['parts']['R1']['position_mm'],pose)<.000002
+                            assert abs(current['parts']['R1']['rotation_deg']-item['rotation_deg'])<.0001
+                            assert not current['parts']['R1']['back']
+                            angle=math.radians(item['rotation_deg'])
+                            for pad in current['parts']['R1']['pads']:
+                                x,y=local[pad['number']]
+                                expected=(math.cos(angle)*x+math.sin(angle)*y+pose[0],
+                                          -math.sin(angle)*x+math.cos(angle)*y+pose[1])
+                                assert math.dist(pad['position_mm'],expected)<.000002
+                            result['management_transform_preserved']=True
                     # The schematic cycle reloads PCB before the transaction;
                     # KiCad may round rotated unselected geometry by one nm.
                     # Verify exact outside contents against the transaction's
@@ -182,7 +250,7 @@ def run(report, *, with_footprints=False):
                     repeated=app.design_sync.preview({'refs':refs,'destination':'design'})
                     assert not repeated['schematic_changes']
                     assert all(item['kind']=='none' for item in repeated['pcb_preview']['items'])
-                result['footprint_workflows_passed']=len(saves)==2
+                result['footprint_workflows_passed']=len(saves)==3
         except BaseException:
             result['error']=traceback.format_exc()
             log=ipc/'kicad_schematic_search.log'
@@ -192,7 +260,7 @@ def run(report, *, with_footprints=False):
             if app:
                 app.design_sync.close();app.search_jobs.close();app.selection_jobs.close()
             for pid in owned_managers(root):
-                process=processes.get(pid) or OwnedProcess(pid)
+                process=processes.get(pid) or own(pid)
                 close_fixture(process);process.wait(15)
             for process in processes.values():
                 if process.poll() is not None:
@@ -210,7 +278,8 @@ def run(report, *, with_footprints=False):
         (not with_footprints or result.get('footprint_workflows_passed')) and
         result['process_cleanup'] and result['directory_cleanup'])
     (report/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
-    print(json.dumps(result,ensure_ascii=False,indent=2))
+    print(json.dumps({key:value for key,value in result.items() if not key.endswith('_job') and key!='job'},
+                     ensure_ascii=False,indent=2))
     return 0 if result['passed'] else 1
 
 
