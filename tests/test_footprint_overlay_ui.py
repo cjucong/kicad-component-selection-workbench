@@ -17,7 +17,7 @@ def browser_dependencies():
         pytest.skip("Playwright is unavailable to Node.js; set NODE_PATH to run real Chromium UI checks")
 
 
-@pytest.mark.parametrize("scenario", ["overlay", "rename", "stale", "library", "pcb", "conflict", "navigation", "pane-radios", "rename-retry", "escape", "incompatible-preview", "native-layout", "manual", "manual-safety", "pad-mapping"])
+@pytest.mark.parametrize("scenario", ["overlay", "rename", "stale", "library", "library-pcb-reference", "pcb", "conflict", "navigation", "pane-radios", "rename-retry", "escape", "incompatible-preview", "native-layout", "manual", "manual-safety", "pad-mapping"])
 def test_footprint_overlay_contract(scenario):
     result, _ = run_checks(scenario)
     assert result["passed"] is True

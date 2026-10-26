@@ -56,6 +56,35 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='library-pcb-reference') {
+   await page.evaluate(()=>{
+    window.previousFetch=window.fetch;
+    window.fetch=async(url,options)=>{
+     const payload=JSON.parse(options.body);
+     if(url==='/api/footprint_comparison' && payload.id!=='PCB:Q6') {
+      calls.push({url,payload});
+      return {ok:false,json:async()=>({ok:false,error:'请选择原绑定库封装作为比较基准'})};
+     }
+     return previousFetch(url,options);
+    };
+    window.result=undefined; calls=[];
+    window.chooseLibraryFootprint({...structuredClone(preview),kind:'library',default_id:'Local:A',
+     default_reference_id:'PCB:Q6',baseline_ids:['PCB:Q6','PCB:Q7'],
+     items:preview.existing.slice(0,2).map(e=>({...e,library:'Local'}))}).then(value=>window.result=value);
+   });
+   await page.waitForFunction(()=>calls.some(e=>e.url==='/api/footprint_comparison'));
+   assert.equal(await page.evaluate(()=>calls.find(e=>e.url==='/api/footprint_comparison').payload.id),'PCB:Q6',
+    'keep the saved PCB instance baseline instead of replacing it with the library default');
+   await page.locator('[data-fp-adjust]').waitFor();
+   assert.equal(await page.locator('[data-fp-canvas-status]').isVisible(),false,'saved PCB baseline renders the comparison');
+   await page.locator('.fp-pad-mapping summary').click();
+   await page.locator('[data-fp-mapping-enabled]').check();
+   await page.locator('[data-fp-ack]').check();
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.equal(await page.evaluate(()=>result.reference_id),'PCB:Q6','apply keeps the same baseline as the preview');
+   await page.evaluate(()=>{fetch=previousFetch;});
+  }
   if(check==='all'||check==='pad-mapping') {
    for(const library of [false,true]) {
     await page.evaluate(library=>{

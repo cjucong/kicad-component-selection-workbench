@@ -73,7 +73,7 @@ window.resolveFootprintConflict = function resolveFootprintConflict(conflict, ch
 window.chooseLibraryFootprint = function chooseLibraryFootprint(preview, options = {}) {
   if (preview.kind !== 'rename') {
     const existing = preview.existing || preview.items;
-    return window.chooseFootprint({...preview, existing, default_reference_id:preview.default_id}, {...options, library:true});
+    return window.chooseFootprint({...preview, existing, default_reference_id:preview.default_reference_id || preview.default_id}, {...options, library:true});
   }
   return new Promise(resolve => {
     const overlay = document.createElement('div');

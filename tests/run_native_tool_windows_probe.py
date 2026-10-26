@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import threading
 import time
 import traceback
@@ -55,6 +56,58 @@ def check_native_edit_settings(window):
     window.native.Invoke(Action(inspect))
     assert settings == [(True,True,False)], settings
     assert getattr(window, '_workbench_edit_menu', None), 'Edit menu handler is not installed'
+
+
+def create_saved_pcb(root):
+    python = Path(os.environ.get('PROGRAMFILES','C:/Program Files'))/'KiCad/10.0/bin/python.exe'
+    script = '''
+import sys
+from pathlib import Path
+import pcbnew
+root=Path(sys.argv[1])
+board=pcbnew.BOARD()
+specs=[('R1','R'),('R2','R')]+[(ref,'Q8') for ref in ('Q6','Q7','Q9','Q56','Q57','Q62')]
+for index,(ref,name) in enumerate(specs):
+    footprint=pcbnew.FootprintLoad(str(root/'Local.pretty'),name)
+    footprint.SetFPID(pcbnew.LIB_ID('Local',name))
+    footprint.SetReference(ref)
+    board.Add(footprint)
+    footprint.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20+index*10),pcbnew.FromMM(30)))
+    footprint.SetOrientationDegrees(37+index*90)
+pcbnew.SaveBoard(str(root/'example.kicad_pcb'),board)
+'''
+    subprocess.run([str(python),'-B','-c',script,str(root)],check=True,capture_output=True,timeout=30)
+
+
+def check_native_grouped_preview(app, tools, report):
+    refs = 'Q6,Q7,Q9,Q56,Q57,Q62'
+    before = {path:path.read_bytes() for path in app.project_root.rglob('*') if path.is_file()}
+    response = tools.main_action('open',{'kind':'footprint','request_id':uuid4().hex,
+        'payload':{'refs':refs,'bom':'__schematic__'}})
+    assert response['ok'],response
+    entries = [entry for entry in tools.entries.values() if entry['kind']=='footprint' and not entry['closed']]
+    assert len(entries)==1
+    child = entries[0]['window']
+    page = '[data-fp-page=library] '
+    wait(child,"[...document.querySelectorAll('[data-fp-items] option')].some(o=>o.value==='Local:Q10')")
+    child.evaluate_js('const s=document.querySelector("[data-fp-items]"); s.value="Local:Q10"; '
+        's.dispatchEvent(new Event("change",{bubbles:true})); true')
+    wait(child,f'!!document.querySelector("{page}.fp-scene:not([hidden])")')
+    child.evaluate_js(f'document.querySelector("{page}.fp-pad-mapping").open=true; '
+        f'document.querySelector("{page}[data-fp-mapping-enabled]").click(); true')
+    for number in range(1,9):
+        assert child.evaluate_js('document.querySelector('+json.dumps(page+f'[aria-label="原端子 {number} 对应目标焊盘"]')+').value')==str(number)
+    status = child.evaluate_js(f'document.querySelector("{page}[data-fp-mapping-status]").textContent')
+    assert '9, 10' in status and '未分配网络' in status,status
+    capture(child,report/'grouped-8-to-10-pcb-baseline.png')
+    child.evaluate_js(f'document.querySelector("{page}[data-fp-stage=converted]").scrollIntoView({{block:"center"}}); true')
+    capture(child,report/'grouped-8-to-10-overlay.png')
+    child.evaluate_js(f'document.querySelector("{page}[data-fp-cancel]").click(); true')
+    for _ in range(100):
+        if entries[0]['closed']:break
+        time.sleep(.1)
+    assert entries[0]['closed'],'Grouped preview cancel did not close'
+    assert all(path.read_bytes()==data for path,data in before.items()),'Preview changed project files'
 
 
 def check_native_mapping(app, tools, report):
@@ -123,13 +176,22 @@ def run(report):
         pretty.mkdir()
         for name, width in [('R', .8), ('Other', .9)]:
             (pretty/(name+'.kicad_mod')).write_text(module(name, width), encoding='utf-8')
+        for name,count in [('Q8',8),('Q10',10)]:
+            pads = ' '.join(f'(pad "{n}" smd rect (at {(n-1)%4-1.5} {((n-1)//4)*2}) '
+                           '(size 0.5 1) (layers "F.Cu" "F.Paste" "F.Mask"))' for n in range(1,count+1))
+            (pretty/(name+'.kicad_mod')).write_text(f'(footprint "{name}" (version 20241229) '
+                f'(generator test) (layer "F.Cu") {pads})',encoding='utf-8')
         (root/'fp-lib-table').write_text('(fp_lib_table (version 7) (lib (name "Local") '
             '(type "KiCad") (uri "${KIPRJMOD}/Local.pretty")))', encoding='utf-8')
         (root/'example.kicad_sch').write_text('(kicad_sch (symbol (property "Reference" "R1") '
             '(property "Value" "10k") (property "Comment" "resistor") '
             '(property "Footprint" "Local:R")) (symbol (property "Reference" "R2") '
             '(property "Value" "20k") (property "Comment" "resistor") '
-            '(property "Footprint" "Local:R")))',encoding='utf-8')
+            '(property "Footprint" "Local:R")) '+''.join(f'(symbol (property "Reference" "{ref}") '
+                '(property "Value" "Switch") (property "Comment" "Switch") '
+                '(property "Footprint" "Local:Q8"))' for ref in ('Q6','Q7','Q9','Q56','Q57','Q62'))+')',encoding='utf-8')
+        create_saved_pcb(root)
+        pcb_before = (root/'example.kicad_pcb').read_bytes()
         schematic_before = (root/'example.kicad_sch').read_bytes()
         config = root/'settings.json'
         config.write_text(json.dumps({'source_bom':'__schematic__','schematic_dir':'.','bom_dir':'data'}))
@@ -161,7 +223,7 @@ def run(report):
         def worker():
             tools = lifecycle.tools
             try:
-                wait(main,'typeof window.openNativeTool === "function" && !!window.pywebview?.api?.tool_window && currentRows.length===2')
+                wait(main,'typeof window.openNativeTool === "function" && !!window.pywebview?.api?.tool_window && currentRows.length===3')
                 check_native_edit_settings(main)
                 result['checks']['native_edit_menu_settings']=True
                 for kind in ['settings','inventory','field-mapping','list-view','value-parameters','undo','footprint','plugin-update','design-sync','candidate']:
@@ -285,6 +347,8 @@ def run(report):
                 wait(main,'window.nativeUpdateProbe?.ok === true')
                 assert lifecycle.update_busy is False
                 result['checks']['native_update_network_does_not_block_tools']=True
+                check_native_grouped_preview(app,tools,report)
+                result['checks']['grouped_8_to_10_saved_pcb_preview']=True
                 check_native_mapping(app,tools,report)
                 result['checks']['native_mapping_both_sources_and_project_copy']=True
                 tools.check_exit(); tools.cancel_exit()
@@ -300,6 +364,8 @@ def run(report):
                 assert len([e for e in tools.entries.values() if e['kind']=='footprint'])==2
                 tools.check_exit()
                 assert (root/'example.kicad_sch').read_bytes()==schematic_before
+                assert (root/'example.kicad_pcb').read_bytes()==pcb_before
+                result['checks']['saved_pcb_baseline_preview_and_mapping']=True
                 result['checks']['multi_row_windows_and_host_cancel']=True
                 tools.cancel_exit()
                 main.evaluate_js('window.requestDesktopExit(false); true')
