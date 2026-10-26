@@ -92,7 +92,7 @@
     if (changing) throw new Error('库存操作正在保存，请稍候');
     changing = true;
     generation += 1;
-    if (snapshot) paint(snapshot);
+    if (snapshot) controls(snapshot);
     try {
       const response = await fetch('/api/stock_refresh', {method:'POST',
         headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
@@ -100,7 +100,7 @@
       if (!response.ok || !data.ok) throw new Error(data.error || '库存操作失败');
       paint(data);
       return data;
-    } finally { changing = false; if (snapshot) paint(snapshot); schedule(); }
+    } finally { changing = false; if (snapshot) controls(snapshot); schedule(); }
   }
 
   window.startDurableStockRefresh = async mode => {

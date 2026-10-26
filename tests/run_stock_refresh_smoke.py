@@ -46,6 +46,18 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(state.succeeded,7);
   assert.equal(state.pending,0);
   assert.equal(state.failed,0);
+  // A newer row refresh must not be replaced by the last batch's retained snapshot.
+  await page.reload();
+  await page.waitForFunction(()=>document.querySelector('#stockProgressText').innerText.includes('库存已完成'));
+  await page.request.post(process.env.STOCK_TEST_URL+'__test_newer');
+  await page.evaluate(async()=>updateRowsForStock('C200', await requestStock('C200')));
+  const updated=page.locator('#rows tr[data-stock-code="C200"] .supply-counts');
+  assert.match(await updated.innerText(),/777/);
+  await page.evaluate(()=>window.pauseDurableStockRefresh());
+  assert.match(await updated.innerText(),/777/,'Pausing replayed older inventory');
+  await page.getByRole('button',{name:'开始库存查询',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('#stockProgressText').innerText.includes('跳过近期 8'));
+  assert.match(await updated.innerText(),/777/,'Starting a new batch replayed older inventory');
   for(const width of [1440,768,390]) {
    await page.setViewportSize({width,height:900});
    assert(await page.locator('#stockFreshness').isVisible());
@@ -56,7 +68,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   }
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({pause:true,reopen:true,resume:true,fresh_skipped:true,unique_completed:true,
-    viewports:[1440,768,390],page_errors:errors}));
+    newer_row_result_preserved:true,viewports:[1440,768,390],page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
@@ -79,14 +91,17 @@ def main():
                  'fetched_at':datetime.now().isoformat(timespec='seconds')}
         save_stock_cache(app.stock_cache_path, {'C100':fresh})
         seen = []
+        quantities = {}
         def fetch(code):
             seen.append(code)
             for _ in range(8 if code=='C200' else 70):
                 check_stock_cancelled()
                 time.sleep(.01)
-            return {**fresh, 'c_code':code}
+            return {**fresh, 'c_code':code, 'stock':quantities.get(code, '200')}
         def configure():
             app.stock_refresh.fetcher = lambda code: lookup_stock_with_cache(app.stock_cache_path, code, fetch)
+            app.stock = lambda code: app.stock_queries.run(
+                lambda: lookup_stock_with_cache(app.stock_cache_path, code, fetch))
         configure()
         base = make_handler(app)
         class Handler(base):
@@ -96,6 +111,10 @@ def main():
                     return json_response(self, {'seen':seen})
                 return super().do_GET()
             def do_POST(self):
+                if self.path == '/__test_newer':
+                    from part_selection_server import json_response
+                    quantities['C200'] = '777'
+                    return json_response(self, {'ok':True})
                 if self.path == '/__test_reopen':
                     from part_selection_server import json_response
                     assert not app.stock_refresh.busy()
