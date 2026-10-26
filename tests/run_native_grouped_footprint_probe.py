@@ -13,7 +13,7 @@ from unittest.mock import patch
 from run_native_pcb_in_place_probe import run_probe, footprint_map, close_owned_schematic, sync_fixture_adapter
 from part_selection_paths import resolve_config
 from part_selection_server import PartSelectionApp
-from part_selection_pcb_session import encode, decode, footprint_bytes
+from part_selection_pcb_session import encode, decode, footprint_bytes, metadata_replacement
 from part_selection_footprint_geometry import _outside_project
 
 
@@ -22,8 +22,57 @@ def same_parts(first, second):
         footprint_bytes(first[ref])==footprint_bytes(second[ref]) for ref in first)
 
 
+def locked_checks(root, report, session, client, board, results):
+    original = footprint_map(board)
+    locked = decode(encode(original['R1']))
+    locked.locked = True
+    published = None
+    baseline = None
+    commit = board.begin_commit()
+    board.update_items(locked)
+    board.push_commit(commit, 'Synthetic locked instance')
+    try:
+        baseline = footprint_map(board)
+        snapshot = session.snapshot(root, ['R1', 'R2'])
+        assert snapshot['parts']['R1']['locked']
+        fields = {'Value':'locked metadata QA', 'Brand':'synthetic QA'}
+        renamed = metadata_replacement(snapshot['parts']['R1'], footprint='Local:LockedRename', fields=fields)
+        changes = [{'ref':'R1','proto':renamed,'fields':fields,'kind':'rename'},
+                   {'ref':'R2','proto':snapshot['parts']['R2']['proto'],'fields':{},'kind':'none'}]
+        result = session.apply(snapshot, changes, report/'locked-rename-transaction', schematic_close_verified=True)
+        assert result['ok']
+        published = footprint_map(board)
+        assert published['R1'].locked
+        assert footprint_bytes(published['R1']) == footprint_bytes(decode(renamed))
+        assert all(footprint_bytes(published[r]) == footprint_bytes(baseline[r]) for r in baseline if r != 'R1')
+        results['checks']['locked_read_rename_fields_and_unchanged_batch_real_ipc'] = True
+        current = session.snapshot(root,['R1'])
+        bad = decode(current['parts']['R1']['proto'])
+        bad.proto.position.x_nm += 1
+        try:
+            session.apply(current,[{'ref':'R1','proto':encode(bad),'fields':{},'kind':'fields'}],
+                report/'must-not-write-locked',schematic_close_verified=True)
+        except ValueError as exc:
+            assert 'R1' in str(exc)
+        else:
+            raise AssertionError('Locked movement was accepted')
+        assert session.snapshot(root,['R1']) == current
+        assert not (report/'must-not-write-locked').exists()
+        results['checks']['locked_geometry_rejected_before_native_mutation'] = True
+    finally:
+        current = footprint_map(board)
+        if published is not None and same_parts(current, published):
+            client.run_action('common.Interactive.undo');time.sleep(.25)
+            current = footprint_map(board)
+        if baseline is not None and same_parts(current, baseline):
+            client.run_action('common.Interactive.undo');time.sleep(.25)
+        assert same_parts(footprint_map(board),original), 'Locked QA did not restore fixture'
+    results['checks']['locked_rename_single_undo_preserves_previous_edits'] = True
+
+
 def grouped_checks(root, report, session, client, board, results):
     close_owned_schematic(results['pid'])
+    locked_checks(root, report, session, client, board, results)
     schematic = root/'Parts.kicad_sch'
     schematic.write_text(schematic.read_text(encoding='utf-8').replace(
         'Local:Original_R2', 'Local:Original_R1'), encoding='utf-8')
@@ -139,6 +188,26 @@ def grouped_checks(root, report, session, client, board, results):
             assert all(after[r].proto==baseline[r].proto for r in baseline if r not in ('R1','R2'))
             assert tracks==[t.proto.SerializeToString() for t in board.get_tracks()]
             results['checks']['grouped_'+mode+'_ten_nm_real_adapter_sync_and_pcb']=True
+            if mode == 'convert':
+                from part_selection_pcb import PcbUpdates
+                close_owned_schematic(results['pid'])
+                lock_copy = decode(encode(after['R1']))
+                lock_copy.locked = True
+                commit = board.begin_commit()
+                board.update_items(lock_copy)
+                board.push_commit(commit, 'Synthetic completed locked replacement')
+                try:
+                    current = footprint_map(board)
+                    restarted = PcbUpdates(app, session=session)
+                    check = restarted.preview(['R1','R2'], '__schematic__', alignment='rigid')
+                    assert not check['blocked'], check
+                    assert all(item['kind'] == 'none' for item in check['items']), check
+                    assert restarted.apply(check['preview_id'], True)['no_changes']
+                    assert same_parts(footprint_map(board), current)
+                    results['checks']['locked_completed_geometry_after_restart_is_noop'] = True
+                finally:
+                    client.run_action('common.Interactive.undo');time.sleep(.25)
+                    assert same_parts(footprint_map(board), after)
             client.run_action('common.Interactive.undo');time.sleep(.25)
             assert same_parts(footprint_map(board), baseline)
             published = None

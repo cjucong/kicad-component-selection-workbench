@@ -22,6 +22,18 @@ def test_document_requires_exact_project_identity(scratch_project):
         select_document([selected, doc(root, 'other.kicad_pcb')], root)
 
 
+def test_read_only_snapshot_accepts_locked_footprints(monkeypatch, scratch_project):
+    from unittest.mock import Mock
+    session = sessions.PcbSession(scratch_project)
+    fp = Obj(reference_field=Obj(text=Obj(value='H102')))
+    board = Obj(get_as_string=Mock(return_value='synthetic board'), get_footprints=lambda:[fp])
+    session._board = Mock(return_value=(Obj(_client=Obj(_kicad_token='fixture')), board, doc(scratch_project)))
+    monkeypatch.setattr(sessions, 'describe', lambda value:{'locked':True, 'uuid':'fixture'})
+    result = session.snapshot(scratch_project, ['H102'])
+    assert result['parts']['H102']['locked'] is True
+    board.get_as_string.assert_called_once()
+
+
 def test_verified_save_requires_unchanged_live_board_and_matching_saved_bytes(monkeypatch, scratch_project):
     import threading
     from unittest.mock import Mock

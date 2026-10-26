@@ -114,14 +114,14 @@ def decode(value):
 
 
 def geometry_data(original):
-    """Full native geometry in board coordinates, without mutable field/ID data."""
+    """Native geometry for completion recognition; not transaction validation."""
     from google.protobuf.json_format import MessageToDict
     from kipy.board_types import Field
     fp = decode(original['proto'])
     def clean(value):
         if isinstance(value, dict):
             return {key:clean(item) for key,item in value.items()
-                    if key not in ('id','parent','net','symbol_pin')}
+                    if key not in ('id','parent','net','symbol_pin','locked')}
         if isinstance(value, list):
             return [clean(item) for item in value]
         return value
@@ -185,6 +185,26 @@ def describe(fp):
             'locked': fp.locked, 'pads': pads, 'proto': encode(fp)}
 
 
+def validate_locked_update(original, item):
+    """A lock permits metadata only, never an implicit unlock or geometry edit."""
+    if not original.get('locked'):
+        return
+    message = item['ref'] + ' 已锁定；更换封装或调整位置前请在 PCB 解锁并重新预检'
+    if item.get('kind') not in ('rename', 'fields', 'none'):
+        raise ValueError(message)
+    from kipy.board_types import Field
+    actual = decode(item['proto'])
+    expected = decode(metadata_replacement(original, footprint=str(actual.definition.id), fields=item.get('fields')))
+    old_names = {field.name for field in decode(original['proto']).definition.items if isinstance(field, Field)}
+    actual_fields = {field.name:field for field in actual.definition.items if isinstance(field, Field)}
+    # New metadata fields get fresh UUIDs on each construction; only those IDs vary.
+    for field in expected.definition.items:
+        if isinstance(field, Field) and field.name not in old_names and field.name in actual_fields:
+            field.proto.text.id.CopyFrom(actual_fields[field.name].proto.text.id)
+    if footprint_bytes(actual) != footprint_bytes(expected):
+        raise ValueError(message)
+
+
 def metadata_replacement(original: dict, *, footprint=None, fields=None) -> str:
     """Copy the live instance verbatim; change only explicitly supplied metadata."""
     from kipy.board_types import Field
@@ -220,7 +240,8 @@ def metadata_replacement(original: dict, *, footprint=None, fields=None) -> str:
             field.proto.id.id = next_id
             next_id += 1
             field.proto.text.id.value = str(uuid4())
-            field.proto.text.parent.CopyFrom(result.id)
+            # KiCad serializes embedded fields without a parent pointer.
+            field.proto.text.ClearField('parent')
             field.visible = False
             field.text.value = value
             result.definition.add_item(field)
@@ -481,9 +502,6 @@ class PcbSession:
             missing = set(refs) - set(parts)
             if missing:
                 raise ValueError('PCB 缺少位号：' + ', '.join(sorted(missing)))
-            locked = [ref for ref, part in parts.items() if part['locked']]
-            if locked:
-                raise ValueError('器件已锁定，请先解锁：' + ', '.join(locked))
             server_token = client._client._kicad_token
             if not server_token:
                 raise ValueError('KiCad 未返回可核验的会话身份，禁止写入 PCB')
@@ -582,6 +600,8 @@ class PcbSession:
             current = self.snapshot(self.root, refs)
             if current != snapshot:
                 raise ValueError('预览后 PCB 已改变，请重新预览')
+            for item in replacements:
+                validate_locked_update(current['parts'][item['ref']], item)
             backup_dir = Path(backup_dir).resolve()
             if backup_dir.is_relative_to(self.root):
                 raise ValueError('PCB 恢复材料必须放在工程外')

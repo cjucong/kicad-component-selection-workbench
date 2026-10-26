@@ -174,6 +174,7 @@ class PcbUpdates:
             source = self._source(refs, source)
         notify('connecting', '正在发现并连接当前工程 PCB')
         snapshot = self.session.snapshot(self.app.project_root, refs, **options)
+        notify('read_complete', 'PCB 实时内容和所选封装读取完成')
         notify('identity', '正在核对原理图实例与 PCB 关联')
         copper_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
             'source', {}).get('instance_geometry_hash')]
@@ -214,7 +215,13 @@ class PcbUpdates:
                     targets.extend(completion['targets'])
             common = {'ref':ref, 'kind':kind if kind != 'none' else 'fields' if fields else 'none',
                       'before':original['footprint'], 'after':source['targets'][ref],
-                      'reason':change['reason'], 'field_changes':field_changes, 'needs_ack':kind == 'replace'}
+                      'reason':change['reason'], 'field_changes':field_changes, 'needs_ack':kind == 'replace',
+                      'locked':bool(original.get('locked'))}
+            lock_reason = ref + ' 已锁定；请在 PCB 解锁后重新预检，未自动解锁或替换'
+            if kind == 'replace' and original.get('locked') and original['footprint'] != source['targets'][ref]:
+                common.update(needs_ack=False, blocked_reason=lock_reason)
+                items.append(common)
+                continue
             if kind == 'unknown':
                 items.append(common)
                 continue
@@ -283,6 +290,10 @@ class PcbUpdates:
                 self.completed_geometry[completion_key] = {'geometry':geometry_signature(original),
                     'targets':[{'ref':ref,'path':target['source_path'],'hash':target['source_hash']}]}
                 prototype = metadata_replacement(original, fields=fields) if fields else original['proto']
+            if kind == 'replace' and original.get('locked'):
+                common.update(needs_ack=False, blocked_reason=lock_reason)
+                items.append(common)
+                continue
             if fields:
                 prototype = metadata_replacement({'proto':prototype}, fields=fields)
             replacements.append({'ref': ref, 'proto': prototype, 'fields':fields, 'kind':common['kind']})
@@ -305,8 +316,9 @@ class PcbUpdates:
             self.previews[token] = {'refs': refs, 'snapshot': snapshot, 'source': source,
                 'targets': targets, 'replacements': replacements, 'time': now, 'started': False,
                 'alignment': alignment, 'items':items}
-        return {'ok': True, 'preview_id': token, 'items': items,
-                'blocked':any(item['kind'] == 'unknown' for item in items),
+        blocked_reasons = [item['blocked_reason'] for item in items if item.get('blocked_reason')]
+        return {'ok': True, 'preview_id': token, 'items': items, 'reason':'\n'.join(blocked_reasons),
+                'blocked':any(item['kind'] == 'unknown' or item.get('blocked_reason') for item in items),
                 'alignment': alignment,
                 'basis': '当前 PCB 焊盘位置，不是历史位置恢复', 'saved': False}
 
@@ -327,6 +339,9 @@ class PcbUpdates:
                 raise ValueError('此预检已执行或结果未能确认，请检查 PCB 后重新预检，不能重复执行')
             if any(item['kind'] == 'unknown' for item in state['items']):
                 raise ValueError('封装改动类型待核对，请先明确选择封装操作')
+            blocked = [item['blocked_reason'] for item in state['items'] if item.get('blocked_reason')]
+            if blocked:
+                raise ValueError('\n'.join(blocked))
             if any(item.get('dropped_terminals') for item in state['items']) and state.get('drops_approved') is not True:
                 raise ValueError('请在本次预检中再次确认放弃原端子及相关网络风险')
             if not self.sources.validate(state['source']['design']):

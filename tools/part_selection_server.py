@@ -2086,6 +2086,8 @@ class PartSelectionApp:
                 raise ValueError('预检已失效，请重新预检')
             if state.get('result'):
                 return deepcopy(state['result'])
+            if any(item.get('blocked_reason') or item['kind'] == 'unknown' for item in state.get('items', [])):
+                return self.pcb_updates.apply(preview_id, True, **options)
             if state.get('items') and all(item['kind'] == 'none' for item in state['items']):
                 return self.pcb_updates.apply(preview_id, True, **options)
             closed = False

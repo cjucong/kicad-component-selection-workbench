@@ -94,7 +94,7 @@ def finished(sync,job):
     raise AssertionError(value)
 
 
-def run(report):
+def run(report, *, locked_metadata=False):
     from part_selection_footprint_geometry import _find_kicad_python
     from part_selection_paths import resolve_config
     from part_selection_server import PartSelectionApp
@@ -189,6 +189,10 @@ def run(report):
             before=footprint_map(board)
             dirty=deepcopy(before['T_R1']);dirty.value_field.text.value='prior unsaved PCB edit'
             board.update_items(dirty)
+            if locked_metadata:
+                locked=deepcopy(before['R1']);locked.locked=True
+                board.update_items(locked)
+                assert footprint_map(board)['R1'].locked
             assert footprint_map(board)['T_R1'].value_field.text.value=='prior unsaved PCB edit'
             assert app.run_kicad_script(url,['-NotifyOnly'])['ok']
             app.save_override({'refs':'R1','field_overrides':{'value':'22k, 1%','comment':'resistor'}})
@@ -203,6 +207,9 @@ def run(report):
             after=footprint_map(board)
             assert after['R1'].value_field.text.value=='22k, 1%'
             assert after['T_R1'].value_field.text.value=='prior unsaved PCB edit'
+            if locked_metadata:
+                assert after['R1'].locked, 'Field sync unlocked the instance'
+                results['checks']['locked_fields_saved_reopened_preserve_lock']=True
             for ref in ('R2','U1'):
                 assert footprint_bytes(after[ref])==footprint_bytes(before[ref]),ref
             results['checks']['fields_saved_reopened_located_prior_edit_preserved']=True
@@ -234,6 +241,28 @@ def run(report):
             assert done['phase_results']['pcb']['no_changes'],done
             assert footprint_bytes(footprint_map(session._board()[1])['R1'])==footprint_bytes(renamed)
             results['checks']['pcb_already_current_skips_save_close_reopen']=True
+            if locked_metadata:
+                assert renamed.locked
+                results['checks']['locked_rename_and_noop_preserve_geometry_lock']=True
+                locked_snapshot=session.snapshot(root,['R1'])
+                moved=decode(locked_snapshot['parts']['R1']['proto'])
+                moved.proto.position.x_nm+=1000000
+                try:
+                    session.apply(locked_snapshot,[{'ref':'R1','proto':encode(moved),'kind':'fields','fields':{}}],
+                        report/'must-not-write-locked-geometry',schematic_close_verified=True)
+                except ValueError as exc:
+                    assert 'R1' in str(exc)
+                else:
+                    raise AssertionError('A locked instance was moved through the metadata route')
+                assert session.snapshot(root,['R1'])==locked_snapshot
+                assert not (report/'must-not-write-locked-geometry').exists()
+                results['checks']['locked_geometry_rejected_before_backup_or_commit']=True
+                guard=app.run_kicad_script(url,['-Mode','FindDialog','-SaveActiveFrame','-CloseAfterSave','-SaveOnly','-ExistingOnly'])
+                assert guard['ok'],guard
+                client,board,_=session._board()
+                unlocked=decode(locked_snapshot['parts']['R1']['proto']);unlocked.locked=False
+                board.update_items(unlocked)
+                board.save()
             # Only the upstream converter output is synthetic. Publication and
             # the full save/sync/reopen cycle below use the real native path.
             def converted_fixture(importer, code, progress=None):
@@ -338,6 +367,7 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report-dir',type=Path)
     parser.add_argument('--launch-child',type=Path)
+    parser.add_argument('--locked-metadata',action='store_true',help='Verify locked field/rename/no-op sync before geometry checks')
     args=parser.parse_args()
     if args.launch_child:
         assert args.launch_child.parent.name.startswith('pcb-probe-') and args.launch_child.name=='project'
@@ -345,4 +375,4 @@ if __name__=='__main__':
     else:
         assert args.report_dir and args.report_dir.is_absolute() and not args.report_dir.resolve().is_relative_to(ROOT)
         args.report_dir.mkdir(parents=True,exist_ok=True)
-        raise SystemExit(run(args.report_dir))
+        raise SystemExit(run(args.report_dir,locked_metadata=args.locked_metadata))

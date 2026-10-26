@@ -54,6 +54,41 @@ def test_preview_and_apply_do_not_touch_choice_or_confirmation(updates):
     session.apply.assert_called_once()
 
 
+def test_locked_geometry_replacement_is_reported_without_library_load_or_write(updates):
+    service, _, session, _ = updates
+    session.snapshot.return_value['parts']['R1']['locked'] = True
+    preview = service.preview(['R1'], '__schematic__')
+    assert preview['blocked'] is True
+    item = preview['items'][0]
+    assert item['kind'] == 'replace' and item['locked'] is True
+    assert '解锁' in item['blocked_reason'] and 'R1' in item['blocked_reason']
+    session.read_library.assert_not_called()
+    with pytest.raises(ValueError, match='解锁'):
+        service.apply(preview['preview_id'], True)
+    session.apply.assert_not_called()
+
+
+@pytest.mark.parametrize('same', [True, False])
+def test_locked_matching_library_id_checks_geometry_before_blocking(updates, monkeypatch, same):
+    import part_selection_pcb as module
+    service, _, session, _ = updates
+    part = session.snapshot.return_value['parts']['R1']
+    part.update(locked=True, footprint='Local:New')
+    monkeypatch.setattr(module, 'geometry_matches', lambda *args: same)
+    monkeypatch.setattr(module, 'geometry_signature', lambda *args: 'geometry')
+    preview = service.preview(['R1'], '__schematic__')
+    assert preview['blocked'] is not same
+    session.read_library.assert_called_once()
+    if same:
+        assert preview['items'][0]['kind'] == 'none'
+        assert service.apply(preview['preview_id'], True)['no_changes']
+    else:
+        assert '解锁' in preview['items'][0]['blocked_reason']
+        with pytest.raises(ValueError, match='解锁'):
+            service.apply(preview['preview_id'], True)
+    session.apply.assert_not_called()
+
+
 @pytest.mark.parametrize('problem', ['no_ack', 'source_changed', 'record_changed', 'library_changed', 'schematic_changed'])
 def test_preflight_changes_never_apply(updates, problem):
     service, app, session, library = updates

@@ -19,7 +19,7 @@
 .design-sync-steps time { text-align:right; font-variant-numeric:tabular-nums; color:#66757b; }
 .design-sync-steps [data-step-status="running"] { color:#185d8b; }
 .design-sync-steps [data-step-status="succeeded"] { color:#246e55; }
-.design-sync-steps [data-step-status="failed"] { color:#a23d27; }
+.design-sync-steps [data-step-status="failed"], .design-sync-steps [data-step-status="blocked"] { color:#a23d27; }
 .design-sync-steps [data-step-status="skipped"], .design-sync-steps [data-step-status="waiting"] { color:#66757b; }
 [data-design-timing] { margin:8px 0 14px; color:#596871; font-size:12px; }
 [data-design-timing-items] > div { display:flex; justify-content:space-between; gap:12px; padding:4px 0; overflow-wrap:anywhere; }

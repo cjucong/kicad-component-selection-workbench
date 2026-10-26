@@ -1,5 +1,9 @@
 # 插件回归测试
 
+`run_native_grouped_footprint_probe.py` 另以真实 IPC 验证锁定实例读取、改名和新增自定义字段、同批无变化项、原生回读及单次撤销；新增字段不能带原生序列化不保留的 `text.parent`。它不依赖原理图定位快捷键，不能替代完整保存/关闭/重开测试。
+
+锁定实例：`test_pcb_session.py` 验证只读快照不拒绝锁定；`test_pcb_update.py`、`test_pcb_field_updates.py` 覆盖无需更新/改名/字段允许与几何拒绝、底层禁止伪装成字段来移动/旋转/改网络/解锁。`test_design_sync.py`、`test_design_sync_ui.py` 验证受阻原因、读取完成状态及解锁后重新预检。`run_native_project_cycle_probe.py --report-dir <工程外目录> --locked-metadata` 在可清理真实 KiCad 工程验证锁定字段/改名/无需更新、保存关闭重开保持锁定及几何，并确认不安全写入在备份和事务前拒绝；然后仅对测试夹具显式解锁，继续既有几何替换闭环。
+
 层级批量回归另覆盖根页、嵌套页、重复实例与孤立旧页排除，以及 UUID/引脚/字节变化使预览失效。写回接口不能覆盖所选层级实例时必须在关窗和任何写入前拒绝；验证结果中的嵌套 missing_refs 也不得误报成功。
 
 同名封装批量管理：`test_footprint_batch.py` 验证完整库 ID、跨行范围及过期成员检测、各位号独立选料/撤回记录和合行不继承其他物料。Chromium `batch` 场景验证范围确认及共享库铜皮差异确认；`test_footprint_choices.py` 保证风险确认不能绕过编号/局部中心安全检查。`run_native_grouped_footprint_probe.py` 从 R1 单行打开，验证实际扩展至同封装 R1/R2 后分别更新正背面 PCB 实例，保留各自网络、位置、走线及撤销。

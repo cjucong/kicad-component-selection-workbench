@@ -75,7 +75,7 @@
       if (active) bar.removeAttribute('value');
       else {bar.max=1;bar.value=value.ok===false?0:1;}
       const timings = value.timings || [];
-      const statuses = {running:'进行中',waiting:'等待',succeeded:'已完成',failed:'未完成',skipped:'已跳过'};
+      const statuses = {running:'进行中',waiting:'等待',succeeded:'已完成',failed:'失败',blocked:'受阻',skipped:'已跳过'};
       q('[data-design-steps]').innerHTML = (value.steps || []).map(step =>
         `<li data-step-status="${escape(step.status)}"><span>${escape(statuses[step.status] || step.status)}</span><span>${escape(step.message)}</span><time>${Number(step.seconds || 0).toFixed(1)} s</time></li>`).join('');
       q('[data-design-timing]').hidden = !timings.length;
@@ -126,10 +126,10 @@
       q('[data-design-changes]').innerHTML = (schematic.length ? `<h3>原理图字段</h3><table><thead><tr><th>位号</th><th>改动</th></tr></thead><tbody>${schematic.map(item =>
         `<tr><td>${escape(item.ref)}</td><td>${escape(changeText(item))}</td></tr>`).join('')}</tbody></table>` : '') +
         (items.length ? `<h3>PCB 更新</h3><table><thead><tr><th>位号</th><th>改动类型</th><th>具体改动</th></tr></thead><tbody>${items.map(item =>
-          `<tr><td>${escape(item.ref)}</td><td>${escape(kinds[item.kind] || kinds.unknown)}</td><td>${['rename','replace','unknown'].includes(item.kind) ?
+          `<tr><td>${escape(item.ref)}</td><td>${escape(kinds[item.kind] || kinds.unknown)}${item.locked ? '<div>已锁定</div>' : ''}</td><td>${item.blocked_reason ? `<div class="design-warning">${escape(item.blocked_reason)}</div>` : item.locked ? '<div>保留锁定状态，不移动器件</div>' : ''}${['rename','replace','unknown'].includes(item.kind) ?
             `<div class="design-footprint-change">${escape(item.before)} → ${escape(item.after)}</div>` : ''}${(item.field_changes || []).map(change =>
               `<div>${escape(changeText(change))}</div>`).join('')}${item.kind === 'unknown' ? `<div class="design-warning">${escape(item.reason || '请在封装管理中明确操作后重新预检')}</div>` : ''}${item.kind === 'replace' ?
-                `<div class="design-geometry-info">中心偏差 ${Number(item.center_error_mm || 0).toFixed(4)} mm · 焊盘最大移动 ${Number(item.max_error_mm || 0).toFixed(4)} mm</div><button type="button" data-design-compare="${escape(item.ref)}">封装对比</button>${(item.pad_errors || []).length ?
+                `${item.blocked_reason ? '' : `<div class="design-geometry-info">中心偏差 ${Number(item.center_error_mm || 0).toFixed(4)} mm · 焊盘最大移动 ${Number(item.max_error_mm || 0).toFixed(4)} mm</div><button type="button" data-design-compare="${escape(item.ref)}">封装对比</button>`}${(item.pad_errors || []).length ?
                   `<details><summary>逐焊盘移动</summary>${item.pad_errors.map(p => `<div>${escape(p.number)}：${Number(p.error_mm).toFixed(6)} mm</div>`).join('')}</details>` : ''}
                   ${(item.pad_mapping || []).length?`<details><summary>焊盘对应与编号</summary>${item.pad_mapping.map(p=>`<div>原端子 ${escape(p.source)} ← 目标原编号 ${escape(p.target)} → 保存编号 ${escape(p.source)} · ${p.align?'参与对齐':'不参与对齐，仍继承网络'}</div>`).join('')}</details>`:''}
                   ${(item.differences || []).length?`<details><summary>焊盘几何差异</summary>${item.differences.map(p=>`<div>焊盘 ${escape(p.number)} · ${escape(p.fields.join(', '))}<pre>${escape(JSON.stringify(p.before,null,2))} → ${escape(JSON.stringify(p.after,null,2))}</pre></div>`).join('')}</details>`:''}
@@ -139,8 +139,9 @@
         state.payload.destination === 'both' && !state.continuation ? '先保存并关闭当前工程，同步原理图后核验 PCB 并确认。' :
         '仅更新所选器件，不改网络或走线。自动保存当前工程（含此前编辑），重新打开并定位。';
       q('[data-design-both]').hidden = preview.suggested_destination !== 'both';
+      q('[data-design-refresh]').hidden = !preview.blocked && !pcb?.blocked;
       q('[data-design-apply]').textContent = state.continuation ? '继续同步 PCB' : destinations[state.payload.destination];
-      status(preview.reason || (preview.blocked || pcb?.blocked ? '存在待核对的封装，尚未写入 PCB' :
+      status(preview.reason || (items.some(item=>item.blocked_reason) ? '预检受阻：有锁定器件需要更换封装，请在 PCB 解锁后重新预检；本批未写入 PCB' : preview.blocked || pcb?.blocked ? '存在待核对的封装，尚未写入 PCB' :
         !items.length && !schematic.length && state.payload.destination !== 'both' ? '所选字段无需更新' : '已完成预检，请核对改动'));
       enabled();
     }

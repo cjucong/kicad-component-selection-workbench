@@ -103,7 +103,9 @@ class DesignSync:
             with self.lock:
                 if self.jobs[key].get('_cancelled'):
                     raise ValueError('预检已取消')
-                self._update(key, done=True, stage='preview_ready', message='预检完成', preview=preview)
+                self._update(key, done=True, stage='preview_ready',
+                    step_status='blocked' if preview['blocked'] else 'succeeded',
+                    message='预检受阻，请核对下方具体原因；未写入设计' if preview['blocked'] else '预检完成', preview=preview)
         except Exception as exc:
             with self.lock:
                 cancelled = self.jobs[key].get('_cancelled')
@@ -143,7 +145,8 @@ class DesignSync:
         if not isinstance(acknowledgments, dict) or any(type(value) is not bool for value in acknowledgments.values()):
             raise ValueError('同步确认参数无效')
         if preview.get('blocked'):
-            raise ValueError(preview.get('reason') or '封装改动类型待核对，请先完成核对')
+            raise ValueError(preview.get('reason') or (preview.get('pcb_preview') or {}).get('reason') or
+                             '封装改动类型待核对，请先完成核对')
         items = (preview.get('pcb_preview') or {}).get('items', [])
         if any(item.get('needs_ack') for item in items) and acknowledgments.get('geometry') is not True:
             raise ValueError('请明确确认封装几何替换及引脚功能')

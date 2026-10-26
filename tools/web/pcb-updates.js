@@ -45,7 +45,7 @@
     q('[data-pcb-close]').onclick = close;
     q('[data-pcb-cancel]').onclick = close;
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
-    q('[data-pcb-ack]').onchange = () => { q('[data-pcb-apply]').disabled = !q('[data-pcb-ack]').checked || !preview; };
+    q('[data-pcb-ack]').onchange = () => { q('[data-pcb-apply]').disabled = !q('[data-pcb-ack]').checked || !preview || preview.blocked; };
     async function poll() {
       if (polling) return;
       polling = true; q('[data-pcb-retry]').hidden = true;
@@ -110,6 +110,7 @@
       const result = await post('/api/pcb_update_preview', {refs:refs.join(','), bom:loadedRowsBom, alignment});
       if (closed || token !== sequence) return;
       preview = result;
+      if (preview.blocked) throw new Error(preview.reason || '部分封装改动受阻，请在同步设计中核对具体原因');
       q('tbody').innerHTML = preview.items.map(item => `<tr><td>${escape(item.ref)}<small>${item.back ? '背面' : '正面'}</small></td>
         <td>${escape(item.before)}<small>→ ${escape(item.after)}</small><button type="button" data-pcb-compare="${escape(item.ref)}" title="查看当前 PCB 与目标库封装叠加对比">封装对比</button></td>
         <td>${item.old_position_mm.map(number).join(' / ')}<small>→ ${item.position_mm.map(number).join(' / ')}</small></td>

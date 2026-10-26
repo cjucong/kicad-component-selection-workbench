@@ -24,8 +24,9 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
     if(path==='/api/start_design_sync_preview') {
      if(mode==='late') await new Promise(resolve=>window.finishPreview=resolve);
      return {ok:true,json:async()=>({ok:true,job_id:'preflight',done:true,stage:'preview_ready',preview:{ok:true,preview_id:'design-1',refs:['R1'],destination:body.destination,
-      schematic_changes:[],pcb_preview:body.destination==='both' ? null : {preview_id:'pcb-1',blocked:false,
-       items:[{ref:'R1',kind:mode==='replace'?'replace':'rename',before:'Local:Old',after:'Local:New',
+      blocked:mode==='locked',schematic_changes:[],pcb_preview:body.destination==='both' ? null : {preview_id:'pcb-1',blocked:mode==='locked',
+       items:[{ref:'R1',kind:['replace','locked'].includes(mode)?'replace':'rename',before:'Local:Old',after:'Local:New',
+        locked:mode==='locked',blocked_reason:mode==='locked'?'R1 已锁定；请在 PCB 解锁后重新预检':'',
         needs_ack:mode==='replace',max_error_mm:mode==='replace'?.2:0,field_changes:[]}]}}})};
     }
     if(path.includes('start_design_sync')) {
@@ -58,6 +59,14 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
   assert.equal(await page.locator('[data-design-compare]').count(),0);
   assert.equal(await page.locator('[data-design-geometry]').isVisible(),false);
   assert.equal(await page.locator('[data-design-apply]').isEnabled(),true);
+  await page.locator('[data-design-close]').click();
+  await page.evaluate(()=>{mode='locked';return window.openDesignSync({refs:['R1'],destination:'pcb'});});
+  await page.getByText('已锁定',{exact:true}).waitFor();
+  assert.match(await page.locator('[data-design-status]').innerText(),/锁定.*解锁/);
+  assert.equal(await page.locator('[data-design-apply]').isEnabled(),false);
+  assert.equal(await page.locator('[data-design-refresh]').isVisible(),true);
+  assert.equal(await page.locator('[data-design-compare]').count(),0);
+  assert(!((await page.locator('[data-design-changes]').innerText()).includes('中心偏差')));
   await page.locator('[data-design-close]').click();
   await page.evaluate(()=>{mode='replace';return window.openDesignSync({refs:['R1'],destination:'pcb'});});
   await page.getByText('更换封装',{exact:true}).waitFor();

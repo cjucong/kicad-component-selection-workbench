@@ -35,6 +35,7 @@ elif MODE=='fields':
  assert check==original_field.proto, 'Field pose, styling or visibility changed'
  added=next(f for f in result.definition.items if isinstance(f,Field) and f.name=='Brand')
  assert added.visible is False and added.text.value=='Yageo'
+ assert not added.proto.text.HasField('parent'), 'Embedded footprint fields must match native IPC serialization'
  assert added.proto.text.id.value not in [original_field.proto.text.id.value,fp.value_field.proto.text.id.value]
  assert result.proto.position==before.position and result.proto.orientation==before.orientation
  assert result.definition.pads[0].proto==pad.proto
@@ -77,6 +78,11 @@ a=describe(fp)
 b=decode(a['proto']);b.value_field.text.value='changed'
 b.proto.id.value=str(uuid4());b.definition.pads[0].proto.id.value=str(uuid4())
 assert geometry_signature(a)==geometry_signature(describe(b))
+b.locked=True
+from kipy.proto.common.types.base_types_pb2 import LS_LOCKED
+b.definition.pads[0].proto.locked=LS_LOCKED
+assert geometry_signature(a)==geometry_signature(describe(b)), 'Lock metadata is not footprint geometry'
+assert geometry_matches(a,describe(b))
 b.definition.pads[0].position=Vector2.from_xy(2,0)
 assert geometry_matches(a,describe(b))
 b.definition.pads[0].position=Vector2.from_xy(10,0)
@@ -91,8 +97,40 @@ assert geometry_signature(a)!=geometry_signature(describe(b))
     assert result.returncode==0, result.stderr
 
 
+@pytest.mark.parametrize('change', ['metadata','new_field','noop','replace','position','rotation','pad','net','unlock','field_position'])
+def test_locked_native_update_allows_only_explicit_metadata(change):
+    script = r'''
+from part_selection_pcb_session import validate_locked_update
+fp.locked=True
+original=describe(fp)
+fields={'Value':'22k'} if CHANGE=='metadata' else {'Brand':'Yageo'} if CHANGE=='new_field' else {}
+proposed=decode(metadata_replacement(original,footprint='Other:Renamed',fields=fields))
+if CHANGE=='position':proposed.proto.position.x_nm+=1
+elif CHANGE=='rotation':proposed.proto.orientation.value_degrees+=90
+elif CHANGE=='pad':proposed.definition.pads[0].proto.position.x_nm+=1
+elif CHANGE=='net':proposed.definition.pads[0].proto.net.name='wrong'
+elif CHANGE=='unlock':proposed.locked=False
+elif CHANGE=='field_position':next(x for x in proposed.definition.items if isinstance(x,Field)).proto.text.text.position.x_nm+=1
+item={'ref':'R1','proto':encode(proposed),'fields':fields,'kind':'replace' if CHANGE=='replace' else 'rename'}
+if CHANGE in ('metadata','new_field','noop'):
+ validate_locked_update(original,item)
+else:
+ try:validate_locked_update(original,item)
+ except ValueError as exc:assert 'R1' in str(exc)
+ else:raise AssertionError('Locked instance geometry, lock or connectivity was modified')
+assert fp.locked is True
+'''
+    python=runtime()
+    if python is None:pytest.skip('Native kipy required')
+    setup=SCRIPT.split("if MODE=='rename':")[0]
+    result=subprocess.run([str(python),'-B','-c','CHANGE='+repr(change)+'\n'+setup+script],
+        capture_output=True,text=True,encoding='utf-8',timeout=20)
+    assert result.returncode==0, result.stderr
+
+
 @pytest.mark.parametrize('operation', ['rename','fields','noop','unknown'])
-def test_metadata_preflight_skips_library_reads_and_blocks_unknown_intent(scratch_project, operation):
+@pytest.mark.parametrize('locked', [False, True])
+def test_metadata_preflight_skips_library_reads_and_blocks_unknown_intent(scratch_project, operation, locked):
     script = r'''
 import json, threading
 from pathlib import Path
@@ -103,6 +141,7 @@ from part_selection_footprint_changes import board_copper_hashes
 root=Path(ROOT)
 fp_text='(kicad_pcb (footprint "Local:Old" (property "Reference" "R1") (layer "F.Cu") (at 12 34) (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))))'
 fp.proto.symbol_path.path.add().value='symbol'
+fp.locked=LOCKED
 source=describe(fp)
 session=SimpleNamespace(snapshot=Mock(return_value={'session_id':'one','text':fp_text,'parts':{'R1':source}}),
  read_library=Mock(side_effect=AssertionError('metadata launched library reader')),apply=Mock(return_value={'ok':True}))
@@ -140,6 +179,6 @@ session.read_library.assert_not_called()
         pytest.skip('KiCad desktop kipy runtime required')
     # Use the same real native fixture, without the mode-specific assertions.
     setup = SCRIPT.split("if MODE=='rename':")[0]
-    result = subprocess.run([str(python),'-B','-c','ROOT='+repr(str(scratch_project))+'\nOPERATION='+repr(operation)+'\n'+setup+script],
+    result = subprocess.run([str(python),'-B','-c','ROOT='+repr(str(scratch_project))+'\nOPERATION='+repr(operation)+'\nLOCKED='+repr(locked)+'\n'+setup+script],
         capture_output=True,text=True,encoding='utf-8',timeout=20)
     assert result.returncode == 0, result.stderr

@@ -635,6 +635,39 @@ def test_async_preflight_failure_stops_timer_and_never_applies():
     finally:service.close()
 
 
+def test_locked_preflight_reports_successful_read_and_separate_block_without_writes():
+    service, app, _ = coordinator()
+    app.design_sync_fields.return_value={'R1':{'value':'100k','footprint':'Local:New'}}
+    def preview(*args, progress=None, **kwargs):
+        progress('reading', 'Reading live PCB')
+        progress('read_complete', 'PCB read complete')
+        return {'ok':True,'preview_id':'pcb','blocked':True,'reason':'R1 已锁定，请先解锁',
+                'items':[{'ref':'R1','kind':'replace','locked':True,'blocked_reason':'R1 已锁定，请先解锁'}]}
+    app.pcb_updates.preview.side_effect=preview
+    try:
+        state=await_job(service, service.start_preview({'refs':['R1'],'destination':'pcb'})['job_id'])
+        assert state['ok'] and state['preview']['blocked']
+        assert state['steps'][-1]['status']=='blocked'
+        assert all(step['status']=='succeeded' for step in state['steps'][:-1])
+        with pytest.raises(ValueError, match='R1.*解锁'):
+            service.start(state['preview']['preview_id'],{})
+        app.pcb_updates.apply.assert_not_called()
+        app.bulk_sync_bom_state_to_schematic.assert_not_called()
+    finally:service.close()
+
+
+def test_blocked_geometry_cannot_close_schematic_before_rejection():
+    from part_selection_server import PartSelectionApp
+    app=PartSelectionApp.__new__(PartSelectionApp)
+    app.selection_save_lock=threading.RLock()
+    app.pcb_updates=SimpleNamespace(previews={'token':{'items':[{'kind':'replace','blocked_reason':'R1 已锁定'}]}},
+        apply=Mock(side_effect=ValueError('R1 已锁定')))
+    app.run_kicad_script=Mock()
+    with pytest.raises(ValueError,match='锁定'):
+        app.apply_design_pcb('token')
+    app.run_kicad_script.assert_not_called()
+
+
 def test_superseded_queued_preflight_is_cancelled_without_reading_design():
     service, app, sources = coordinator()
     entered, release = threading.Event(), threading.Event()
