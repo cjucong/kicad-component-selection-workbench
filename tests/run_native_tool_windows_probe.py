@@ -182,18 +182,24 @@ def check_native_grouped_default_save(app, tools, report):
             f'(property "Footprint" "LCSC_{code}:Q10")))',encoding='utf-8')
         return {'footprint':f'LCSC_{code}:Q10','symbol':f'LCSC_{code}:Switch','c_code':code}
     requests=[]
+    injected=set()
     original_request=app.row_footprint
     def trace(payload,*args,**kwargs):
         if payload.get('footprint_choice'):
             requests.append(payload['footprint_choice'])
             (report/'default-save-choices.json').write_text(json.dumps(requests,ensure_ascii=False,indent=2),encoding='utf-8')
+            name=payload['footprint_choice'].get('name','')
+            if name.startswith('Custom_') and name not in injected:
+                injected.add(name)
+                raise ValueError('fixture save failure: retry without losing the name or mapping')
         try:
             return original_request(payload,*args,**kwargs)
         except Exception:
             (report/'default-save-error.log').write_text(traceback.format_exc(),encoding='utf-8')
             raise
     with patch.object(app,'row_footprint',side_effect=trace),patch('part_selection_footprints.LibraryImporter.convert',autospec=True,side_effect=convert):
-        for mode,expected in [('library','Q10_mapped'),('convert','SMD')]:
+        for mode,expected in [('library','Q10_mapped'),('convert','SMD'),
+                              ('library','Custom_库封装'),('convert','Custom_立创封装')]:
             response=tools.main_action('open',{'kind':'footprint','request_id':uuid4().hex,
                 'payload':{'refs':refs,'bom':'__schematic__'}})
             assert response['ok'],response
@@ -211,10 +217,27 @@ def check_native_grouped_default_save(app, tools, report):
             for axis,value in [('dx','0.9756'),('dy','-0.5716')]:
                 child.evaluate_js(f'const i=document.querySelector("{page}[data-fp-{axis}]");i.value="{value}";'
                     'i.dispatchEvent(new Event("input",{bubbles:true}));true')
-            child.evaluate_js(f'document.querySelector("{page}[data-fp-ack]").click();true')
+            if expected.startswith('Custom_'):
+                child.evaluate_js(f'const i=document.querySelector("{page}[data-fp-name]");i.value="DFN3*3";'
+                    'i.dispatchEvent(new Event("input",{bubbles:true}));true')
+                child.evaluate_js(f'document.querySelector("{page}[data-fp-ack]").click();true')
+                assert child.evaluate_js(f'document.querySelector("{page}.fp-apply").disabled')
+                assert '*' in child.evaluate_js(f'document.querySelector("{page}[data-fp-name-error]").innerText')
+                child.evaluate_js(f'const i=document.querySelector("{page}[data-fp-name]");i.value={json.dumps(expected)};'
+                    'i.dispatchEvent(new Event("input",{bubbles:true}));true')
+            else:
+                child.evaluate_js(f'document.querySelector("{page}[data-fp-ack]").click();true')
             wait(child,f'document.querySelector("{page}.fp-apply").disabled===false')
             assert child.evaluate_js(f'document.querySelector("{page}[data-fp-name]").value')==expected
             child.evaluate_js(f'document.querySelector("{page}.fp-apply").click();true')
+            if expected.startswith('Custom_'):
+                wait(child,f'document.querySelector("{page}.fp-error")?.textContent.includes("fixture save failure")')
+                assert child.evaluate_js(f'document.querySelector("{page}[data-fp-name]").value')==expected
+                assert child.evaluate_js(f'document.querySelector("{page}[data-fp-mapping-enabled]").checked')
+                assert child.evaluate_js(f'document.querySelector("{page}[data-fp-dx]").value')=='0.9756'
+                assert child.evaluate_js('window.rowFootprintSaving===false')
+                capture(child,report/f'custom-name-recovery-{mode}.png')
+                child.evaluate_js(f'document.querySelector("{page}.fp-apply").click();true')
             for _ in range(250):
                 if entry['closed']:break
                 if child.evaluate_js('document.body.innerText.includes("封装保存失败")'):
@@ -414,6 +437,7 @@ def run(report):
                 result['checks']['grouped_8_to_10_saved_pcb_preview']=True
                 check_native_grouped_default_save(app,tools,report)
                 result['checks']['grouped_default_save_both_sources']=True
+                result['checks']['custom_names_validation_and_save_recovery_both_sources']=True
                 check_native_mapping(app,tools,report)
                 result['checks']['native_mapping_both_sources_and_project_copy']=True
                 tools.check_exit(); tools.cancel_exit()

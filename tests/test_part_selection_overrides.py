@@ -1641,10 +1641,10 @@ class PartSelectionOverridesTest(unittest.TestCase):
             self.assertEqual(result["count"], 1)
             with Path(result["path"]).open(encoding="utf-8-sig", newline="") as file:
                 rows = list(csv.DictReader(file))
-            self.assertEqual(rows[0]["Designator"], "C1")
-            self.assertEqual(rows[0]["LCSC"], "C1001")
-            self.assertNotIn("C3", [row["Designator"] for row in rows])
-            self.assertNotIn("R1", [row["Designator"] for row in rows])
+            self.assertEqual(rows[0]["位号"], "C1")
+            self.assertEqual(rows[0]["商品编号"], "C1001")
+            self.assertNotIn("C3", [row["位号"] for row in rows])
+            self.assertNotIn("R1", [row["位号"] for row in rows])
 
     def test_nc_detection_prefers_value_field_tokens(self):
         self.assertTrue(part_selection_server.row_is_nc({"comment": "Capacitor", "value": "NC"}))

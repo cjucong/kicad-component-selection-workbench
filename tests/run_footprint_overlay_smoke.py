@@ -56,6 +56,65 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='custom-name') {
+   for(const library of [true,false]) {
+    await page.evaluate(library=>{
+     window.saveAttempts=[]; window.result=undefined;
+     const options={apply:async choice=>{saveAttempts.push(choice);if(saveAttempts.length===1)throw Error('fixture save failure');return true;}};
+     if(library) window.chooseLibraryFootprint({...structuredClone(preview),kind:'library',default_id:'Local:A',
+      items:preview.existing.slice(0,2).map(e=>({...e,library:'Local'}))},options).then(value=>result=value);
+     else window.chooseFootprint(structuredClone(preview),options).then(value=>result=value);
+    },library);
+    await page.locator('[data-fp-adjust]').waitFor();
+    await page.locator('.fp-pad-mapping summary').click();
+    await page.locator('[data-fp-mapping-enabled]').check();
+    for(const name of ['Local:MyCopy','DFN3*3','MyCopy.','CON']) {
+     await page.locator('[data-fp-name]').fill(name);
+     await page.locator('[data-fp-ack]').check();
+     assert.equal(await page.locator('.fp-apply').isEnabled(),false,'invalid custom name must be caught before save: '+name);
+     assert.ok((await page.locator('[data-fp-name-error]').innerText()).length>0);
+    }
+    await page.locator('[data-fp-name]').fill('自定义_POWERPAK-8');
+    await page.locator('[data-fp-ack]').check();
+    await page.locator('.fp-apply').click();
+    await page.waitForFunction(()=>document.querySelector('.fp-error')?.textContent.includes('fixture save failure'));
+    assert.equal(await page.locator('[data-fp-name]').inputValue(),'自定义_POWERPAK-8','save errors preserve edited name');
+    assert.equal(await page.locator('[data-fp-mapping-enabled]').isChecked(),true,'save errors preserve mapping');
+    assert.equal(await page.locator('.fp-apply').isEnabled(),true,'save errors allow retry');
+    await page.locator('.fp-apply').click();
+    await page.waitForFunction(()=>window.result!==undefined);
+    assert.equal(await page.evaluate(()=>saveAttempts.length),2);
+    assert.equal(await page.evaluate(()=>result.name),'自定义_POWERPAK-8');
+   }
+   await page.evaluate(()=>{
+    window.result=undefined;window.managerAttempts=0;
+    window.openFootprintManager({load:async()=>({...structuredClone(preview),kind:'library',default_id:'Local:A',
+      items:preview.existing.slice(0,2).map(e=>({...e,library:'Local'}))}),
+     apply:async()=>{managerAttempts++;if(managerAttempts===1)throw Error('manager save failure');
+      if(managerAttempts===2)return false;
+      return new Promise(resolve=>{window.finishManagerSave=resolve;});}}).then(value=>result=value);
+   });
+   const pane=page.locator('[data-fp-page=library]');
+   await pane.locator('[data-fp-adjust]').waitFor();
+   await pane.locator('.fp-pad-mapping summary').click();
+   await pane.locator('[data-fp-mapping-enabled]').check();
+   await pane.locator('[data-fp-name]').fill('KeepMyDraft');
+   await pane.locator('[data-fp-ack]').check();
+   await pane.locator('.fp-apply').click();
+   await page.waitForFunction(()=>document.querySelector('[data-fp-page=library] .fp-error')?.textContent.includes('manager save failure'));
+   await pane.locator('.fp-apply').click();
+   await page.waitForFunction(()=>managerAttempts===2&&!document.querySelector('[data-fp-page=library] .fp-apply').disabled);
+   assert.equal(await pane.locator('[data-fp-name]').inputValue(),'KeepMyDraft','cancelled conflict preserves current editor');
+   await pane.locator('.fp-apply').click();
+   await page.waitForFunction(()=>!!window.finishManagerSave);
+   assert.equal(await page.locator('[data-fp-tab=convert]').isEnabled(),false);
+   assert.equal(await page.locator('.fp-workflow > .fp-title [data-fp-close]').isEnabled(),false);
+   await page.keyboard.press('Escape');
+   assert.equal(await page.locator('.fp-workflow').count(),1,'saving cannot close the editor');
+   await page.evaluate(()=>finishManagerSave(true));
+   await page.waitForFunction(()=>window.result!==undefined);
+   assert.equal(await page.evaluate(()=>result.name),'KeepMyDraft');
+  }
   if(check==='all'||check==='library-pcb-reference') {
    await page.evaluate(()=>{
     window.previousFetch=window.fetch;

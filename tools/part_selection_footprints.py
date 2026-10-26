@@ -24,13 +24,25 @@ from part_selection_library import IMPORT_LOCK, LibraryImporter, checked_path, d
 from part_selection_runtime import runtime_directory
 
 
-def item_name(value):
-    if not isinstance(value, str) or not value or len(value) > 120 or value != value.strip():
-        raise ValueError('Invalid library/item name')
-    if re.search(r'[<>:"/\\|?*\x00-\x1f]', value) or value.endswith(('.', ' ')) or value in ('.', '..'):
-        raise ValueError('Invalid library/item name')
+def item_name(value, label='库/封装名称'):
+    def reject(reason):
+        raise ValueError(label + '无效：' + reason)
+    if not isinstance(value, str) or not value:
+        reject('不能为空')
+    if len(value) > 120:
+        reject('不能超过 120 个字符')
+    if value != value.strip():
+        reject('开头和末尾不能有空白字符')
+    if ':' in value:
+        reject('这里只填写名称，不含库前缀或冒号；目标库需在“目标封装库”中选择')
+    invalid = re.search(r'[<>"/\\|?*\x00-\x1f]', value)
+    if invalid:
+        reject('不能包含字符 ' + json.dumps(invalid.group(), ensure_ascii=False) +
+               ('；尺寸乘号请用 x' if invalid.group() == '*' else ''))
+    if value.endswith('.'):
+        reject('末尾不能是句点 .')
     if re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?', value, re.I):
-        raise ValueError('Reserved Windows name')
+        reject('这是 Windows 保留名称，请换一个名称')
     return value
 
 
@@ -768,10 +780,10 @@ class FootprintChoices:
                 source = aligned['path'].read_text(encoding='utf-8-sig')
             if choice.get('collision', 'ask') not in ('ask', 'overwrite'):
                 raise ValueError('请选择覆盖或另存新名称')
-            name = item_name(choice.get('name'))
+            name = item_name(choice.get('name'), '封装名称')
             mode = choice.get('target_mode')
             libs = self.libraries()
-            nickname = item_name(choice.get('target_library'))
+            nickname = item_name(choice.get('target_library'), '目标封装库')
             if mode == 'existing':
                 if nickname not in libs:
                     raise ValueError('请选择工程已注册的本地封装库')
@@ -928,8 +940,8 @@ class FootprintChoices:
     def _commit_mapped_library(self, state, choice, entry, aligned, mapping):
         """Publish a mapped library copy; never mutate the selected source item."""
         libs = self.libraries()
-        nickname = item_name(choice.get('target_library') or entry['id'].split(':', 1)[0])
-        name = item_name(choice.get('name') or (entry['id'].split(':', 1)[1] + '_mapped'))
+        nickname = item_name(choice.get('target_library') or entry['id'].split(':', 1)[0], '目标封装库')
+        name = item_name(choice.get('name') or (entry['id'].split(':', 1)[1] + '_mapped'), '封装名称')
         mode = choice.get('target_mode', 'existing')
         if mode == 'existing':
             if nickname not in libs:

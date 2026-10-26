@@ -110,6 +110,19 @@ class FootprintChoicesTest(unittest.TestCase):
                 self.service.commit(self.choice(preview, **extra))
         self.assertFalse((self.pretty / '0603_C123.kicad_mod').exists())
 
+    def test_custom_name_errors_identify_the_field_and_rejected_content(self):
+        preview = self.prepare()
+        for name, reason in [('DSMU:Custom', '库前缀'), ('DFN3*3', '*'),
+                             ('Custom.', '句点'), ('CON', '保留'), ('x' * 121, '120')]:
+            with self.subTest(name=name), self.assertRaises(ValueError) as error:
+                self.service.commit(self.choice(preview, name=name))
+            self.assertIn('封装名称', str(error.exception))
+            self.assertIn(reason, str(error.exception))
+        with self.assertRaises(ValueError) as error:
+            self.service.commit(self.choice(preview, target_library='Bad:Library'))
+        self.assertIn('目标封装库', str(error.exception))
+        self.assertEqual(list(self.pretty.glob('*.kicad_mod')), [self.old])
+
     def test_independent_library_can_be_reused_in_a_later_preview(self):
         first = self.service.commit(self.choice(self.prepare(), target_mode='independent'))
         second = self.service.commit(self.choice(self.prepare(), target_mode='independent'))

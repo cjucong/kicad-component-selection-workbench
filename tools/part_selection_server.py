@@ -3573,12 +3573,19 @@ class PartSelectionApp:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = self.bom_dir / f"{EXPORT_PREFIXES[0]}{timestamp}.csv"
         columns = [
-            "Designator",
-            "Quantity",
+            "序号",
+            "型号",
+            "封装",
+            "参数/规格",
+            "单套用量",
+            "品牌",
+            "分类",
+            "商品编号",
+            "物料编码",
+            "位号",
             "Comment",
             "Value",
             "Footprint",
-            "LCSC",
             "LCSC_URL",
             "Stock",
             "Delivery",
@@ -3597,14 +3604,25 @@ class PartSelectionApp:
                 continue
             stock = row.get("stock") if isinstance(row.get("stock"), dict) else {}
             c_code = row_effective_c_code(row)
+            normalized_code = normalize_lcsc_c_code(c_code)
+            if not normalized_code or normalize_lcsc_c_code(stock.get("c_code")) != normalized_code:
+                stock = {}
             export_rows.append(
                 {
-                    "Designator": str(row.get("refs") or row.get("ref") or ""),
-                    "Quantity": str(row.get("quantity") or ""),
+                    "序号": str(len(export_rows) + 1),
+                    "型号": str(stock.get("model") or ""),
+                    "封装": str(stock.get("package") or str(row.get("footprint") or "").rsplit(":", 1)[-1]),
+                    "参数/规格": str(row.get("value") or stock.get("param_detail") or stock.get("param") or ""),
+                    "单套用量": str(row.get("quantity") or ""),
+                    "品牌": str(stock.get("brand") or ""),
+                    "分类": str(stock.get("category") or ""),
+                    "商品编号": c_code,
+                    # The template's internal material ID is not the LCSC product code.
+                    "物料编码": "",
+                    "位号": str(row.get("refs") or row.get("ref") or ""),
                     "Comment": str(row.get("comment") or ""),
                     "Value": str(row.get("value") or ""),
                     "Footprint": str(row.get("footprint") or ""),
-                    "LCSC": c_code,
                     "LCSC_URL": lcsc_code_url(c_code) if c_code else "",
                     "Stock": str(stock.get("stock", "")) if not stock.get("entries") else "; ".join(
                         f"{item['ref']}:{item['stock'].get('stock', item['stock'].get('status', ''))}"
@@ -4448,7 +4466,7 @@ tr.hidden-row {{ display: none; }}
   <div class="app-menu">
     <button type="button" id="exportPumpMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="导出 BOM 表" data-tooltip="选择导出范围：当前筛选、低库存等；导出仅包含非 NC 器件。">{toolbar_content('table-2', 'BOM 导出')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
     <div class="menu-popup export-popup">
-    <label>导出范围<select id="pumpExportMode" title="选择导出泵表内容">
+    <label>导出范围<select id="pumpExportMode" title="选择导出 BOM 内容">
   <option value="current_filter">当前筛选结果</option>
   <option value="stock_issue">库存异常/低库存</option>
   <option value="low_stock">低库存器件</option>
@@ -6553,8 +6571,8 @@ async function exportPumpTable() {{
     }})
   }});
   const data = await res.json();
-  if (!data.ok) throw new Error(data.error || "导出泵表失败");
-  setState(`已导出泵表：${{data.count}} 条，${{data.path}}`, "saved");
+  if (!data.ok) throw new Error(data.error || "导出 BOM 失败");
+  setState(`已导出 BOM：${{data.count}} 条，${{data.path}}`, "saved");
 }}
 
 const pendingStockRequests = new Map();

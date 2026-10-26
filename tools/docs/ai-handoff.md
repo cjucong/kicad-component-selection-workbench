@@ -1,5 +1,15 @@
 # 开发接手说明
 
+## 立创模板 BOM 导出
+
+`PartSelectionApp.export_pump_table` 保持原 CSV 路径和 API，前 10 列按立创商城模板，非重复工程列后置；不要把商品编号 C 编码当作内部物料编码。导出只读已保存行和同编码缓存，不查询网络、不改变确认状态或 CAD。单套用量使用分组 quantity，不乘套数；模板示例数据不随插件分发。`test_bom_export_template.py` 与原导出筛选测试共同覆盖列顺序、数量、字段回退及参数身份隔离。
+
+## 自定义封装名称与保存恢复
+
+`item_name(value, label)` 保持文件名安全限制，错误包含具体字段和原因；不静默清洗非法字符或重定向目标库。`footprintNameError` 是对应的前端提前校验，替换页填名称，改名页解析完整库标识后校验条目部分。实际保存仍由后端独立校验。
+
+`manageRowFootprint` 将写入回调交给 `openFootprintManager`，由当前页的 `applyFootprintChoice` 等待保存成功后才关闭。失败保留同一 DOM、映射和变换；冲突取消返回 false，继续当前编辑。保存期间 `rowFootprintSaving` 仍阻止主窗退出，子页控件和管理器导航暂时禁用，失败 finally 恢复；不能恢复“先销毁编辑器，再提交请求”的流程。候选窗口等旧调用未传 apply 时保留原有返回 choice 的兼容行为。源变更、过期和幂等事务检查保持后端权威。
+
 ## 统一手动焊盘适配
 
 `footprint_geometry_worker.py` 的非恒等变换支持 3D 模型引用，不加载或下载 STEP/WRL。模型路径、缩放、显隐、透明度和 Z 高度保留；按 KiCad 的 Y-up 3D 坐标调整 XY 偏移，Z 欧拉角减去封装转角，X/Y 欧拉角不变。依据 [KiCad 10 create_scene.cpp](https://gitlab.com/kicad/code/kicad/-/blob/10.0/3d-viewer/3d_rendering/raytracing/create_scene.cpp) 的模型矩阵顺序。SWIG 的模型迭代返回副本，变换后须写回 `Models()[index]`。原生保存回读检查模型数量和属性；未知顶层几何仍拒绝，不可通过放开白名单静默丢对象。
