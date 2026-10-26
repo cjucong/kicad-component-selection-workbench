@@ -166,3 +166,78 @@ print('verified',MODE)
     result=subprocess.run([str(python),'-B','-c','MODE='+repr(mode)+'\n'+script],
                           capture_output=True,text=True,encoding='utf-8',timeout=20)
     assert result.returncode==0,result.stdout+result.stderr
+
+
+@pytest.mark.parametrize('mode', ['duplicate_closure','two_closures','open','moved_vertex',
+    'missing_vertex','reversed','node_unknown','line_unknown','pad_change','extra_shape',
+    'hole','hole_move','custom_pad','custom_pad_move','arc_end'])
+def test_closed_polygon_native_roundtrip_preserves_exact_geometry(mode):
+    python=runtime()
+    if python is None:
+        pytest.skip('KiCad desktop kipy runtime required')
+    script=r'''
+from copy import deepcopy
+from kipy.board_types import FootprintInstance, BoardShape, Pad
+from part_selection_pcb_session import encode, decode, footprint_bytes, geometry_matches, PcbSession, describe
+original=FootprintInstance()
+original.proto.id.value='instance'
+original.reference_field.text.value='U49'
+original.definition.id.library='Local';original.definition.id.name='Fixture'
+shape=BoardShape();shape.proto.id.value='drawing'
+outline=shape.proto.shape.polygon.polygons.add().outline
+outline.closed=MODE!='open'
+for x,y in [(100,100),(200,100),(200,200),(100,200),(100,100)]:
+    point=outline.nodes.add().point;point.x_nm=x;point.y_nm=y
+if MODE=='two_closures':outline.nodes.add().CopyFrom(outline.nodes[0])
+if MODE=='node_unknown':
+    outline.nodes[0].MergeFromString(b'\xd8\x07\x01')
+    outline.nodes[-1].CopyFrom(outline.nodes[0])
+if MODE=='line_unknown':outline.MergeFromString(b'\xd8\x07\x01')
+if MODE=='arc_end':
+    outline.nodes[0].ClearField('point')
+    outline.nodes[0].arc.start.x_nm=100
+    outline.nodes[-1].CopyFrom(outline.nodes[0])
+if MODE in ('hole','hole_move'):
+    hole=shape.proto.shape.polygon.polygons[0].holes.add()
+    hole.CopyFrom(outline)
+original.definition.add_item(shape)
+pad=Pad();pad.number='1';pad.proto.id.value='pad'
+if MODE in ('custom_pad','custom_pad_move'):
+    native=deepcopy(pad.proto)
+    custom=native.pad_stack.copper_layers[0].custom_shapes.add().shape.polygon.polygons.add().outline
+    custom.CopyFrom(outline)
+    pad=Pad(native)
+original.definition.add_item(pad)
+actual=decode(encode(original))
+live=next(x for x in actual.definition.items if isinstance(x,BoardShape)).proto.shape.polygon.polygons[0].outline
+del live.nodes[-1]
+if MODE=='two_closures':del live.nodes[-1]
+if MODE=='moved_vertex':live.nodes[1].point.x_nm+=1
+if MODE=='missing_vertex':del live.nodes[1]
+if MODE=='reversed':
+    nodes=list(live.nodes);del live.nodes[:];live.nodes.extend(reversed(nodes))
+if MODE=='pad_change':actual.definition.pads[0].proto.position.x_nm+=1
+if MODE=='extra_shape':actual.definition.add_item(deepcopy(shape))
+if MODE in ('hole','hole_move'):
+    hole=next(x for x in actual.definition.items if isinstance(x,BoardShape)).proto.shape.polygon.polygons[0].holes[0]
+    del hole.nodes[-1]
+    if MODE=='hole_move':hole.nodes[1].point.x_nm+=1
+if MODE in ('custom_pad','custom_pad_move'):
+    native=deepcopy(actual.definition.pads[0].proto)
+    custom=native.pad_stack.copper_layers[0].custom_shapes[0].shape.polygon.polygons[0].outline
+    del custom.nodes[-1]
+    if MODE=='custom_pad_move':custom.nodes[1].point.x_nm+=1
+    actual.definition.items=[Pad(native) if isinstance(item,Pad) else item for item in actual.definition.items]
+accepted=MODE in ('duplicate_closure','two_closures','hole','custom_pad')
+assert (footprint_bytes(original)==footprint_bytes(actual)) is accepted, MODE
+if accepted:
+    assert geometry_matches(describe(original),describe(actual))
+    text='(kicad_pcb (footprint "Local:Fixture" (uuid "instance")))'
+    before={'session_id':'fixture','text':text,'parts':{'U49':describe(original)}}
+    after={'session_id':'fixture','text':text,'parts':{'U49':describe(actual)}}
+    assert PcbSession.verify(before,after,[{'ref':'U49','proto':encode(original),'fields':{},'kind':'fields'}])['ok']
+print('verified')
+'''
+    result=subprocess.run([str(python),'-B','-c','MODE='+repr(mode)+'\n'+script],
+        capture_output=True,text=True,encoding='utf-8',timeout=20)
+    assert result.returncode==0,result.stderr

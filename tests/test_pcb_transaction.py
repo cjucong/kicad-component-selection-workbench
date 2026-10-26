@@ -83,6 +83,28 @@ def test_failed_batch_drops_own_unpublished_commit(transaction, tmp_path, failur
     board.save.assert_not_called()
 
 
+def test_staged_diagnostic_preserves_full_rollback_scope(transaction, tmp_path, monkeypatch):
+    session, snapshot, board = transaction
+    snapshot['parts']['R2'] = {'uuid':'b'}
+    def native(ref, uid, content):
+        return SimpleNamespace(id=SimpleNamespace(value=uid),
+            reference_field=SimpleNamespace(text=SimpleNamespace(value=ref)), content=content)
+    first, second = native('R1','a','new-1'), native('R2','b','new-2')
+    corrupt = native('R1','a','changed-1')
+    monkeypatch.setattr(module,'decode',lambda proto:{'new-1':first,'new-2':second}[proto])
+    monkeypatch.setattr(module,'encode',lambda fp:fp.content)
+    monkeypatch.setattr(module,'footprint_bytes',lambda fp:fp.content)
+    board.update_items.return_value = [corrupt,second]
+    def read(root, refs):
+        return {**deepcopy(snapshot),'parts':{ref:deepcopy(snapshot['parts'][ref]) for ref in refs}}
+    session.snapshot.side_effect = read
+    with pytest.raises(ValueError,match='已撤回本批次.*不一致：R1'):
+        session.apply(snapshot,[{'ref':'R1','proto':'new-1'},{'ref':'R2','proto':'new-2'}],tmp_path/'backup')
+    assert session.snapshot.call_args.args[1] == ['R1','R2']
+    board.drop_commit.assert_called_once_with('commit')
+    board.push_commit.assert_not_called()
+
+
 def test_stale_source_never_writes(transaction, tmp_path):
     session, snapshot, board = transaction
     session.snapshot.return_value = {**snapshot, 'revision': 'changed'}

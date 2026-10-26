@@ -229,6 +229,8 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `run_native_design_keep_open.py --with-footprints --report-dir <工程外绝对目录>` 还实际通过行封装接口选库改名、标准库替换并同步原理图和 PCB，核对焊盘、网络、姿态及事务外对象，重复同步应无变化。跨原理图安全重载时 KiCad 可能有 1 nm 舍入，事务外对象采用重载后的事务基线严格比较，不放宽实际写入或保存核验。
 
+该探测还在一次性工程中创建闭合多边形，向实际 KiCad PCB 事务提交含重复闭合末点的字段更新，核验原生返回去掉冗余末点后仍可完整回读、保存且同会话保留；生产失败记录只在内存只读回放。`test_pcb_native_types.py` 覆盖轮廓、孔洞、自定义焊盘的等价闭合，以及 1 nm 真变动、未知属性、开放轮廓和圆弧端点拒绝；`test_pcb_transaction.py` 核验错误位号诊断不缩小整批撤回范围。`test_design_sync_ui.py` 使用离线 Chromium 验证核对 1246 个器件、原理图 2 个差异、PCB 113 个差异独立计数，自动同步失败后保留实际清单并刷新已完成的原理图阶段。
+
 `test_pcb_schematic_identity.py` 覆盖复制工程遗留根 UUID、PCB 省略根 UUID、实际 Sheetfile 层级（含子目录）、无关页面/错误页面链/其他工程实例拒绝、缺页和循环诊断。真实 PCB 探测夹具采用三级页面、历史根实例记录和省略根 UUID 的 PCB 路径，避免只测手工拼出的平面根路径。
 
 `test_pcb_in_place_geometry.py`、`test_pcb_session.py`、`test_pcb_transaction.py`、`test_pcb_update.py` 与 `test_pcb_updates_ui.py` 覆盖严格编号配准、工程身份、批次边界、备份失败、暂存/回读失败、未知结果不重放、源变化及确认状态隔离。`run_pcb_updates_smoke.py` 为可复用离线 Chromium 交互检查；设置 `PCB_SCREENSHOT` 为工程外绝对文件名前缀可保留截图。

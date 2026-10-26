@@ -10,6 +10,7 @@
 .design-sync-panel [data-design-status] { margin:8px 0 12px; overflow-wrap:anywhere; white-space:pre-line; }
 .design-sync-panel [data-error="true"], .design-warning { color:#a23d27; }
 .design-sync-phases { color:#246e55; font-weight:600; }
+.design-sync-counts { color:#596871; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
 .design-progress { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:8px 0; color:#596871; font-size:12px; }
 .design-progress progress { flex:1 1 180px; min-width:80px; height:8px; accent-color:#216f5c; }
 .design-progress span { font-variant-numeric:tabular-nums; }

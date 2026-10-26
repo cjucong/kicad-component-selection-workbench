@@ -6439,7 +6439,7 @@ function schematicSyncSummary(row) {{
   const summary = String(row.schematic_sync_summary || "").trim();
   if (!summary) return "";
   const syncedAt = String(row.schematic_synced_at || "").trim();
-  const title = syncedAt ? `上次同步 ${{syncedAt}}` : "上次同步原理图";
+  const title = syncedAt ? `上次原理图同步已完成 ${{syncedAt}}` : "上次原理图同步已完成";
   const count = summary.split(/;\s*/).filter(Boolean).length;
   const countText = count > 1 ? ` · ${{count}} 项` : "";
   return `<details class="sync-summary"><summary>${{esc(title)}}${{countText}}</summary><div class="sync-summary-detail">${{esc(summary)}}</div></details>`;

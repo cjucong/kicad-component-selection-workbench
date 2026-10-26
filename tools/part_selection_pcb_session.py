@@ -89,9 +89,51 @@ def encode(item):
     return b64encode(item.proto.SerializeToString()).decode('ascii')
 
 
+def _canonical_closed_polygons(message):
+    """Remove only exact redundant closing points in known closed polylines."""
+    name = message.DESCRIPTOR.full_name
+    if name == 'google.protobuf.Any':
+        from google.protobuf import descriptor_pool, message_factory
+        from google.protobuf.message import DecodeError
+        try:
+            descriptor = descriptor_pool.Default().FindMessageTypeByName(message.type_url.rsplit('/', 1)[-1])
+            unpacked = message_factory.GetMessageClass(descriptor)()
+            unpacked.ParseFromString(message.value)
+        except (KeyError, DecodeError):
+            return False
+        if _canonical_closed_polygons(unpacked):
+            message.value = unpacked.SerializeToString(deterministic=True)
+            return True
+        return False
+    if name == 'kiapi.common.types.PolyLine':
+        if not message.closed or len(message.nodes) < 4:
+            return False
+        known = deepcopy(message)
+        known.DiscardUnknownFields()
+        if known != message:
+            return False
+        changed = False
+        while (len(message.nodes) >= 4 and message.nodes[0].HasField('point')
+               and message.nodes[0] == message.nodes[-1]):
+            del message.nodes[-1]
+            changed = True
+        return changed
+    changed = False
+    for field, value in message.ListFields():
+        if not field.message_type or field.message_type.GetOptions().map_entry:
+            continue
+        repeated = getattr(field, 'is_repeated', None)
+        if repeated is None:
+            repeated = field.label == field.LABEL_REPEATED
+        for child in value if repeated else (value,):
+            changed = _canonical_closed_polygons(child) or changed
+    return changed
+
+
 def footprint_bytes(item):
-    """Compare complete definitions without treating object order as geometry."""
+    """Complete native content, ignoring object order and redundant closure only."""
     proto = deepcopy(item.proto)
+    _canonical_closed_polygons(proto)
     objects = sorted(obj.SerializeToString(deterministic=True) for obj in proto.definition.items)
     proto.definition.ClearField('items')
     for obj in objects:
@@ -172,6 +214,9 @@ def geometry_data(original):
     from google.protobuf.json_format import MessageToDict
     from kipy.board_types import Field
     fp = decode(original['proto'])
+    native = deepcopy(fp.proto)
+    if _canonical_closed_polygons(native):
+        fp = type(fp)(native)
     def clean(value):
         if isinstance(value, dict):
             return {key:clean(item) for key,item in value.items()
@@ -696,8 +741,13 @@ class PcbSession:
             for key in ('uuid', 'back', 'footprint', 'position_mm', 'rotation_deg', 'pads'):
                 actual_value, expected_value = new[key], expected[key]
                 if key == 'pads':
-                    actual_value = sorted(actual_value, key=lambda pad: pad['number'])
-                    expected_value = sorted(expected_value, key=lambda pad: pad['number'])
+                    actual_proto, expected_proto = decode(new['proto']), decode(item['proto'])
+                    actual_native, expected_native = deepcopy(actual_proto.proto), deepcopy(expected_proto.proto)
+                    _canonical_closed_polygons(actual_native)
+                    _canonical_closed_polygons(expected_native)
+                    actual_proto, expected_proto = type(actual_proto)(actual_native), type(expected_proto)(expected_native)
+                    actual_value = sorted(describe(actual_proto)['pads'], key=lambda pad: pad['number'])
+                    expected_value = sorted(describe(expected_proto)['pads'], key=lambda pad: pad['number'])
                 if actual_value != expected_value:
                     raise ValueError(ref + ' 写入回读不一致：' + key + '；实际 ' + str(new[key])[:160] + '；预期 ' + str(expected[key])[:160])
             a, b = decode(old['proto']), decode(new['proto'])
@@ -762,7 +812,11 @@ class PcbSession:
                 staged = board.update_items(prepared)
                 if sorted(footprint_bytes(item) for item in staged) != sorted(footprint_bytes(item) for item in prepared):
                     (backup_dir / 'staged.json').write_text(json.dumps([encode(item) for item in staged]), encoding='utf-8')
-                    raise ValueError('KiCad 暂存返回内容与预检不一致，未发布更改')
+                    from collections import Counter
+                    expected = Counter((item.reference_field.text.value, footprint_bytes(item)) for item in prepared)
+                    actual = Counter((item.reference_field.text.value, footprint_bytes(item)) for item in staged)
+                    mismatch_refs = sorted({ref for ref, _ in (expected - actual) + (actual - expected)})
+                    raise ValueError('KiCad 暂存返回内容与预检不一致：' + ', '.join(mismatch_refs[:8]) + '；未发布更改')
             except BaseException as exc:
                 try:
                     board.drop_commit(commit)

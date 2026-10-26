@@ -38,6 +38,7 @@
     panel.innerHTML = `<header><div><h2>同步设计</h2><p data-design-scope></p></div>
       <button type="button" data-design-close aria-label="关闭" title="关闭"><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-x"></use></svg></button></header>
       <div class="design-sync-content"><div data-design-phases class="design-sync-phases"></div>
+      <p data-design-counts class="design-sync-counts" aria-live="polite"></p>
       <p data-design-status role="status">正在读取设计数据…</p>
       <div class="design-progress" data-design-progress hidden><progress aria-label="同步进度" data-design-bar></progress>
       <span data-design-elapsed></span></div>
@@ -62,7 +63,7 @@
       void cancelPreflight(state.preflightJob); state.preflightJob = null; panel.remove();
     };
     current = state;
-    q('[data-design-scope]').textContent = `${refs.length} 个器件 · ${refs.slice(0,8).join(', ')}${refs.length>8?' …':''} · ${payload.destination==='both'?'原理图 + PCB':destinations[payload.destination]}`;
+    q('[data-design-scope]').textContent = `核对范围：${refs.length} 个器件 · ${refs.slice(0,8).join(', ')}${refs.length>8?' …':''}`;
     q('[data-design-alignment]').value = state.payload.alignment;
     function status(message, error = false) {
       q('[data-design-status]').textContent = message; q('[data-design-status]').dataset.error = String(error);
@@ -112,8 +113,22 @@
       return item.name === 'description' || item.name === 'Description' ? '物料参数更新' :
         `${fields[item.name] || item.name}: ${item.before || '—'} → ${item.after || '—'}`;
     }
+    function counts() {
+      const changes = state.schematicChanges;
+      const schematicCount = new Set((changes || []).map(item=>item.ref)).size;
+      const schematic = changes ? `原理图差异：${schematicCount} 个器件${state.phaseResults?.schematic?.ok?'（已完成）':''}` : '原理图：正在核验';
+      const pcb = state.countedPcb;
+      const changed = (pcb?.items || []).filter(item=>item.kind!=='none');
+      const details = Object.entries(kinds).filter(([kind])=>kind!=='none').map(([kind,label])=>
+        [label,changed.filter(item=>item.kind===kind).length]).filter(([,n])=>n).map(([label,n])=>`${label} ${n}`);
+      const unchanged = (pcb?.items || []).filter(item=>item.kind==='none').length;
+      q('[data-design-counts]').textContent = `${schematic} · ${pcb ? `PCB 预检差异：${changed.length} 个器件${details.length?' · '+details.join(' · '):''} · 无需更新 ${unchanged}` : state.payload.destination==='schematic'?'PCB：本次不处理':'PCB：尚未核验'}`;
+    }
     function render(preview) {
       state.preview = preview;
+      if (preview.schematic_changes && !state.phaseResults?.schematic?.ok) state.schematicChanges = preview.schematic_changes;
+      state.countedPcb = preview.pcb_preview;
+      counts();
       const pcb = preview.pcb_preview, allItems = pcb?.items || [], items = allItems.filter(item=>item.kind!=='none'), schematic = preview.schematic_changes || [];
       q('[data-design-alignment-label]').hidden = state.automaticWorkflow || !items.some(item => item.kind === 'replace');
       q('[data-design-geometry]').checked = false; q('[data-design-movement]').checked = false;
@@ -147,6 +162,8 @@
       enabled();
     }
     function phases(value) {
+      state.phaseResults = value || {};
+      counts();
       q('[data-design-phases]').textContent = Object.entries(value || {}).map(([name,result]) =>
         `${name==='schematic'?'原理图':'PCB'}：${result.save_uncertain?'已更新，保存待核验':result.ok?'已完成':result.uncertain?'结果待核验':'未完成'}`).join('   ·   ');
       const schematicDone = value?.schematic?.ok;
@@ -159,6 +176,7 @@
       const generation = ++state.sequence;
       const previous = state.preflightJob; state.preflightJob = null;
       state.loading = true; state.preview = null;
+      state.countedPcb = null; counts();
       q('[data-design-apply]').disabled = true; q('[data-design-query]').hidden = true;
       q('[data-design-navigation]').hidden = true;
       q('[data-design-geometry]').checked = false; q('[data-design-movement]').checked = false;
@@ -211,6 +229,11 @@
           }
           if (!value.job_id) throw new Error('尚未确认任务编号，请继续查询，不要重复提交');
           state.job = value.job_id;
+          if (value.schematic_changes) state.schematicChanges = value.schematic_changes;
+          if (value.pcb_preview && state.countedPcb?.preview_id !== value.pcb_preview.preview_id) {
+            render({pcb_preview:value.pcb_preview,blocked:value.pcb_preview.blocked,
+              schematic_changes:state.schematicChanges || []});
+          }
           phases(value.phase_results); status(value.message || '正在同步设计'); progress(value,!value.done);
           if (value.done) {
             busy(false);

@@ -12,6 +12,7 @@ import tempfile
 import time
 import traceback
 from unittest.mock import patch
+from uuid import uuid4
 
 from _scratch import temporary_project
 from run_native_project_cycle_probe import owned_managers, OwnedProcess, FLAGS, finished
@@ -105,9 +106,35 @@ def run(report, *, with_footprints=False):
             dirty=next(fp for fp in board.get_footprints() if fp.reference_field.text.value=='R1')
             dirty=deepcopy(dirty)
             dirty.value_field.text.value='stale PCB value'
+            from kipy.board_types import BoardShape, FootprintInstance
+            from kipy.proto.board.board_types_pb2 import BoardLayer
+            from part_selection_pcb_session import encode
+            polygon=BoardShape();polygon.proto.id.value=str(uuid4())
+            polygon.proto.parent.value=dirty.id.value
+            polygon.proto.layer=BoardLayer.BL_Dwgs_User
+            polygon.proto.shape.attributes.CopyFrom(next(item for item in dirty.definition.items
+                if isinstance(item,BoardShape)).proto.shape.attributes)
+            outline=polygon.proto.shape.polygon.polygons.add().outline
+            outline.closed=True
+            for x,y in [(100000,100000),(200000,100000),(200000,200000),(100000,200000)]:
+                point=outline.nodes.add().point;point.x_nm=x;point.y_nm=y
+            dirty.definition.add_item(polygon)
             board.update_items(dirty)
             live_before=session.snapshot(root,refs)
-            preview=app.design_sync.preview({'refs':refs,'destination':'design'})
+            import part_selection_pcb as updates
+            original_metadata=updates.metadata_replacement
+            def redundant_closure(*args, **kwargs):
+                prototype=original_metadata(*args, **kwargs)
+                if args[0]['ref']!='R1':return prototype
+                native=deepcopy(decode(prototype).proto)
+                wrapped=FootprintInstance(native)
+                drawing=next(item for item in wrapped.definition.items
+                    if isinstance(item,BoardShape) and item.proto.shape.HasField('polygon'))
+                line=drawing.proto.shape.polygon.polygons[0].outline
+                if line.nodes[-1]!=line.nodes[0]:line.nodes.add().CopyFrom(line.nodes[0])
+                return encode(wrapped)
+            with patch.object(updates,'metadata_replacement',redundant_closure):
+                preview=app.design_sync.preview({'refs':refs,'destination':'design'})
             assert not preview['schematic_changes'],preview['schematic_changes']
             assert preview['automatic'] and not preview['blocked'],preview
             job=app.design_sync.start(preview['preview_id'],{})
@@ -129,6 +156,14 @@ def run(report, *, with_footprints=False):
             assert owned_managers(root)==pids
             changed=app.pcb_updates.previews[preview['pcb_preview']['preview_id']]
             assert changed['refs']==['R1'],changed['refs']
+            prepared=decode(changed['replacements'][0]['proto'])
+            staged=decode(after['parts']['R1']['proto'])
+            def polygon_nodes(fp):
+                return next(item for item in fp.definition.items if isinstance(item,BoardShape)
+                    and item.proto.shape.HasField('polygon')).proto.shape.polygon.polygons[0].outline.nodes
+            assert len(polygon_nodes(prepared))==5 and len(polygon_nodes(staged))==4
+            assert encode(prepared)!=encode(staged) and footprint_bytes(prepared)==footprint_bytes(staged)
+            result['native_closed_polygon_roundtrip']=True
             for ref,part in before['parts'].items():
                 current=after['parts'][ref]
                 for key in ('uuid','footprint','position_mm','rotation_deg','back','pads','symbol_path'):

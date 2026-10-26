@@ -208,3 +208,55 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
     result = subprocess.run(['node', '-e', script], env={**os.environ, 'DESIGN_SYNC_JS': str(source)},
                             capture_output=True, text=True, timeout=45)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_scope_is_not_the_write_count_and_partial_job_keeps_both_phase_counts():
+    source = Path(__file__).resolve().parents[1] / 'tools/web/design-sync.js'
+    script = r'''
+const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=require('node:fs');
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.route('http://workbench.test/',r=>r.fulfill({body:'<html><body></body></html>'}));
+  await page.goto('http://workbench.test/');
+  await page.evaluate(()=>{
+   window.refreshes=0;window.flushRowEdits=async()=>{};
+   addEventListener('workbench-design-synced',()=>refreshes++);
+   window.fetch=async(path,options)=>{
+    const body=options?.body?JSON.parse(options.body):null;
+    const changes=[{ref:'U71',name:'footprint',before:'Local:Old',after:'Local:New',kind:'rename'},
+      {ref:'U11',name:'footprint',before:'Local:Old2',after:'Local:New2',kind:'replace'}];
+    let value;
+    if(path==='/api/start_design_sync_preview') value={ok:true,job_id:'preview',done:true,preview:{ok:true,
+      preview_id:'design',destination:body.destination,automatic:false,schematic_changes:changes,pcb_preview:null}};
+    else if(path==='/api/start_design_sync') value={ok:true,job_id:'sync'};
+    else if(path.startsWith('/api/design_sync_job')) value={ok:false,job_id:'sync',done:true,stage:'partial',
+      message:'PCB staged rejection',phase_results:{schematic:{ok:true},pcb:{ok:false}},schematic_changes:changes,
+      pcb_preview:{ok:true,preview_id:'pcb',items:[
+       ...Array.from({length:66},(_,i)=>({ref:'C'+i,kind:'fields',field_changes:[{name:'Value',before:'1',after:'2'}]})),
+       ...Array.from({length:36},(_,i)=>({ref:'Q'+i,kind:'rename',before:'Local:Old',after:'Local:New'})),
+       ...Array.from({length:11},(_,i)=>({ref:'U'+i,kind:'replace',before:'Local:A',after:'Local:B'})),
+       ...Array.from({length:1133},(_,i)=>({ref:'R'+i,kind:'none'}))]}};
+    else throw Error(path);
+    return {ok:true,json:async()=>value};
+   };
+  });
+  await page.addScriptTag({content:fs.readFileSync(process.env.DESIGN_SYNC_JS,'utf8')});
+  await page.evaluate(()=>window.openDesignSync({refs:Array.from({length:1246},(_,i)=>'R'+i),destination:'design'}));
+  assert.match(await page.locator('[data-design-scope]').innerText(),/核对范围.*1246/);
+  assert.match(await page.locator('[data-design-counts]').innerText(),/原理图.*2.*PCB.*未核验/);
+  await page.locator('[data-design-apply]').click();
+  await page.waitForFunction(()=>document.querySelector('[data-design-status]').textContent==='PCB staged rejection');
+  const counts=await page.locator('[data-design-counts]').innerText();
+  assert.match(counts,/原理图.*2.*已完成/);
+  for(const expected of [/PCB.*113/,/字段更新 66/,/封装仅改名 36/,/更换封装 11/,/无需更新 1133/]) assert.match(counts,expected);
+  assert.equal(await page.locator('[data-design-changes] tbody tr').count(),115);
+  assert.equal(await page.evaluate(()=>refreshes),1,'Completed schematic must refresh the main table even after PCB failure');
+  assert.equal(await page.locator('[data-design-apply]').isEnabled(),false);
+ } finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+    result = subprocess.run(['node','-e',script],env={**os.environ,'DESIGN_SYNC_JS':str(source)},
+                            capture_output=True,text=True,timeout=40)
+    assert result.returncode == 0, result.stdout + result.stderr

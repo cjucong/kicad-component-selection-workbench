@@ -154,6 +154,46 @@ def test_design_missing_empty_field_is_not_a_schematic_change():
         service.close()
 
 
+def test_failed_automatic_pcb_apply_retains_actual_diff_for_the_renderer():
+    service, app, sources = coordinator()
+    app.sync_design_pcb = Mock(side_effect=ValueError('synthetic staged rejection'))
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'design'})
+        state = await_job(service,service.start(preview['preview_id'],{})['job_id'])
+        assert state['stage'] == 'partial'
+        assert state['phase_results']['schematic']['ok']
+        assert state['pcb_preview'] == app.pcb_updates.preview.return_value
+        assert state['schematic_changes'] == preview['schematic_changes']
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize('retry_fails',[False,True])
+def test_rechecked_pcb_continuation_reports_the_new_diff_not_the_old_one(retry_fails):
+    service, app, sources = coordinator()
+    app.notify_kicad_schematic_changed=Mock(return_value={'ok':True})
+    app.sync_design_pcb = Mock(side_effect=ValueError('first rejection'))
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'design'})
+        state = await_job(service,service.start(preview['preview_id'],{})['job_id'])
+        assert state['stage']=='partial'
+        original_changes=deepcopy(state['schematic_changes'])
+        app.design_sync_fields.return_value=deepcopy(sources.capture(['R1'])['fields'])
+        app.pcb_updates.preview.return_value={'ok':True,'preview_id':'pcb-two','blocked':False,
+            'items':[{'ref':'R1','kind':'rename','field_changes':[]}]}
+        retry=service.preview({'refs':['R1'],'destination':'pcb'})
+        app.sync_design_pcb.side_effect=ValueError('second rejection') if retry_fails else None
+        app.sync_design_pcb.return_value={'ok':True,'saved':True,'editors_preserved':True}
+        continued=service.continue_pcb(state['job_id'],retry['preview_id'],{})
+        state=await_job(service,continued['job_id'])
+        assert state['stage']==('partial' if retry_fails else 'complete')
+        assert state['pcb_preview']==retry['pcb_preview']
+        assert state['schematic_changes']==original_changes
+        assert app.sync_design_pcb.call_args.args[0]=='pcb-two'
+    finally:
+        service.close()
+
+
 @pytest.mark.parametrize('risk', ['ordinary', 'unverified', 'dropped', 'unknown', 'locked'])
 def test_pcb_retry_reports_automatic_design_continuation_policy(risk):
     service, app, sources = coordinator()

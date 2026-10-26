@@ -192,7 +192,9 @@ class DesignSync:
             self.jobs[key] = {'ok':True,'job_id':key,'refs':state['result']['refs'],
                 'destination':state['result']['destination'],'alignment':state['result']['alignment'],
                 'done':False,'stage':'queued','message':'等待同步设计','needs_confirmation':False,
-                'phase_results':{},'_time':time.monotonic(), '_preview':preview_id}
+                'phase_results':{},'schematic_changes':deepcopy(state['result']['schematic_changes']),
+                'pcb_preview':deepcopy(state['result']['pcb_preview']),
+                '_time':time.monotonic(), '_preview':preview_id}
             state['job_id'] = key
             self.pool.submit(self._run,key,preview_id,False)
             return self.status(key)
@@ -295,6 +297,8 @@ class DesignSync:
                 pcb = self.app.pcb_updates.preview(result['refs'],result['bom'],alignment=result['alignment'],source=source,
                     progress=lambda stage,message:self._update(key,stage='pcb_preview:'+stage,message=message))
                 next_result = {**result, 'pcb_preview':pcb, 'blocked':bool(pcb.get('blocked'))}
+                with self.lock:
+                    self.jobs[key]['pcb_preview'] = deepcopy(pcb)
                 if not automatic or not self._can_automate(next_result):
                     self._update(key,done=True,stage='awaiting_pcb_confirmation',needs_confirmation=True,
                         message='原理图已完成，PCB 存在需要处理的风险' if automatic else '原理图已完成，请核对 PCB 更新后继续',
@@ -430,7 +434,8 @@ class DesignSync:
             if any(item.get('dropped_terminals') for item in (state['result'].get('pcb_preview') or {}).get('items', [])):
                 self.app.pcb_updates.approve_drops(state['result']['pcb_preview']['preview_id'], acknowledgments)
             state['job_id'] = job_id
-            self._update(job_id,done=False,ok=True,stage='queued',needs_confirmation=False,message='等待继续 PCB 同步')
+            self._update(job_id,done=False,ok=True,stage='queued',needs_confirmation=False,
+                pcb_preview=deepcopy(state['result']['pcb_preview']),message='等待继续 PCB 同步')
             self.pool.submit(self._run,job_id,token,True)
             return self.status(job_id)
 
