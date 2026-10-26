@@ -3681,10 +3681,26 @@ class PartSelectionApp:
             writer.writerows(export_rows)
         return {"ok": True, "path": str(output_path), "count": len(export_rows), "filter": export_filter}
 
+    def open_export_folder(self, result: dict[str, object]) -> dict[str, object]:
+        if not result.get("ok"):
+            return result
+        try:
+            path = Path(str(result["path"]))
+            if path.is_file():
+                opened = self._open_directory(path.parent)
+            else:
+                opened = {"ok": False, "error": "导出文件不存在"}
+        except Exception as exc:
+            opened = {"ok": False, "error": str(exc)}
+        return {**result, "folder_opened": bool(opened["ok"]),
+                "folder_error": "" if opened["ok"] else str(opened.get("error") or "无法打开目标文件夹")}
+
     def open_project_path(self) -> dict[str, object]:
-        path = self.project_root
-        if not path.exists():
-            return {"ok": False, "error": f"工程路径不存在：{path}", "path": str(path)}
+        return self._open_directory(self.project_root)
+
+    def _open_directory(self, path: Path) -> dict[str, object]:
+        if not path.is_dir():
+            return {"ok": False, "error": f"目录不存在：{path}", "path": str(path)}
         try:
             if os.name == "nt":
                 os.startfile(path)  # type: ignore[attr-defined]
@@ -4008,10 +4024,10 @@ def make_handler(app: PartSelectionApp):
                     )
                     return
                 if parsed.path == "/api/export_changes":
-                    json_response(self, app.export_changes(payload))
+                    json_response(self, app.open_export_folder(app.export_changes(payload)))
                     return
                 if parsed.path == "/api/export_pump_table":
-                    json_response(self, app.export_pump_table(payload))
+                    json_response(self, app.open_export_folder(app.export_pump_table(payload)))
                     return
                 if parsed.path == "/api/open_project_path":
                     json_response(self, app.open_project_path())
@@ -6580,6 +6596,15 @@ async function saveStockCode(tr, code) {{
   tr.dataset.stockCode = normalized;
 }}
 
+function showExportResult(data, label) {{
+  const message = `已导出${{label}}：${{data.count}} 条，${{data.path}}`;
+  if (data.folder_opened === false) {{
+    setState(`${{message}}；无法打开目标文件夹：${{data.folder_error || "请手动打开上述路径"}}`, "error");
+  }} else {{
+    setState(message, "saved");
+  }}
+}}
+
 async function exportChanges() {{
   const res = await fetch("/api/export_changes", {{
     method: "POST",
@@ -6588,7 +6613,7 @@ async function exportChanges() {{
   }});
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "导出改动表失败");
-  setState(`已导出改动表：${{data.count}} 条，${{data.path}}`, "saved");
+  showExportResult(data, "改动表");
 }}
 
 async function exportPumpTable() {{
@@ -6604,7 +6629,7 @@ async function exportPumpTable() {{
   }});
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || "导出 BOM 失败");
-  setState(`已导出 BOM：${{data.count}} 条，${{data.path}}`, "saved");
+  showExportResult(data, " BOM");
 }}
 
 const pendingStockRequests = new Map();
