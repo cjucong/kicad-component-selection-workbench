@@ -158,6 +158,11 @@ def parse_szlcsc_next_data(page_html: str) -> list[dict[str, Any]]:
     except (KeyError, TypeError, json.JSONDecodeError):
         return []
 
+    from part_selection_product_details import parse_search_dispatch
+    try:
+        dispatch = parse_search_dispatch(page_html)
+    except (ValueError, TypeError, RecursionError):
+        dispatch = {}
     products: list[dict[str, Any]] = []
     for record in records or []:
         if not isinstance(record, dict):
@@ -185,6 +190,9 @@ def parse_szlcsc_next_data(page_html: str) -> list[dict[str, Any]]:
         js_stock = record.get("jsWarehouseStockNumber")
         if js_stock is None:
             js_stock = product.get("jsWarehouseStockNumber")
+        identity = (text_value(product.get("productId")), text_value(product.get("productCode")),
+                    clean_space(product.get("productModel")))
+        delivery_label = dispatch.get(identity, "")
         products.append(
             {
                 "productId": product.get("productId"),
@@ -209,6 +217,8 @@ def parse_szlcsc_next_data(page_html: str) -> list[dict[str, Any]]:
                 "productImageUrlBig": product.get("bigImageUrl"),
                 "productArrange": product.get("productMinEncapsulationUnit"),
                 "deliveryTimeWayDays": product.get("deliveryTimeWayDays") or record.get("deliveryTimeWayDays"),
+                "delivery_label": delivery_label,
+                "delivery_source_url": SZLCSC_SEARCH_URL.format(c_code=identity[1]) if delivery_label else "",
                 "hasStockNow": product.get("hasStockNow") if product.get("hasStockNow") is not None else record.get("hasStockNow"),
                 "validStockNumber": product.get("validStockNumber"),
                 "lcBookProductVO": product.get("lcBookProductVO"),
@@ -867,6 +877,9 @@ def product_delivery(product: dict[str, Any]) -> str:
     lead_time = clean_space(product.get("deliveryTimeWayDays"))
     immediate, three_days = product_dispatch_stock(product)
     parts = [lead_time] if lead_time else []
+    label = clean_space(product.get("delivery_label"))
+    if label and label not in parts:
+        parts.append(label)
     if int_value(immediate) > 0:
         parts.append(f"可立即发货 {immediate}")
     if int_value(three_days) > 0:
@@ -990,6 +1003,7 @@ def parse_lcsc_product(c_code: str, product: dict[str, Any]) -> dict[str, Any]:
         "parameters": product_parameters(product),
         "price_ladder": format_price_ladder(product),
         "delivery": product_delivery(product),
+        "delivery_source_url": text_value(product.get("delivery_source_url")),
         "channel": product_channel(product),
         "arrange": text_value(product.get("productArrange")),
         "category": text_value(product.get("catalogName") or product.get("wmCatalogNameEn")),
@@ -1130,6 +1144,25 @@ def query_lcsc_stock(
                     result["price"] = rmb_price
                     result["source"] = f"{result['source']}+item_price"
             result["error"] = probe_error
+            if not result.get("delivery_source_url"):
+                # Reuse the domestic source cache; never infer dispatch from stock totals.
+                try:
+                    domestic = [item for item in domestic_fetcher(c_code, timeout)
+                                if normalize_c_code(item.get("productCode")) == c_code
+                                and (not result.get("model") or text_value(item.get("productModel")) == result["model"])
+                                and (not result.get("product_id") or text_value(item.get("productId")) == result["product_id"])]
+                    if len(domestic) == 1:
+                        shipping_product = dict(product)
+                        for key in ("delivery_label", "delivery_source_url", "deliveryTimeWayDays",
+                                    "domesticStockVO", "hasStockNow"):
+                            if domestic[0].get(key) not in (None, "", {}):
+                                shipping_product[key] = domestic[0][key]
+                        shipping = parse_lcsc_product(c_code, shipping_product)
+                        if shipping["delivery"] != "发货时间待核实":
+                            for key in ("delivery", "delivery_source_url", "immediate_stock", "three_day_stock"):
+                                result[key] = shipping[key]
+                except (ValueError, OSError, TimeoutError):
+                    pass
             return result
     for product in domestic_fetcher(c_code, timeout):
         if normalize_c_code(product.get("productCode")) != c_code:
@@ -1166,6 +1199,7 @@ def build_candidate_item(keyword: str, product: dict[str, Any]) -> dict[str, Any
         "price": stock["price"],
         "price_ladder": stock["price_ladder"],
         "delivery": stock["delivery"],
+        "delivery_source_url": stock["delivery_source_url"],
         "channel": stock["channel"],
         "arrange": stock["arrange"],
         "category": stock["category"],

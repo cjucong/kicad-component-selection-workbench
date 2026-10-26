@@ -523,6 +523,7 @@ def cache_candidate_stock(cache_path: Path, candidate: object) -> None:
             "immediate_stock",
             "three_day_stock",
             "delivery_schema",
+            "delivery_source_url",
             "moq",
             "mpq",
             "price",
@@ -3597,7 +3598,33 @@ class PartSelectionApp:
             "PerReferenceSelection",
             "SchematicSyncStatus",
             "Note",
+            "本地库存",
+            "本地库存说明",
         ]
+        code_counts = {}
+        for row in rows:
+            if include_row(row):
+                code = row_effective_c_code(row)
+                code_counts[code] = code_counts.get(code, 0) + 1
+
+        def local_balance(row, code):
+            if not code:
+                return "—", "未选择 C 编码"
+            local = row.get("local_inventory") or {}
+            if (normalize_lcsc_c_code(local.get("c_code")) != code
+                    or local.get("status") not in {"unmatched", "sufficient", "insufficient"}
+                    or local.get("issue")):
+                return "待核实", str(local.get("issue") or "本地库存未读取、冲突或编码不匹配")
+            quantity = local.get("inventory")
+            if local.get("status") == "unmatched":
+                quantity = 0
+            if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
+                return "待核实", "本地库存数量无效"
+            note = "无本地记录，按 0 显示" if local.get("status") == "unmatched" else "当前结余"
+            if code_counts.get(code, 0) > 1:
+                note += "；同 C 编码跨行共享，勿重复累加"
+            return str(quantity), note
+
         export_rows: list[dict[str, str]] = []
         for row in rows:
             if not include_row(row):
@@ -3607,6 +3634,7 @@ class PartSelectionApp:
             normalized_code = normalize_lcsc_c_code(c_code)
             if not normalized_code or normalize_lcsc_c_code(stock.get("c_code")) != normalized_code:
                 stock = {}
+            balance, balance_note = local_balance(row, normalized_code)
             export_rows.append(
                 {
                     "序号": str(len(export_rows) + 1),
@@ -3620,6 +3648,8 @@ class PartSelectionApp:
                     # The template's internal material ID is not the LCSC product code.
                     "物料编码": "",
                     "位号": str(row.get("refs") or row.get("ref") or ""),
+                    "本地库存": balance,
+                    "本地库存说明": balance_note,
                     "Comment": str(row.get("comment") or ""),
                     "Value": str(row.get("value") or ""),
                     "Footprint": str(row.get("footprint") or ""),
@@ -5699,6 +5729,8 @@ function stockDeliveryText(stock) {{
 function renderStockCell(stock, row = null) {{
   const order = row?.procurement_choice || {{}};
   const detail = [renderSupplyOrder(row), esc(stock.channel || ""),
+    /^https:\/\/so\.szlcsc\.com\/global\.html\?k=C\d+$/.test(stock.delivery_source_url || "")
+      ? `<a href="${{esc(stock.delivery_source_url)}}" target="_blank" rel="noopener">发货时间来源</a>` : "",
     stock.stock_sz != null ? esc(`深圳 ${{stock.stock_sz}} / 江苏 ${{stock.stock_js || 0}} / 香港 ${{stock.stock_hk || 0}}`) : "",
     stock.fetched_at ? esc(`查询时间: ${{String(stock.fetched_at).replace("T", " ")}}`) : ""].filter(Boolean);
   const market = Array.isArray(stock?.entries) ? '<span>商城库存 待核实</span>' : renderStock(stock);
@@ -7853,6 +7885,7 @@ async function addCandidateAsAlternate(code) {{
       immediate_stock: item.immediate_stock ?? "",
       three_day_stock: item.three_day_stock ?? "",
       delivery_schema: item.delivery_schema ?? "",
+      delivery_source_url: item.delivery_source_url || "",
       channel: item.channel || "",
       arrange: item.arrange || "",
       category: item.category || "",

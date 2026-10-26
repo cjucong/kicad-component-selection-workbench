@@ -35,6 +35,18 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.match(await row.locator('.supply-counts').innerText(),/商城库存/);
   assert.equal(await row.locator('.supply-delivery').innerText(),'发货：1-3个工作日');
   assert.equal(await row.locator('.supply-delivery').isVisible(),true);
+  await page.evaluate(()=>{
+   const tr=document.querySelector('#rows tr[data-refs="C1"]');
+   setStockCells(tr,{...currentRows[0].stock,delivery:'现货最快4小时发货',delivery_schema:1,
+    delivery_source_url:'https://so.szlcsc.com/global.html?k=C100'});
+  });
+  assert.equal(await row.locator('.supply-delivery').innerText(),'发货：现货最快4小时发货');
+  const shippingSource=row.getByRole('link',{name:'发货时间来源',includeHidden:true});
+  assert.equal(await shippingSource.getAttribute('href'),'https://so.szlcsc.com/global.html?k=C100');
+  await page.evaluate(()=>{
+   const tr=document.querySelector('#rows tr[data-refs="C1"]');
+   setStockCells(tr,{...currentRows[0].stock,delivery:'1-3个工作日'});
+  });
   for(const [value, expected] of [['0','0'],['','待核实']]) {
    await page.evaluate(value=>{
     const tr=document.querySelector('#rows tr[data-refs="C1"]');

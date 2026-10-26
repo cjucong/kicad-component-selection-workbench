@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -16,7 +17,68 @@ from part_stock_lookup import (
     parse_lcsc_product,
     parse_szlcsc_next_data,
     save_stock_cache,
+    query_lcsc_stock,
 )
+
+
+def domestic_dispatch_page(label="现货最快4小时发货", *, pid="1001", code="C123", model="TEST", extra=""):
+    record = {"productVO": {"productId": "1001", "productCode": "C123", "productModel": "TEST",
+                            "stockNumber": 500}}
+    payload = {"props": {"pageProps": {"soData": {"searchResult": {"productRecordList": [record]}}}}}
+    return ('<script id="__NEXT_DATA__" type="application/json">' + json.dumps(payload) + '</script>'
+        + f'<div data-custom-data=\'{{"productType":"main","productId":"{pid}"}}\'>'
+        + '<section data-spm="zy">'
+        + f'<a data-spm="n" href="https://item.szlcsc.com/{pid}.html">{model}</a>'
+        + f'<dl><dt>编号</dt><dd>{code}</dd></dl>'
+        + f'<span class="whitespace-pre-line">{label}</span></section></div>' + extra)
+
+
+def test_rendered_product_shipping_label_reaches_stock_and_candidate_cache():
+    product = parse_szlcsc_next_data(domestic_dispatch_page())[0]
+    result = parse_lcsc_product("C123", product)
+    assert result["delivery"] == "现货最快4小时发货"
+    saved = candidate_stock_result(build_candidate_item("C123", product))
+    assert saved["delivery"] == result["delivery"]
+    assert saved["delivery_source_url"] == "https://so.szlcsc.com/global.html?k=C123"
+
+
+@pytest.mark.parametrize("changes", [
+    {"pid": "9999"}, {"code": "C999"}, {"model": "OTHER"}, {"label": ""},
+    {"label": "现货 500"},
+    {"label": "", "extra": '<footer><span class="whitespace-pre-line">最快4小时发货</span></footer>'},
+])
+def test_unrelated_product_footer_or_quantity_cannot_supply_shipping(changes):
+    product = parse_szlcsc_next_data(domestic_dispatch_page(**changes))[0]
+    assert parse_lcsc_product("C123", product)["delivery"] == "发货时间待核实"
+
+
+@pytest.mark.parametrize("label", ["最快24小时发货", "预计1-3个工作日发货", "预计7天发货"])
+def test_product_label_preserves_explicit_time_instead_of_hardcoded_four_hours(label):
+    product = parse_szlcsc_next_data(domestic_dispatch_page(label))[0]
+    assert parse_lcsc_product("C123", product)["delivery"] == label
+
+
+def test_primary_stock_query_supplements_hour_promise_even_with_immediate_quantity():
+    products = parse_szlcsc_next_data(domestic_dispatch_page())
+    response = {"code": 200, "result": {"dataList": [{"productCode": "C123", "productId": "1001",
+        "productModel": "TEST", "stockNumber": 500, "domesticStockVO": {"shipImmediately": 500},
+        "cnyProductPriceList": [{"ladder": 1, "productPrice": 1}]}]}}
+    with patch("part_stock_lookup.urllib.request.urlopen") as urlopen:
+        urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
+        result = query_lcsc_stock("C123", domestic_fetcher=lambda *_: products)
+    assert result["delivery"] == "现货最快4小时发货；可立即发货 500"
+    assert result["immediate_stock"] == "500"
+
+
+def test_failed_domestic_supplement_does_not_lose_known_lead_time():
+    response = {"code": 200, "result": {"dataList": [{"productCode": "C123", "productModel": "TEST",
+        "deliveryTimeWayDays": "1-3个工作日", "cnyProductPriceList": [{"ladder": 1, "productPrice": 1}]}]}}
+    def failed(*_):
+        raise TimeoutError("temporary")
+    with patch("part_stock_lookup.urllib.request.urlopen") as urlopen:
+        urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
+        result = query_lcsc_stock("C123", domestic_fetcher=failed)
+    assert result["ok"] and result["delivery"] == "1-3个工作日"
 
 
 @pytest.mark.parametrize("extra, expected", [
@@ -139,6 +201,8 @@ assert.match(renderStockCell({...deferred,stock:'0'}),/商城库存 <strong>0<\/
 assert.match(renderStockCell({...deferred,stock:''}),/商城库存 <strong>待核实<\/strong>/);
 assert.match(renderStockCell({...deferred,delivery:'现货最快4小时发货'}),/发货时间待核实/);
 assert.doesNotMatch(renderStockCell({...deferred,delivery:'现货最快4小时发货'}),/4小时/);
+assert.match(renderStockCell({...deferred,delivery_schema:1,delivery:'现货最快4小时发货',delivery_source_url:'https://so.szlcsc.com/global.html?k=C123'}),/发货：现货最快4小时发货/);
+assert.match(renderStockCell({...deferred,delivery_schema:1,delivery:'现货最快4小时发货',delivery_source_url:'https://so.szlcsc.com/global.html?k=C123'}),/发货时间来源/);
 assert.match(renderStockCell({...deferred,delivery:''}),/发货时间待核实/);
 assert.match(renderStockCell({...deferred,delivery:'<img src=x onerror=alert(1)>'}),/&lt;img/);
 assert.doesNotMatch(renderStockCell({...deferred,delivery:'<img src=x>'}),/<img/);

@@ -1,10 +1,12 @@
 """LCSC template ordering, using synthetic rows and disposable export directories."""
 import copy
+import pytest
 import csv
 from pathlib import Path
 from unittest.mock import Mock
 
 from part_selection_server import PartSelectionApp
+from part_selection_inventory import save_inventory
 
 
 TEMPLATE_COLUMNS = [
@@ -60,7 +62,7 @@ def test_template_columns_come_first_and_preserve_engineering_details(scratch_pr
     assert columns[10:] == [
         "Comment", "Value", "Footprint", "LCSC_URL", "Stock", "Delivery", "MOQ",
         "MPQ", "Price", "Param", "ReviewStatus", "PerReferenceSelection",
-        "SchematicSyncStatus", "Note",
+        "SchematicSyncStatus", "Note", "本地库存", "本地库存说明",
     ]
     row = rows[0]
     assert [row[key] for key in TEMPLATE_COLUMNS] == [
@@ -133,3 +135,39 @@ def test_unidentified_cached_product_cannot_supply_template_metadata(scratch_pro
     _, _, rows = export_rows(scratch_project, [row])
     assert rows[0]["型号"] == rows[0]["品牌"] == rows[0]["Param"] == ""
     assert rows[0]["商品编号"] == "C1001"
+
+
+def test_export_includes_local_balance_without_allocating_or_subtracting(scratch_project):
+    inventory = {"c_code": "C1001", "inventory": 100, "status": "sufficient"}
+    _, columns, rows = export_rows(scratch_project, [make_row(local_inventory=inventory),
+        make_row("C3", value="different group", local_inventory=inventory)])
+    assert columns[:10] == TEMPLATE_COLUMNS
+    assert [row["本地库存"] for row in rows] == ["100", "100"]
+    assert all("共享" in row["本地库存说明"] for row in rows)
+
+
+@pytest.mark.parametrize("local, code, expected", [
+    ({"c_code": "C1001", "inventory": 0, "status": "insufficient"}, "C1001", "0"),
+    ({"c_code": "C1001", "inventory": None, "status": "unmatched"}, "C1001", "0"),
+    ({"c_code": "C1001", "inventory": 5, "status": "unresolved"}, "C1001", "待核实"),
+    ({"c_code": "C1001", "inventory": True, "status": "sufficient"}, "C1001", "待核实"),
+    ({"c_code": "C999", "inventory": 100, "status": "sufficient"}, "C1001", "待核实"),
+    ({}, "C1001", "待核实"),
+    ({}, "", "—"),
+])
+def test_export_inventory_unknown_zero_and_stale_are_distinct(scratch_project, local, code, expected):
+    _, _, rows = export_rows(scratch_project, [make_row(local_inventory=local, effective_c_code=code)])
+    assert rows[0]["本地库存"] == expected
+
+
+def test_export_uses_inventory_enrichment_from_persisted_local_balances(scratch_project):
+    app = object.__new__(PartSelectionApp)
+    app.local_inventory_path = scratch_project / "本地库存.json"
+    save_inventory(app.local_inventory_path, {"schema_version": 1, "items": {
+        "C1001": {"quantity": 120, "status": "ready"}}})
+    before = app.local_inventory_path.read_bytes()
+    source_rows = [make_row()]
+    app.enrich_local_inventory(source_rows)
+    _, _, rows = export_rows(scratch_project, source_rows)
+    assert rows[0]["本地库存"] == "120"
+    assert app.local_inventory_path.read_bytes() == before

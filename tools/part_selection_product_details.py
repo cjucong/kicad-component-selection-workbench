@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from concurrent.futures import Future
@@ -210,6 +211,47 @@ class _PageParser(HTMLParser):
 
 class _IdentityMismatch(ValueError):
     pass
+
+
+def parse_search_dispatch(page):
+    """Read shipping labels only from identity-bearing domestic product cards."""
+    parser = _PageParser()
+    parser.feed(page)
+    parser.close()
+    found = {}
+    for card in _walk(parser.root):
+        try:
+            identity = json.loads(card.attrs.get('data-custom-data') or '{}')
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(identity, dict) or identity.get('productType') != 'main':
+            continue
+        pid = _product_id(identity.get('productId'))
+        sections = [node for node in card.children if isinstance(node, _Node)
+                    and node.tag == 'section' and node.attrs.get('data-spm') == 'zy']
+        if not pid or len(sections) != 1:
+            continue
+        nodes = list(_walk(sections[0]))
+        codes, models, labels = set(), set(), set()
+        for node in nodes:
+            if node.tag == 'dl':
+                terms = [part.text() for part in node.children if isinstance(part, _Node) and part.tag == 'dt']
+                values = [part.text() for part in node.children if isinstance(part, _Node) and part.tag == 'dd']
+                if terms == ['编号'] and len(values) == 1 and re.fullmatch(r'C[0-9]+', values[0]):
+                    codes.add(values[0])
+            if node.tag == 'a' and node.attrs.get('data-spm') == 'n':
+                url = urllib.parse.urlsplit(node.attrs.get('href', ''))
+                if (url.scheme == 'https' and url.netloc == 'item.szlcsc.com'
+                        and url.path == f'/{pid}.html' and node.text()):
+                    models.add(node.text())
+            if node.tag == 'span' and 'whitespace-pre-line' in node.attrs.get('class', '').split():
+                text = node.text()
+                if len(text) <= 240 and re.search(r'\d+.*(?:小时|天|工作日|周).*发货|\d+.*工作日', text):
+                    labels.add(text)
+        if len(codes) == len(models) == len(labels) == 1:
+            key = (pid, next(iter(codes)), next(iter(models)))
+            found.setdefault(key, set()).update(labels)
+    return {key: next(iter(labels)) for key, labels in found.items() if len(labels) == 1}
 
 
 def _check_identity(code, model, pid, record):
