@@ -1,5 +1,5 @@
 // KiCad angles rotate counterclockwise in a canvas whose Y axis points down.
-window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabled, changed, requireMapping=false}) {
+window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabled, changed, requireMapping=false, reuseLibrary=false}) {
   const q = selector => root.querySelector(selector);
   const tools = document.createElement('div');
   tools.className = 'fp-adjust-tools'; tools.dataset.fpAdjust = ''; tools.hidden = true;
@@ -146,7 +146,7 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
     const error=errors.length?Math.max(...errors):null;
     q('[data-fp-adjust-status]').textContent=!valid ? '请输入有效坐标与角度' : !compatible
       ? `仅预览 · 原端子 ${pads.existing.length} / 目标焊盘 ${pads.converted.length}；请设置焊盘对应`
-      : `本地固定 · ${dirty()?'已手动调整 · ':''}最大偏差 ${error===null?'—':fmt(error)} mm`;
+      : `${reuseLibrary&&!mappingEnabled()?'复用所选库封装 · 仅调整预览':'本地固定'} · ${dirty()?'已手动调整 · ':''}最大偏差 ${error===null?'—':fmt(error)} mm`;
     if (detail.alignment?.ok && compatible) {
       q('[data-fp-alignment]').textContent=dirty()
         ? `手动配准 · 校正 ${fmt(normalize(detail.alignment.rotation_deg+state.rotation_deg))}° · 焊盘中心最大偏差 ${fmt(error)} mm${error>0.025?' · 请核对偏移与连接':''}`
@@ -158,7 +158,7 @@ window.mountFootprintAdjustment = function mountFootprintAdjustment(root, {enabl
     q('[data-fp-align=direction]').disabled=pairs().length<2;
   }
   function notify(syncInputs=true) {
-    if(requireMapping&&dirty()&&!mappingEnabled()){
+    if(requireMapping&&!reuseLibrary&&dirty()&&!mappingEnabled()){
       q('[data-fp-mapping-enabled]').checked=true;updateMapping();
     }
     valid=(syncInputs||valid)&&geometryValid();

@@ -101,6 +101,73 @@ def rename_copper_differences(entries, reference):
             if copper_content(entry['path'].read_text(encoding='utf-8-sig')) != basis]
 
 
+def copper_equivalence(target, reference, work):
+    """Prove equal copper under a proper rigid transform, without changing either library."""
+    from part_selection_footprint_geometry import align_module, estimate_alignment, _validate_supported
+    target, reference, work = Path(target), Path(reference), Path(work)
+    selected = target.read_text(encoding='utf-8-sig')
+    baseline = reference.read_text(encoding='utf-8-sig')
+    try:
+        _validate_supported(selected, allow_models=True)
+        _validate_supported(baseline, allow_models=True)
+    except ValueError as error:
+        return {'ok':False,'copper_equal':False,'max_error_mm':None,'reason':str(error)}
+    result = estimate_alignment(selected, baseline)
+    if not result['ok'] or result['max_error_mm'] > .000005:
+        return {**result, 'ok':False, 'reason':'焊盘中心不能零偏移重合', 'copper_equal':False}
+    path, transform = target, result
+    copper_graphics = any(node.head == 'zone' or node.head.startswith('fp_') and node.child('layer')
+                          and node.child('layer').arg().endswith('.Cu')
+                          for node in parse_sexpr(selected,'footprint').children)
+    if copper_graphics and (abs(result['rotation_deg']) > 1e-9 or max(map(abs,result['offset_mm'])) > 1e-9):
+        work.mkdir(parents=True, exist_ok=True)
+        path = work / 'aligned.kicad_mod'
+        result = align_module(target, reference, path)
+        if not result['ok']:
+            return {**result, 'copper_equal':False}
+        transform = None
+    def signature(text, pose=None):
+        def clean(node):
+            if node.head in {'uuid', 'tstamp', 'net', 'pinfunction', 'pintype', 'locked'}:
+                return None
+            if not node.children:
+                try:
+                    return str(Decimal(node.value).normalize())
+                except InvalidOperation:
+                    return node.value
+            values = [value for child in node.children if (value := clean(child)) is not None]
+            if node.head == 'layers':
+                return [values[0], *sorted(values[1:])]
+            return values
+        result = []
+        for node in parse_sexpr(text, 'footprint').children:
+            layer = node.child('layer') if node.children else None
+            if node.head == 'pad':
+                at = node.child('at')
+                position = [float(at.arg(i) or 0) if at else 0 for i in (1,2)]
+                angle = float(at.arg(3) or 0) if at else 0
+                if pose:
+                    theta = math.radians(pose['rotation_deg'])
+                    c, s = math.cos(theta), math.sin(theta)
+                    x, y = position
+                    position = [c*x+s*y+pose['offset_mm'][0], -s*x+c*y+pose['offset_mm'][1]]
+                    angle += pose['rotation_deg']
+                position = [round(v,6) for v in position]
+                properties = [clean(child) for child in node.children[4:] if child.head != 'at']
+                properties = sorted((p for p in properties if p is not None), key=lambda p:json.dumps(p))
+                result.append([node.arg(), node.arg(2), node.arg(3), position, round(math.remainder(angle,360),6), properties])
+            elif node.head == 'zone' or node.head.startswith('fp_') and layer and layer.arg().endswith('.Cu'):
+                result.append(clean(node))
+            elif node.head in {'solder_mask_margin','solder_paste_margin','solder_paste_ratio','clearance',
+                              'zone_connect','thermal_width','thermal_gap','net_tie_pad_groups',
+                              'private_layers','duplicate_pad_numbers_are_jumpers','jumper_pad_groups'}:
+                result.append(clean(node))
+        return sorted(json.dumps(v, sort_keys=True) for v in result)
+    equal = signature(path.read_text(encoding='utf-8-sig'), transform) == signature(baseline)
+    return {**result, 'ok':equal, 'copper_equal':equal,
+            'reason':'铜焊盘等效，复用现有库封装' if equal else '焊盘尺寸、钻孔、层或铜皮设置不一致'}
+
+
 def footprint_info(path):
     source = path.read_text(encoding='utf-8-sig')
     tree = parse_sexpr(source, 'footprint')
@@ -579,13 +646,19 @@ class FootprintChoices:
                         state['work'] = Path(tempfile.mkdtemp(prefix='local-footprint-', dir=runtime_directory(self.root)))
                     output = state['work'] / uuid4().hex
                     output.mkdir()
-                    # Compare native library coordinates without rigid alignment or publication.
                     target_path = target['path']
+                    alignment = None
                     if mapping:
                         aligned, reference = self._alignment(state, reference['id'], mapping=mapping, target=target)
                         if not aligned['alignment']['ok']:
                             raise ValueError(aligned['alignment']['reason'])
                         target_path = aligned['path']
+                        alignment = aligned['alignment']
+                    elif target['compatible']:
+                        from part_selection_footprint_geometry import align_module
+                        alignment = align_module(target_path, reference['path'], output / 'aligned.kicad_mod', method='center')
+                        if alignment['ok']:
+                            target_path = output / 'aligned.kicad_mod'
                     rendered = render_comparison(reference['path'], target_path, output)
                     if rendered.get('ok') is False:
                         raise ValueError('库封装比较预览失败：' + str(rendered.get('reason') or '渲染不可用'))
@@ -593,6 +666,7 @@ class FootprintChoices:
                     cache[pair] = {**rendered, 'library_comparison': True,
                                    'reference_id': identifier, 'target_id': target_identifier,
                                    'compatible': target['compatible'] or bool(mapping), 'mapping': mapping,
+                                   'alignment': alignment or {'ok':False},
                                    'reference_numbers': reference['numbers'], 'target_numbers': target['numbers']}
                 self._verify(state)
                 return deepcopy(cache[pair])
@@ -696,6 +770,13 @@ class FootprintChoices:
                     target = aligned['path']
                 else:
                     target = entry['path']
+                    if originals and len(originals) == len(set(baseline_ids)):
+                        if state['work'] is None:
+                            state['work'] = Path(tempfile.mkdtemp(prefix='footprint-equivalence-', dir=runtime_directory(self.root)))
+                        equivalent = all(copper_equivalence(target, e['path'], state['work'] / ('equivalent-' + uuid4().hex))['ok']
+                                         for e in originals)
+                        if equivalent:
+                            return False
             else:
                 aligned, _ = self._alignment(state, choice.get('existing_id'), transform, choice.get('mapping'))
                 if transform is not None and not aligned['alignment'].get('ok'):

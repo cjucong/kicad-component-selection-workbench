@@ -22,3 +22,9 @@ def test_footprint_overlay_contract(scenario):
     result, _ = run_checks(scenario)
     assert result["passed"] is True
     assert result["page_errors"] == []
+
+
+def test_preview_adjustment_does_not_create_a_mapped_library_copy():
+    result, _ = run_checks('library-reuse')
+    assert result['passed'] is True
+    assert result['page_errors'] == []

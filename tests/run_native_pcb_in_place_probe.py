@@ -295,7 +295,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
    const library=page.locator('[data-fp-page="library"]');
    await library.locator('[data-fp-items] option[value="Local:'+prefix+target+'"]').waitFor({state:'attached'});
    await library.locator('[data-fp-items]').selectOption('Local:'+prefix+target);
-   await library.getByText('Local:'+prefix+target+' · 焊盘 '+(ref.startsWith('R')?2:4)+' 个 · 编号 '+(ref.startsWith('R')?'1, 2':'1, 2, 3, 4'),{exact:true}).waitFor();
+   await library.getByText('Local:'+prefix+target+' · 焊盘 '+(ref.startsWith('R')?2:4)+' 个 · 编号 '+(ref.startsWith('R')?'1, 2':'1, 2, 3, 4'),{exact:false}).waitFor();
    await library.locator('[data-fp-ack]').check();
    const scope=page.locator('[data-fp-scope-ack]');
    if(await scope.isVisible()) await scope.check();

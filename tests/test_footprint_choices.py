@@ -256,7 +256,7 @@ class FootprintChoicesTest(unittest.TestCase):
             self.service.commit({'preview_id':preview['preview_id'], 'source':'existing',
                 'existing_id':'DSMU:0603', 'acknowledged':True})
 
-    def test_library_comparison_uses_native_paths_and_caches_each_pair(self):
+    def test_library_comparison_aligns_preview_without_changing_library_and_caches_each_pair(self):
         other = self.pretty / 'Other.kicad_mod'
         target = self.pretty / 'Target.kicad_mod'
         other.write_text(module('Other', .6))
@@ -267,7 +267,9 @@ class FootprintChoicesTest(unittest.TestCase):
         before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
         rendered = {'ok': True, 'view_box': [-2, -2, 8, 6], 'layers': ['F.Cu'],
                     'existing_layers': {'F.Cu': 'reference'}, 'converted_layers': {'F.Cu': 'target'}}
-        with patch('part_selection_footprint_geometry.render_comparison', return_value=rendered) as render:
+        alignment = {'ok':True,'method':'center','rotation_deg':90,'offset_mm':[1,2],'max_error_mm':.0508}
+        with patch('part_selection_footprint_geometry.render_comparison', return_value=rendered) as render, \
+                patch('part_selection_footprint_geometry.align_module', return_value=alignment) as align:
             result = self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')
             self.assertTrue(result['library_comparison'])
             self.assertEqual(result['reference_id'], 'DSMU:0603')
@@ -275,7 +277,7 @@ class FootprintChoicesTest(unittest.TestCase):
             self.assertEqual(result['view_box'], [-2, -2, 8, 6])
             self.assertEqual(result['converted_layers'], {'F.Cu': 'target'})
             self.assertFalse(result.get('local_only'))
-            self.assertNotIn('alignment', result)
+            self.assertEqual(result['alignment'], alignment)
             self.assertEqual(result, self.service.comparison(key, 'DSMU:0603', 'DSMU:Target'))
             result['converted_layers'].clear()
             self.assertEqual(self.service.comparison(key, 'DSMU:0603', 'DSMU:Target')['converted_layers'],
@@ -284,8 +286,10 @@ class FootprintChoicesTest(unittest.TestCase):
             self.service.library_detail(key, 'DSMU:Other')
             self.service.comparison(key, 'DSMU:0603', 'DSMU:Other')
             self.assertEqual(render.call_count, 3)
-            self.assertEqual([call.args[:2] for call in render.call_args_list],
-                             [(self.old, target), (other, target), (self.old, other)])
+            self.assertEqual([call.args[:2] for call in align.call_args_list],
+                             [(target, self.old), (target, other), (other, self.old)])
+            self.assertEqual([call.args[1] for call in render.call_args_list],
+                             [call.args[2] for call in align.call_args_list])
             for call in render.call_args_list:
                 self.assertTrue(call.args[2].is_dir())
                 self.assertFalse(call.args[2].is_relative_to(self.root))

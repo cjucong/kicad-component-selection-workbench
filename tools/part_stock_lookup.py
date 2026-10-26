@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import threading
 import time
+import tempfile
 import base64
 import urllib.error
 import urllib.parse
@@ -35,7 +36,7 @@ DEFAULT_USD_TO_CNY_RATE = 6.1053
 PACKAGE_TOKENS = {"0201", "0402", "0603", "0805", "1206", "1210", "1812", "2010", "2512"}
 _STOCK_CACHE_LOCKS: dict[Path, threading.Lock] = {}
 _STOCK_CACHE_LOCKS_LOCK = threading.Lock()
-_DOMESTIC_BROWSER_LOCK = threading.Lock()
+_DOMESTIC_BROWSER_LOCK = threading.BoundedSemaphore(2)
 _SEARCH_SOURCE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lcsc-source")
 _STOCK_QUERY_SCOPE = threading.local()
 _STOCK_READ_SLOTS = threading.BoundedSemaphore(4)
@@ -606,13 +607,16 @@ def _fetch_szlcsc_page(keyword: str, timeout: int) -> str:
         ]
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                timeout=max(3, timeout),
-                creationflags=creationflags,
-                check=False,
-            )
+            # Separate profiles prevent two headless readers sharing a browser instance.
+            with tempfile.TemporaryDirectory(prefix='workbench-stock-', ignore_cleanup_errors=True) as profile:
+                command.insert(1, '--user-data-dir=' + profile)
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    timeout=max(3, timeout),
+                    creationflags=creationflags,
+                    check=False,
+                )
         except (OSError, subprocess.TimeoutExpired):
             return ""
         check_stock_cancelled()

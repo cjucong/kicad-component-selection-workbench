@@ -55,6 +55,22 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
    window.openLibrary = kind=>{window.result=undefined;window.chooseLibraryFootprint({...structuredClone(preview),kind,default_id:'Local:A',items:preview.existing.slice(0,2).map(e=>({...e,library:'Local'}))}).then(value=>window.result=value);};
   });
   const check=process.env.FP_CASE || 'all';
+  if(check==='library-reuse') {
+   await page.evaluate(()=>{window.libraryCompatible=true;openLibrary('library');});
+   await page.locator('[data-fp-adjust]').waitFor();
+   await page.locator('[data-fp-dx]').fill('0.0508');
+   assert.equal(await page.locator('[data-fp-mapping-enabled]').isChecked(),false,
+    'preview drag must not silently opt into publishing a mapped copy');
+   assert.equal(await page.locator('.fp-destination').isVisible(),false);
+   await page.locator('[data-fp-ack]').check();
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>window.result!==undefined);
+   const selected=await page.evaluate(()=>window.result);
+   assert.equal(selected.existing_id,'Local:A');
+   assert.equal(selected.mapping,undefined);assert.equal(selected.name,undefined);
+   assert.equal(selected.alignment_transform,undefined);
+   await page.screenshot({path:process.env.FP_SHOTS+'/library-reuse.png'});
+  }
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
   if(check==='all'||check==='viewport') {
    for(const library of [false,true]) {

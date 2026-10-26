@@ -39,6 +39,33 @@ import part_stock_lookup as stock_lookup  # noqa: E402
 
 
 class FetchCacheTest(unittest.TestCase):
+    def test_two_domestic_reads_run_in_isolated_profiles_without_serial_queue(self):
+        simultaneous, release = threading.Event(), threading.Event()
+        lock = threading.Lock()
+        profiles = []
+
+        def browser(command, **kwargs):
+            profile = next((Path(arg.split('=',1)[1]) for arg in command if arg.startswith('--user-data-dir=')), None)
+            with lock:
+                profiles.append(profile)
+                if len(profiles) == 2:
+                    simultaneous.set()
+            self.assertTrue(release.wait(2))
+            return SimpleNamespace(stdout=b'<html>fixture</html>')
+
+        with patch.object(stock_lookup,'find_chrome_executable',return_value='chrome'), \
+                patch.object(stock_lookup.subprocess,'run',side_effect=browser), \
+                ThreadPoolExecutor(max_workers=2) as executor:
+            reads=[executor.submit(stock_lookup._fetch_szlcsc_page, code, 8) for code in ('C100','C200')]
+            try:
+                self.assertTrue(simultaneous.wait(.5),'different-code domestic reads still serialize')
+            finally:
+                release.set()
+                for read in reads:
+                    read.result(timeout=2)
+        self.assertEqual(len(set(profiles)),2)
+        self.assertTrue(all(p is not None and not p.exists() for p in profiles))
+
     def test_stock_read_completion_at_wait_timeout_returns_real_result(self):
         from concurrent.futures import Future, TimeoutError
 

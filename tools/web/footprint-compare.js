@@ -346,6 +346,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     const adjustment = window.mountFootprintAdjustment?.(overlay, {
       enabled: !options.readonly,
       requireMapping: !options.readonly,
+      reuseLibrary: !!options.library,
       changed: () => { q('[data-fp-ack]').checked = false; refresh(); }
     });
     const selectedEntry = () => options.library ? preview.items.find(e => e.id === q('[data-fp-items]').value)
@@ -382,7 +383,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
         q('[data-fp-final]').textContent = mapped ? '目标：'+library+':'+q('[data-fp-name]').value.trim() : '';
         q('.fp-apply').disabled = !!nameError || !(mapped ? detail && adjustment.isValid() && q('[data-fp-name]').value.trim() && library : libraryDetail?.compatible) || !q('[data-fp-ack]').checked;
         q('[data-fp-reference-context]').textContent = libraryDetail
-          ? `${entry.id} · 焊盘 ${libraryDetail.pads} 个 · 编号 ${(libraryDetail.numbers || []).join(', ')}${libraryDetail.compatible ? '' : ' · 可通过手动适配替换'}` : '';
+          ? `${entry.id} · 焊盘 ${libraryDetail.pads} 个 · 编号 ${(libraryDetail.numbers || []).join(', ')}${mapped ? ' · 另存工程适配封装' : libraryDetail.compatible ? ' · 直接复用，PCB 按编号原位匹配' : ' · 可通过手动适配替换'}` : '';
         return;
       }
       q('[name=fp-source][value=existing]').disabled = !entry || entry.source === 'pcb';
@@ -471,7 +472,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       const alignment = value.alignment || {};
       const format = (number, digits = 3) => Number.isFinite(number) ? String(Number(number.toFixed(digits))) : '—';
       q('[data-fp-alignment]').dataset.ok = String(alignment.ok === true);
-      q('[data-fp-alignment]').textContent = value.pcb_comparison ? `当前 PCB / 目标库封装 · ${alignment.method === 'center' ? '铜焊盘中心对齐，允许焊盘偏移' : '按编号原位对齐'} · mm` : value.library_comparison ? `当前库封装 / 所选库封装 · 同原点、同比例 · mm${value.compatible === false ? ` · 仅预览，编号不匹配：本地 ${value.reference_numbers?.join(', ')} / 目标 ${value.target_numbers?.join(', ')}` : ''}` : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
+      q('[data-fp-alignment]').textContent = value.pcb_comparison ? `当前 PCB / 目标库封装 · ${alignment.method === 'center' ? '铜焊盘中心对齐，允许焊盘偏移' : '按编号原位对齐'} · mm` : value.library_comparison ? `当前基准 / 所选库封装 · ${alignment.ok ? `按编号定向并中心对齐 · 最大偏差 ${Number(alignment.max_error_mm || 0).toFixed(6)} mm` : '同原点、同比例'}${value.compatible === false ? ` · 仅预览，编号不匹配：本地 ${value.reference_numbers?.join(', ')} / 目标 ${value.target_numbers?.join(', ')}` : ''}` : value.local_only ? '当前绑定的本地库封装 · mm' : alignment.ok === true
         ? `中心已对齐 · 校正 ${format(alignment.rotation_deg)}° · 焊盘中心最大偏差 ${format(alignment.max_error_mm, 4)} mm${alignment.requires_review ? ' · 间距有差异，请核对' : ''}`
         : '仅预览，未配准：' + (alignment.reason || '请检查焊盘编号与原封装');
       q('[data-fp-alignment]').dataset.review = String(alignment.requires_review === true);
