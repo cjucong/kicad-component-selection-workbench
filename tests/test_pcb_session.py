@@ -258,9 +258,66 @@ def test_windows_socket_discovery_only_accepts_kicad_api_pipes(monkeypatch):
 def test_discovery_keeps_errors_and_connection_state(monkeypatch, scratch_project):
     fake_api(monkeypatch, {'ipc://busy':(TimeoutError('editor busy'), '')})
     result = sessions.PcbSession(scratch_project).discover()
-    assert result['state'] == 'unknown'
+    assert result['state'] == 'busy'
     assert result['errors'][0]['socket'] == 'ipc://busy'
     assert 'busy' in result['errors'][0]['reason']
+
+
+def test_discovery_budget_does_not_accept_partial_inventory(monkeypatch, scratch_project):
+    clock=[0.0]
+    endpoints={'ipc://one':([doc(scratch_project)], 'one'),
+               'ipc://two':([doc(scratch_project)], 'two')}
+    fake_api(monkeypatch, endpoints)
+    base=sys.modules['kipy'].KiCad
+    budgets=[]
+    class SlowKiCad:
+        def __new__(cls, **kwargs):
+            budgets.append(kwargs['timeout_ms'])
+            clock[0]+=kwargs['timeout_ms']*3/1000
+            return base(**kwargs)
+    monkeypatch.setattr(sys.modules['kipy'], 'KiCad', SlowKiCad)
+    monkeypatch.setattr(sessions.time, 'monotonic', lambda:clock[0])
+    result=sessions.PcbSession(scratch_project).discover(timeout_seconds=.9)
+    assert result['state']=='busy' and result['inventory_incomplete']
+    assert budgets==[300]
+    assert clock[0]<=.9
+
+
+def test_discovery_budget_shrinks_each_transport_and_preserves_ambiguity(monkeypatch, scratch_project):
+    clock=[0.0]
+    fake_api(monkeypatch, {'ipc://one':([doc(scratch_project)], 'one'),
+                           'ipc://two':([doc(scratch_project)], 'two')})
+    base=sys.modules['kipy'].KiCad
+    budgets=[]
+    class SlowKiCad:
+        def __new__(cls, **kwargs):
+            budgets.append(kwargs['timeout_ms'])
+            clock[0]+=.1
+            return base(**kwargs)
+    monkeypatch.setattr(sys.modules['kipy'], 'KiCad', SlowKiCad)
+    monkeypatch.setattr(sessions.time, 'monotonic', lambda:clock[0])
+    result=sessions.PcbSession(scratch_project).discover(timeout_seconds=.9)
+    assert result['state']=='ambiguous'
+    assert budgets[0]>budgets[1]>0
+
+
+@pytest.mark.parametrize('failure', [TimeoutError('timed out'),
+    RuntimeError('Error receiving reply from KiCad: Timed out')])
+def test_one_match_and_an_unresponsive_server_is_not_unique(monkeypatch, scratch_project, failure):
+    fake_api(monkeypatch, {'ipc://one':([doc(scratch_project)], 'one'),
+                           'ipc://two':(failure, '')})
+    result=sessions.PcbSession(scratch_project).discover(timeout_seconds=5)
+    assert result['state']=='busy' and result['inventory_incomplete']
+
+
+def test_one_match_and_explicit_busy_server_is_not_unique(monkeypatch, scratch_project):
+    class NativeBusy(Exception):
+        code=7
+    fake_api(monkeypatch, {'ipc://one':([doc(scratch_project)], 'one'),
+                           'ipc://two':(NativeBusy('modal'), '')})
+    monkeypatch.setitem(sys.modules, 'kipy.proto.common.envelope_pb2', Obj(AS_BUSY=7))
+    result=sessions.PcbSession(scratch_project).discover(timeout_seconds=5)
+    assert result['state']=='busy' and result['inventory_incomplete']
 
 
 def test_injected_connection_is_used_and_rechecks_each_board_access(monkeypatch, scratch_project):

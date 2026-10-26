@@ -48,6 +48,17 @@ def test_save_failure_never_closes_project_or_claims_saved(scratch_project,monke
     assert not state.get('result',{}).get('saved')
 
 
+def test_verified_keep_open_save_never_restarts_project(scratch_project, monkeypatch):
+    app, state, session = app_for(scratch_project, monkeypatch)
+    result = app.sync_design_pcb('token', keep_open=True)
+    assert result['saved'] and result['cycle_complete'] and result['editors_preserved']
+    session.verify.assert_called_once()
+    session.save_verified.assert_called_once()
+    app.prepare_kicad_for_external_schematic_write.assert_not_called()
+    app.reopen_and_locate_design.assert_not_called()
+    assert app.sync_design_pcb('token', keep_open=True) == result
+
+
 def test_close_failure_keeps_saved_evidence_without_claiming_complete(scratch_project,monkeypatch):
     app,state,session=app_for(scratch_project,monkeypatch)
     app.prepare_kicad_for_external_schematic_write.return_value={'ok':False,'message':'blocking dialog'}

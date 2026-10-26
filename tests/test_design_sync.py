@@ -107,7 +107,7 @@ def coordinator():
     snapshot = {'refs':['R1'], 'fields':{'R1':{'value':'100k','footprint':'Local:New'}},
                 'records':{'R1':{}}, 'identity':{}, 'mapping':{}, 'versions':{}}
     sources = SimpleNamespace(capture=Mock(side_effect=lambda refs:deepcopy(snapshot)),validate=Mock(return_value=True),
-        refresh_after_save=Mock(return_value=True))
+        refresh_after_save=Mock(return_value=True),after_write=Mock(side_effect=lambda *_:deepcopy(snapshot)))
     pcb = SimpleNamespace(preview=Mock(return_value={'ok':True,'preview_id':'pcb-one',
         'blocked':False,'items':[{'ref':'R1','kind':'fields','needs_ack':False,'field_changes':[]}]}),
         apply=Mock(return_value={'ok':True,'saved':False}))
@@ -127,6 +127,91 @@ def await_job(service, job_id):
             return state
         time.sleep(.005)
     raise AssertionError('Synthetic sync task did not finish')
+
+
+def test_design_automatically_continues_pcb_without_replaying_current_schematic():
+    service, app, sources = coordinator()
+    app.design_sync_fields.return_value = deepcopy(sources.capture(['R1'])['fields'])
+    app.sync_design_pcb = Mock(return_value={'ok':True,'saved':True,'editors_preserved':True})
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'design'})
+        state = await_job(service,service.start(preview['preview_id'],{})['job_id'])
+        assert state['stage'] == 'complete'
+        app.bulk_sync_bom_state_to_schematic.assert_not_called()
+        app.sync_design_pcb.assert_called_once()
+        assert app.sync_design_pcb.call_args.kwargs['keep_open'] is True
+    finally:
+        service.close()
+
+
+def test_design_missing_empty_field_is_not_a_schematic_change():
+    service, app, sources = coordinator()
+    app.design_sync_fields.return_value = {**deepcopy(sources.capture(['R1'])['fields'])}
+    app.design_sync_fields.return_value['R1']['procurement_url'] = ''
+    try:
+        assert service.preview({'refs':['R1'],'destination':'design'})['schematic_changes'] == []
+    finally:
+        service.close()
+
+
+def test_automatic_handoff_rejects_intervening_source_changes():
+    service, app, sources = coordinator()
+    sources.after_write.side_effect = ValueError('同步阶段交接期间选料记录已改变')
+    app.sync_design_pcb = Mock()
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'design'})
+        state = await_job(service,service.start(preview['preview_id'],{})['job_id'])
+        assert state['stage'] == 'partial'
+        assert state['phase_results']['schematic']['ok']
+        assert '阶段交接' in state['error']
+        app.pcb_updates.preview.assert_not_called()
+        app.sync_design_pcb.assert_not_called()
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize('failure', [ValueError('restore failed'), RuntimeError('restore failed'), ValueError(), RuntimeError()])
+def test_schematic_restore_failure_preserves_verified_pcb_success(failure):
+    service, app, _ = coordinator()
+    app.sync_design_pcb = Mock(return_value={'ok':True,'saved':True})
+    app.notify_kicad_schematic_changed = Mock(side_effect=failure)
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'design'})
+        job = service.start(preview['preview_id'],{})
+        state = await_job(service,job['job_id'])
+        assert state['stage'] == 'navigation_failed'
+        assert state['phase_results']['pcb']['ok']
+        assert state['phase_results']['pcb']['saved']
+        assert state['result']['retry_stage'] == 'navigation'
+        state = await_job(service,service.retry_navigation(job['job_id'])['job_id'])
+        assert state['stage'] == 'complete'
+        app.sync_design_pcb.assert_called_once()
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize('risk', ['ordinary', 'unverified', 'dropped', 'unknown'])
+def test_design_auto_continuation_keeps_exceptional_risk_checks(risk):
+    service, app, sources = coordinator()
+    app.sync_design_pcb = Mock(return_value={'ok':True,'saved':True})
+    app.notify_kicad_schematic_changed = Mock(return_value={'ok':True})
+    item = {'ref':'R1','kind':'replace','needs_ack':True,'selection_verified':risk!='unverified',
+            'max_error_mm':.05}
+    if risk == 'dropped':
+        item['dropped_terminals'] = [{'number':'9','net_assigned':True}]
+    if risk == 'unknown':
+        item['kind'] = 'unknown'
+    app.pcb_updates.preview.return_value.update(items=[item], blocked=risk=='unknown')
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'design'})
+        state = await_job(service,service.start(preview['preview_id'],{})['job_id'])
+        assert state['stage'] == ('complete' if risk=='ordinary' else 'awaiting_pcb_confirmation')
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+        assert app.bulk_sync_bom_state_to_schematic.call_args.kwargs['notify'] is False
+        assert app.sync_design_pcb.call_count == (1 if risk=='ordinary' else 0)
+    finally:
+        service.close()
 
 
 def test_both_stages_require_post_schematic_preview_and_never_repeat_schematic():
@@ -372,7 +457,8 @@ def test_real_app_desired_fields_are_read_only_and_missing_is_not_empty(scratch_
 
 @pytest.mark.parametrize('property_name', ['Description', 'Parameters', None])
 @pytest.mark.parametrize('review_status', ['Confirmed', 'Pending'])
-def test_changed_code_cached_parameters_sync_and_clear_pending_warning(scratch_project, property_name, review_status):
+@pytest.mark.parametrize('destination', ['schematic', 'design'])
+def test_changed_code_cached_parameters_sync_and_clear_pending_warning(scratch_project, property_name, review_status, destination):
     import json
     from part_selection_server import PartSelectionApp, stock_param_text
     from part_selection_overrides import load_overrides, save_overrides
@@ -403,8 +489,10 @@ def test_changed_code_cached_parameters_sync_and_clear_pending_warning(scratch_p
         app.notify_kicad_schematic_changed = Mock(return_value={'ok':True})
         app.verify_schematic_after_notify = Mock(side_effect=lambda fields, **kwargs:
             app.verify_schematic_field_values(fields))
+        app.pcb_updates.preview = Mock(return_value={'ok':True,'preview_id':'pcb', 'blocked':False,'items':[]})
+        app.sync_design_pcb = Mock(return_value={'ok':True,'no_changes':True})
         records = app.overrides_path.read_bytes()
-        preview = app.design_sync.preview({'refs':['U1'],'destination':'schematic'})
+        preview = app.design_sync.preview({'refs':['U1'],'destination':destination})
         assert app.overrides_path.read_bytes() == records
         assert any(change['name']=='description' and change['after']==stock_param_text(stock)
                    for change in preview['schematic_changes'])

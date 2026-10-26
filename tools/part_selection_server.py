@@ -2177,6 +2177,7 @@ class PartSelectionApp:
                 if auto_save and not self.pcb_updates.sources.refresh_after_save(state['source']['design']):
                     raise ValueError('保存期间原理图字段或工作台记录已改变，请重新预检；未写入 PCB')
                 result = self.pcb_updates.apply(preview_id, True, schematic_close_verified=True, **options)
+                state['_schematic_closed_for_apply'] = closed
                 return result
             finally:
                 if closed and (restore_schematic or result is None):
@@ -2185,7 +2186,7 @@ class PartSelectionApp:
                     if result is not None and not restored.get('ok'):
                         result['warning'] = 'PCB 已更新；原理图重新打开失败，请从工程管理器打开：' + str(restored.get('message',''))
 
-    def sync_design_pcb(self, preview_id, progress=None):
+    def sync_design_pcb(self, preview_id, progress=None, *, keep_open=False):
         """Publish once, verify/save, normally restart only the verified project."""
         notify = progress or (lambda *args: None)
         with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock:
@@ -2211,6 +2212,22 @@ class PartSelectionApp:
             result.update(saved=True, save_path=saved['path'],
                           save_reply_timeout_recovered=bool(saved.get('reply_timeout_recovered')))
             state['result'] = deepcopy(result)
+            if keep_open:
+                # save_verified already checks the full live board and saved disk
+                # contents. Restarting PCB adds no validation and loses its view.
+                result.update(cycle_complete=True, editors_preserved=True, reopened=False)
+                state['result'] = deepcopy(result)
+                if state.get('_schematic_closed_for_apply'):
+                    notify('restore', 'PCB 已保存核验，正在恢复原理图；保留当前 PCB 窗口')
+                    try:
+                        restored = self.notify_kicad_schematic_changed({'updated_refs':refs})
+                        if not restored.get('ok'):
+                            raise ValueError(restored.get('message') or '原理图恢复未完成')
+                    except Exception as exc:
+                        result['navigation_error'] = str(exc) or '原理图恢复未完成'
+                    state['result'] = deepcopy(result)
+                notify('verified', 'PCB 实时内容与磁盘保存内容已核验，保留当前 PCB 窗口')
+                return result
             notify('project_close', 'PCB 已保存，正在保存并正常关闭当前工程')
             closed = self.prepare_kicad_for_external_schematic_write(refs)
             if not closed.get('ok'):
@@ -4658,8 +4675,7 @@ tr.hidden-row {{ display: none; }}
 <section class="toolbar-section action-section" aria-label="同步设计">
   <span class="section-title">设计</span><div class="section-actions">
   <label class="design-sync-scope">范围<select id="designSyncScope" aria-label="同步范围"><option value="selected">所选行</option><option value="filtered">当前筛选</option><option value="all">全部行</option></select></label>
-  <div class="app-menu"><button type="button" id="designSyncMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="同步设计" data-tooltip="先选择范围，再选择同步目标。全部同步表示原理图和 PCB，不改变范围。">{toolbar_content('layers', '同步设计')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
-  <div class="menu-popup"><button type="button" data-design-destination="schematic">同步原理图</button><button type="button" data-design-destination="pcb">同步 PCB</button><button type="button" data-design-destination="both">全部同步</button></div></div>
+  <button type="button" id="designSyncMenu" class="tool-button" data-design-destination="design" aria-label="同步设计" data-tooltip="同步所选范围的实际设计差异">{toolbar_content('layers', '同步设计')}</button>
   <span hidden><button type="button" id="syncSelectedSchematic" disabled aria-label="同步所选行（0）">{toolbar_content('list-checks','同步所选',True)}</button><button type="button" id="syncAllSchematic" disabled>同步全部原理图</button><button type="button" id="updateSelectedPcb">更新 PCB（所选器件）</button></span>
   </div>
 </section>
@@ -6972,7 +6988,7 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
     const missingRef = rowHasMissingRef(row);
     const filterKeys = rowFilterKeys(row, selectedStatus, syncNeeded, stock, reviewStatus).join(" ");
     const syncButtonClass = syncNeeded ? "action-sync-needed" : "action-muted";
-    const syncButton = `<details class="row-sync-menu"><summary title="仅处理当前行的全部位号">同步设计</summary><div class="row-sync-actions"><button type="button" class="small ${{syncButtonClass}}" data-action="sync-schematic">同步原理图</button><button type="button" class="small" data-action="sync-pcb">同步 PCB</button><button type="button" class="small" data-action="sync-both">全部同步</button></div></details>`;
+    const syncButton = `<button type="button" class="small ${{syncButtonClass}}" data-action="sync-schematic" title="同步当前行的设计差异">同步设计</button>`;
     const syncSummary = schematicSyncSummary(row);
     const syncMarker = schematicSyncMarker(row, syncNeeded);
     const fieldReconcileNotice = schematicFieldReconcileNotice(row);
@@ -8561,7 +8577,7 @@ rowsEl.addEventListener("click", async event => {{
     if (["sync-schematic","sync-pcb","sync-both"].includes(action)) {{
       tr.querySelector(".row-sync-menu")?.removeAttribute("open");
       await window.openDesignSync({{refs:syncRowRefs(tr),bom:loadedRowsBom,
-        destination:{{"sync-schematic":"schematic","sync-pcb":"pcb","sync-both":"both"}}[action]}});
+        destination:"design"}});
     }}
     if (action === "undo-workbench") await undoWorkbenchChanges(tr, button);
     if (action === "adopt-schematic-fields") await adoptSchematicFields(tr, button);
@@ -8820,7 +8836,7 @@ document.getElementById("queryAllStock").addEventListener("click", () => startSt
 syncAllButton.addEventListener("click", async () => {{
   try {{
     await flushRowEdits();
-    await openScopedDesignSync("schematic", "all");
+    await openScopedDesignSync("design", "all");
   }} catch (err) {{
     setState(err.message, "error");
     syncAllButton.disabled = false;
@@ -8829,7 +8845,7 @@ syncAllButton.addEventListener("click", async () => {{
 syncSelectedButton.addEventListener("click", async () => {{
   try {{
     await flushRowEdits();
-    await openScopedDesignSync("schematic", "selected");
+    await openScopedDesignSync("design", "selected");
   }} catch (err) {{
     setState(err.message, "error");
   }}

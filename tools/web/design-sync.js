@@ -1,7 +1,7 @@
 /* One explicit scope, two independently verified CAD stages. */
 (() => {
   const child = new URLSearchParams(location.search).get('tool') === 'design-sync';
-  const destinations = {schematic:'同步原理图', pcb:'同步 PCB', both:'全部同步'};
+  const destinations = {design:'同步设计',schematic:'同步原理图', pcb:'同步 PCB', both:'全部同步'};
   const kinds = {rename:'封装仅改名',replace:'更换封装',fields:'字段更新',unknown:'类型待核对',none:'无需更新'};
   const fields = {comment:'Comment',value:'Value',footprint:'封装',lcsc_c_code:'C 编码',
     description:'物料参数',lcsc_url:'商品链接',lcsc_alt:'备选料',lcsc_alt_info:'备选料信息',
@@ -100,8 +100,8 @@
     }
     function enabled() {
       const pcb = state.preview?.pcb_preview;
-      const geometry = (pcb?.items || []).some(item => item.needs_ack);
-      const movement = (pcb?.items || []).some(item => item.max_error_mm > .001);
+      const geometry = (pcb?.items || []).some(item => item.needs_ack && !(state.payload.destination==='design' && item.selection_verified));
+      const movement = (pcb?.items || []).some(item => item.max_error_mm > .001 && !(state.payload.destination==='design' && item.selection_verified));
       const drops = (pcb?.items || []).flatMap(item=>item.dropped_terminals || []);
       q('[data-design-apply]').disabled = state.busy || state.loading || !state.preview || state.preview.blocked || pcb?.blocked ||
         (geometry && !q('[data-design-geometry]').checked) || (movement && !q('[data-design-movement]').checked) ||
@@ -114,11 +114,11 @@
     }
     function render(preview) {
       state.preview = preview;
-      const pcb = preview.pcb_preview, items = pcb?.items || [], schematic = preview.schematic_changes || [];
+      const pcb = preview.pcb_preview, allItems = pcb?.items || [], items = allItems.filter(item=>item.kind!=='none'), schematic = preview.schematic_changes || [];
       q('[data-design-alignment-label]').hidden = !items.some(item => item.kind === 'replace');
       q('[data-design-geometry]').checked = false; q('[data-design-movement]').checked = false;
-      q('[data-design-geometry]').parentElement.hidden = !items.some(item => item.needs_ack);
-      q('[data-design-movement]').parentElement.hidden = !items.some(item => item.max_error_mm > .001);
+      q('[data-design-geometry]').parentElement.hidden = !items.some(item => item.needs_ack && !(state.payload.destination==='design' && item.selection_verified));
+      q('[data-design-movement]').parentElement.hidden = !items.some(item => item.max_error_mm > .001 && !(state.payload.destination==='design' && item.selection_verified));
       const drops=items.flatMap(item=>item.dropped_terminals || []);
       q('[data-design-drops]').checked=false;q('[data-design-connected]').checked=false;
       q('[data-design-drops]').parentElement.hidden=!drops.length;
@@ -136,6 +136,7 @@
                   ${(item.extra_pads || []).length?`<div>额外焊盘：${escape(item.extra_pads.join(', '))} · 保留，未分配网络（已有适配实例接网不会被清空）</div>`:''}
                   ${(item.dropped_terminals || []).map(p=>`<div class="design-warning">放弃端子 ${escape(p.number)} · 网络 ${escape(p.net_name || (p.net_assigned?'编号 '+p.net_code:'未分配'))}<br>${escape(p.physical_connection)}<br>同网走线 ${p.same_net_objects.segment+p.same_net_objects.arc} / 过孔 ${p.same_net_objects.via} / 区域 ${p.same_net_objects.zone}<br>${escape(p.warning)}</div>`).join('')}` : ''}</td></tr>`).join('')}</tbody></table>` : '');
       q('[data-design-safety]').textContent = state.payload.destination === 'schematic' ? '仅写入所选原理图字段，不修改 PCB。' :
+        state.payload.destination === 'design' ? '只更新实际差异并自动保存核验；PCB 保持打开，必要时暂关原理图。' :
         state.payload.destination === 'both' && !state.continuation ? '先保存并关闭当前工程，同步原理图后核验 PCB 并确认。' :
         '仅更新所选器件，不改网络或走线。自动保存当前工程（含此前编辑），重新打开并定位。';
       q('[data-design-both]').hidden = preview.suggested_destination !== 'both';
@@ -183,6 +184,7 @@
         state.loading = false;
         if (state.continuation) state.continuation = result.preview_id;
         render(result);
+        if (state.payload.destination === 'design' && result.automatic) q('[data-design-apply]').click();
       } catch (error) {
         if (!state.closed && generation === state.sequence) {
           state.loading = false; status(error.message,true); q('[data-design-refresh]').hidden = false;
@@ -213,7 +215,7 @@
             busy(false);
             if (value.stage === 'awaiting_pcb_confirmation') {
               state.continuation = value.pcb_preview.preview_id;
-              state.payload.destination = 'pcb';
+              if (state.payload.destination !== 'design') state.payload.destination = 'pcb';
               render({pcb_preview:value.pcb_preview,blocked:value.pcb_preview.blocked,schematic_changes:[]});
             } else {
               state.preview = null;
