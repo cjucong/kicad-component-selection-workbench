@@ -216,7 +216,39 @@ def geometry_matches(original, proposed):
         if isinstance(a, list) and isinstance(b, list):
             return len(a) == len(b) and all(same(x,y) for x,y in zip(a,b))
         return type(a) is type(b) and a == b
-    return same(geometry_data(original), geometry_data(proposed))
+    before, after = geometry_data(original), geometry_data(proposed)
+    if same(before, after):
+        return True
+    if not same([before[0], *before[2:]], [after[0], *after[2:]]) or len(before[1]) != len(after[1]):
+        return False
+    # A one-nanometre round-trip can change the sort order of otherwise
+    # identical graphics. Match the item multiset, not sorted neighbours.
+    candidates = [[j for j, target in enumerate(after[1]) if same(item, target)] for item in before[1]]
+    assigned, reverse = {}, {}
+    for start in range(len(candidates)):
+        queue, seen, parent, free = [start], {start}, {}, None
+        for row in queue:
+            for column in candidates[row]:
+                if column in parent:
+                    continue
+                parent[column] = row
+                if column not in assigned:
+                    free = column
+                    break
+                other = assigned[column]
+                if other not in seen:
+                    seen.add(other)
+                    queue.append(other)
+            if free is not None:
+                break
+        if free is None:
+            return False
+        while free is not None:
+            row = parent[free]
+            previous = reverse.get(row)
+            assigned[free], reverse[row] = row, free
+            free = previous
+    return True
 
 
 def describe(fp):

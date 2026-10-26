@@ -91,7 +91,7 @@ def native_schematic_update(app, root, report):
     return {'title':title,'native_update_clicked':True,'modal_action_reply':action_timeout}
 
 
-def run(report):
+def run(report, *, allow_navigation_unavailable=False):
     from part_selection_footprint_geometry import _find_kicad_python
     from part_selection_paths import resolve_config
     from part_selection_server import PartSelectionApp
@@ -237,7 +237,15 @@ def run(report):
             result['checks']['separate_connected_terminal_acknowledgment'] = True
             done = finished(app.design_sync, app.design_sync.continue_pcb(state['job_id'], token,
                 {'geometry':True,'pad_movement':True,'dropped_terminals':True,'connected_terminals':True}))
-            assert done['stage'] == 'complete' and done['result']['saved'], done
+            if done['stage'] == 'navigation_failed':
+                result['initial_navigation_error'] = done['error']
+                done = finished(app.design_sync, app.design_sync.retry_navigation(done['job_id']))
+            navigation_unavailable = done['stage'] == 'navigation_failed'
+            if navigation_unavailable:
+                result['navigation_error'] = done['error']
+                assert allow_navigation_unavailable, done
+            assert done['phase_results']['pcb']['ok'] and done['phase_results']['pcb']['saved'], done
+            assert done['phase_results']['pcb']['cycle_complete'], done
             after = session.snapshot(root, refs)
             (report/'completed.json').write_text(json.dumps(after,ensure_ascii=False),encoding='utf-8')
             selected = {part['uuid'] for part in before['parts'].values()}
@@ -288,6 +296,58 @@ def run(report):
             for ref in ('R1','U1'):
                 assert reopened['parts'][ref]['pads'] == f8['parts'][ref]['pads']
             result['checks']['real_f8_different_numbers_extras_no_net_saved_reopened'] = True
+            # Evolve the fixture symbol to ten terminals, as a user may do
+            # after the original adaptation. F8 assigns real nets to 9/10.
+            closed = app.prepare_kicad_for_external_schematic_write(refs)
+            assert closed['ok'], closed
+            from kicad_sexpr import parse_sexpr
+            from run_native_footprint_workflow import symbol_pins
+            page = root/'Parts.kicad_sch'
+            text = page.read_text(encoding='utf-8')
+            tree = parse_sexpr(text, 'kicad_sch')
+            definition = next(node for node in tree.child('lib_symbols').children_named('symbol')
+                              if node.arg() == 'Connector_Generic:Conn_01x10')
+            labels = []
+            removals = []
+            for label in tree.children_named('global_label'):
+                if re.fullmatch(r'(?:R1|U1)_[1-8]', label.arg()):
+                    removals.append((label.start, label.end))
+            for ref in ('R1','U1'):
+                symbol = next(node for node in tree.children_named('symbol')
+                    if any(prop.arg() == 'Reference' and prop.arg(2) == ref for prop in node.children_named('property')))
+                sx, sy = float(symbol.child('at').arg()), float(symbol.child('at').arg(2))
+                for pin in symbol_pins(definition):
+                    number, at = pin.child('number').arg(), pin.child('at')
+                    from uuid import uuid4
+                    labels.append(f'(global_label "{ref}_later_{number}" (shape input) '
+                        f'(at {sx+float(at.arg()):.6f} {sy-float(at.arg(2)):.6f} 0) '
+                        f'(effects (font (size 1.27 1.27))) (uuid "{uuid4()}"))')
+            for start, end in reversed(removals):
+                text = text[:start]+text[end:]
+            text = text.replace('(lib_id "Connector_Generic:Conn_01x08")', '(lib_id "Connector_Generic:Conn_01x10")')
+            page.write_text(text.rstrip()[:-1]+''.join(labels)+')', encoding='utf-8')
+            session.snapshot(root, refs)
+            result['connected_extras_f8'] = native_schematic_update(app, root, report)
+            connected = session.snapshot(root, refs)
+            for ref in ('R1','U1'):
+                for pad in connected['parts'][ref]['pads']:
+                    if pad['number'] in ('9','10'):
+                        assert ref+'_later_'+pad['number'] in str(pad['net']), pad
+            session.save_verified(connected, report/'connected-extras-save')
+            closed = app.prepare_kicad_for_external_schematic_write(refs)
+            assert closed['ok'], closed
+            connected = session.snapshot(root, refs)
+            app.pcb_updates = PcbUpdates(app, session=session)
+            for _ in range(2):
+                repeated = app.pcb_updates.preview(['R1','U1'], '__schematic__', alignment='center')
+                assert all(item['kind'] in ('none','fields') for item in repeated['items']), repeated
+                originals = connected['parts']
+                for item in app.pcb_updates.previews[repeated['preview_id']]['replacements']:
+                    prior = {pad.number:pad for pad in decode(originals[item['ref']]['proto']).definition.pads}
+                    for pad in decode(item['proto']).definition.pads:
+                        assert pad.id == prior[pad.number].id and pad.proto.net == prior[pad.number].proto.net
+            assert session.snapshot(root, refs) == connected, 'Repeated preflight changed the live board'
+            result['checks']['later_symbol_terminals_wired_extras_restart_and_repeat_preserved'] = True
             result['functional_passed'] = True
         except BaseException as exc:
             import traceback
@@ -332,6 +392,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build',type=Path)
     parser.add_argument('--report-dir',type=Path)
+    parser.add_argument('--allow-navigation-unavailable',action='store_true',
+                        help='Continue PCB assertions after recording a real navigation failure; does not validate navigation')
     args = parser.parse_args()
     if args.build:
         assert args.build.parent.name.startswith('pcb-probe-') and args.build.name == 'project'
@@ -339,4 +401,4 @@ if __name__ == '__main__':
     else:
         assert args.report_dir and args.report_dir.is_absolute() and not args.report_dir.resolve().is_relative_to(ROOT)
         args.report_dir.mkdir(parents=True,exist_ok=True)
-        raise SystemExit(run(args.report_dir))
+        raise SystemExit(run(args.report_dir, allow_navigation_unavailable=args.allow_navigation_unavailable))

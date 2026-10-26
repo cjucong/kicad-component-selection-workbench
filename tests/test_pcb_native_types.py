@@ -127,3 +127,42 @@ def test_replacement_native_proto_boundaries(mode):
     result = subprocess.run([str(python), '-B', '-c', 'MODE=' + repr(mode) + '\n' + SCRIPT],
         capture_output=True, text=True, encoding='utf-8', timeout=20)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('mode', ['rounding_order','multiplicity','real_move','shape','ambiguous_matching'])
+def test_geometry_completion_matches_unordered_items_without_losing_content(mode):
+    python=runtime()
+    if python is None:
+        pytest.skip('KiCad desktop kipy runtime required')
+    script = r'''
+from kipy.board_types import FootprintInstance, BoardShape
+from part_selection_pcb_session import encode, decode, geometry_matches, describe
+expected=FootprintInstance()
+for x,y in [(100000000,100),(100000000,200)]:
+    shape=BoardShape()
+    shape.proto.shape.segment.start.x_nm=x
+    shape.proto.shape.segment.start.y_nm=y
+    shape.proto.shape.segment.end.x_nm=x+50
+    shape.proto.shape.segment.end.y_nm=0
+    expected.definition.add_item(shape)
+actual=decode(encode(expected))
+if MODE=='rounding_order':
+    actual.definition.items[0].proto.shape.segment.start.x_nm+=1
+    actual.definition.items[1].proto.shape.segment.start.x_nm-=1
+elif MODE=='real_move':actual.definition.items[0].proto.shape.segment.start.x_nm+=6
+elif MODE=='shape':actual.definition.items[0].proto.shape.segment.end.y_nm+=100
+elif MODE=='multiplicity':actual.definition.items=[actual.definition.items[0],actual.definition.items[0]]
+elif MODE=='ambiguous_matching':
+    for item,x in zip(expected.definition.items,[0,5]):
+        item.proto.shape.segment.start.x_nm=x
+        item.proto.shape.segment.start.y_nm=0
+        item.proto.shape.segment.end.x_nm=50
+        item.proto.shape.segment.end.y_nm=0
+    actual=decode(encode(expected))
+    for item,x in zip(actual.definition.items,[4,-5]):item.proto.shape.segment.start.x_nm=x
+assert geometry_matches(describe(expected),describe(actual)) == (MODE in ('rounding_order','ambiguous_matching')),MODE
+print('verified',MODE)
+'''
+    result=subprocess.run([str(python),'-B','-c','MODE='+repr(mode)+'\n'+script],
+                          capture_output=True,text=True,encoding='utf-8',timeout=20)
+    assert result.returncode==0,result.stdout+result.stderr

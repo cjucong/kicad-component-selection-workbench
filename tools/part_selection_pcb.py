@@ -201,14 +201,25 @@ class PcbUpdates:
             record = deepcopy(source['records'][ref])
             record.setdefault('field_overrides', {})['footprint'] = source['targets'][ref]
             adaptation = record.get('footprint_change', {}).get('adaptation')
-            if adaptation:
-                verify_extra_terminals(adaptation['mapping']['extras'], source['design'].get('terminals', {}).get(ref))
             change = classify_footprint_change(record, {**original, 'instance_geometry_hash':copper.get(ref),
                                                         'instance_source_hash':instance_hashes.get(ref)})
             kind = change['kind']
+            if adaptation:
+                extras = adaptation['mapping']['extras']
+                evidence = record['footprint_change']
+                if (kind == 'replace' and original['footprint'] == evidence.get('after')
+                        and original['footprint'] != evidence.get('before')):
+                    # Existing terminals are not new unassigned pads. This path
+                    # must still validate the target, mapping and full geometry below.
+                    existing = {pad['number'] for pad in original['pads'] if pad['number']}
+                    extras = [number for number in extras if number not in existing]
+                try:
+                    verify_extra_terminals(extras, source['design'].get('terminals', {}).get(ref))
+                except ValueError as exc:
+                    raise ValueError(ref + '：' + str(exc)) from exc
             completion_key = self._completion_key(ref, original, record, source)
             completion = self.completed_geometry.get(completion_key)
-            if kind == 'replace' and original['footprint'] == source['targets'][ref] and completion:
+            if kind == 'replace' and not adaptation and original['footprint'] == source['targets'][ref] and completion:
                 if (all(hashlib.sha256(Path(item['path']).read_bytes()).hexdigest() == item['hash']
                         for item in completion['targets']) and geometry_signature(original) == completion['geometry']):
                     kind = 'none'
@@ -267,7 +278,10 @@ class PcbUpdates:
                         pose = original
                     evidence['source']['placement'] = {k:deepcopy(pose[k]) for k in ('position_mm','rotation_deg','back')}
                 placement = adapted_placement(original, target, evidence)
-                verify_extra_terminals(placement['extras'], source['design'].get('terminals', {}).get(ref))
+                try:
+                    verify_extra_terminals(placement['mapping']['extras'], source['design'].get('terminals', {}).get(ref))
+                except ValueError as exc:
+                    raise ValueError(ref + '：' + str(exc)) from exc
                 drop_report = dropped_terminal_report(snapshot['text'], ref, placement['dropped']) if first else []
                 common.update(dropped_terminals=drop_report, extra_pads=placement['extras'], manual_adaptation=True,
                               pad_mapping=deepcopy(adaptation['mapping']['pairs']))

@@ -1,5 +1,7 @@
 # 插件回归测试
 
+历史额外焊盘重复同步：`test_pad_mapping_native_types.py` 使用原生 protobuf 跑实际 PCB 预检，区分已接网/字段修改/服务重启与首次冲突、缺失、重复及真实几何变化；`test_pcb_native_types.py` 覆盖舍入改变图形排序、多重集数量及非贪心匹配，不放宽嵌套节点顺序。`run_native_pad_mapping_probe.py` 增加符号由 8 扩到 10 脚、真实 F8 接网、保存重开及重复预检的网络/UUID 保留检查。若系统禁止定位输入，可显式使用 `--allow-navigation-unavailable` 记录导航失败后继续 PCB 验证；此模式不代表导航通过，默认仍要求导航完成。
+
 `test_footprint_overlay_ui.py` 的 `viewport` 场景使用真实 Chromium 滚轮/右键/按钮，验证两个来源的鼠标锚点缩放、同比例并排、滚轮平移、缩放上限、展开/Esc/窄屏，以及缩放后的毫米拖动。查看操作不能清除确认、发起网络读取或改变配准；切换封装重置视图。
 
 PCB 保存超时：`test_pcb_session.py` 覆盖保存独立限时、禁止 Req0 重发、断开迟到回复连接、实时/磁盘/会话不一致不误报、失败证据。`run_native_project_cycle_probe.py --save-reply-timeout --report-dir <工程外目录>` 在可清理的真实 KiCad 工程完成原生保存，并注入 5.2 秒延迟与丢失回复，验证 UI 阶段、单次保存、只读恢复及保存重开后的字段、几何、网络和走线；这是故障注入，不声称复现了生产工程的具体耗时原因。
