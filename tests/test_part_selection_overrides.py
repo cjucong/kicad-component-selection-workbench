@@ -1934,9 +1934,11 @@ class PartSelectionOverridesTest(unittest.TestCase):
             html = render_index(PartSelectionApp(config_path))
 
             self.assertIn('id="queryMissingStock"', html)
-            self.assertIn("查询未查库存", html)
+            self.assertIn("开始 / 继续库存查询", html)
+            self.assertIn('id="pauseStockQuery"', html)
+            self.assertIn('id="stockFreshness"', html)
             self.assertIn("刷新全部库存", html)
-            self.assertIn('startStockQuery("missing"', html)
+            self.assertIn('startStockQuery("stale"', html)
             self.assertIn('startStockQuery("all"', html)
             self.assertIn('id="stockProgress"', html)
 

@@ -40,6 +40,7 @@ _DOMESTIC_BROWSER_LOCK = threading.BoundedSemaphore(2)
 _SEARCH_SOURCE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lcsc-source")
 _STOCK_QUERY_SCOPE = threading.local()
 _STOCK_READ_SLOTS = threading.BoundedSemaphore(4)
+_STOCK_DOMESTIC_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix='stock-domestic')
 
 
 def check_stock_cancelled():
@@ -586,6 +587,34 @@ def fetch_szlcsc_page(c_code: str, timeout: int = 10, force_refresh: bool = Fals
     )
 
 
+def _read_domestic_browser(command, timeout, creationflags):
+    if getattr(_STOCK_QUERY_SCOPE, 'cancelled', None) is None:
+        return subprocess.run(command, capture_output=True, timeout=timeout,
+                              creationflags=creationflags, check=False).stdout
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               creationflags=creationflags)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            check_stock_cancelled()
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                return process.communicate(timeout=min(.1, remaining))[0]
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        # This is only our isolated headless reader, never the user's browser or CAD.
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=2)
+
+
 def _fetch_szlcsc_page(keyword: str, timeout: int) -> str:
     while not _DOMESTIC_BROWSER_LOCK.acquire(timeout=0.1):
         check_stock_cancelled()
@@ -610,17 +639,11 @@ def _fetch_szlcsc_page(keyword: str, timeout: int) -> str:
             # Separate profiles prevent two headless readers sharing a browser instance.
             with tempfile.TemporaryDirectory(prefix='workbench-stock-', ignore_cleanup_errors=True) as profile:
                 command.insert(1, '--user-data-dir=' + profile)
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    timeout=max(3, timeout),
-                    creationflags=creationflags,
-                    check=False,
-                )
+                output = _read_domestic_browser(command, max(3, timeout), creationflags)
         except (OSError, subprocess.TimeoutExpired):
             return ""
         check_stock_cancelled()
-        return completed.stdout.decode("utf-8", errors="replace")
+        return output.decode("utf-8", errors="replace")
     finally:
         _DOMESTIC_BROWSER_LOCK.release()
 
@@ -1170,8 +1193,37 @@ def probe_szlcsc_search(c_code: str, timeout: int = 4) -> str:
 def query_lcsc_stock(
     c_code: str,
     timeout: int = 8,
-    domestic_fetcher: Callable[[str, int], list[dict[str, Any]]] = fetch_szlcsc_domestic_products,
+    domestic_fetcher: Callable[[str, int], list[dict[str, Any]]] | None = None,
 ) -> dict[str, str | bool]:
+    """Overlap shipping evidence with the API instead of paying both waits in series."""
+    check_stock_cancelled()
+    code = normalize_c_code(c_code)
+    if not code:
+        return stock_status('', 'NeedCCode')
+    cancelled = getattr(_STOCK_QUERY_SCOPE, 'cancelled', None)
+    domestic_fetcher = domestic_fetcher or (lambda code, timeout:
+        fetch_szlcsc_domestic_products(code, timeout, force_refresh=True))
+
+    def domestic():
+        previous = getattr(_STOCK_QUERY_SCOPE, 'cancelled', None)
+        _STOCK_QUERY_SCOPE.cancelled = cancelled
+        try:
+            check_stock_cancelled()
+            return domestic_fetcher(code, timeout)
+        finally:
+            _STOCK_QUERY_SCOPE.cancelled = previous
+
+    started = time.perf_counter()
+    pending = _STOCK_DOMESTIC_POOL.submit(domestic)
+    try:
+        result = _query_lcsc_stock(code, timeout, lambda *_: _wait_stock_result(pending))
+        result['query_elapsed_ms'] = round((time.perf_counter()-started)*1000)
+        return result
+    finally:
+        pending.cancel()
+
+
+def _query_lcsc_stock(c_code, timeout, domestic_fetcher):
     check_stock_cancelled()
     c_code = normalize_c_code(c_code)
     if not c_code:
@@ -1682,8 +1734,9 @@ def lookup_stock_with_cache(
             if cached_price.startswith("¥") and result_price == "无人民币价":
                 result["price"] = cached_price
 
-        if result.get("ok") or code not in cache or not cache[code].get("ok"):
-            cache[code] = result
+        result['last_checked_at'] = datetime.now().isoformat(timespec='seconds')
+        # Preserve fetched_at on fallback: a failed attempt is not fresh inventory.
+        cache[code] = result
         save_stock_cache(cache_path, cache)
     return result
 

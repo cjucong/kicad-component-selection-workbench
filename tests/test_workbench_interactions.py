@@ -69,6 +69,7 @@ def test_stock_commands_only_enable_for_loaded_current_rows():
     script = r'''
 const assert=require('node:assert/strict');
 const queryMissingButton={},queryAllButton={},bomSelect={value:'A'};
+const window={};
 let loadedRowsBom=null,rowsLoading=false;
 const setToolbarLabel=()=>{};
 FUNCTION

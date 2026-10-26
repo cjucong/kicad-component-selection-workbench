@@ -31,6 +31,11 @@ class ServiceLifecycle:
     def shutdown(self, token):
         if not self.token or not hmac.compare_digest(self.token, str(token)):
             raise ValueError('后台身份不匹配，不能关闭其他窗口或工程的后台')
+        stock_refresh = getattr(self.app, 'stock_refresh', None)
+        if stock_refresh is not None:
+            stock_refresh.pause()
+            if stock_refresh.busy():
+                raise DesktopExitPending('正在保存库存暂停进度，随后自动退出')
         self.app.stock_queries.cancel()
         with self.app.settings_gate.lock:
             if self.app.settings_gate.active > 1:
@@ -46,6 +51,8 @@ class ServiceLifecycle:
     def owner_exited(self):
         # A crashed host must not leave a service behind or interrupt a write.
         self.app.stock_queries.cancel()
+        if getattr(self.app, 'stock_refresh', None) is not None:
+            self.app.stock_refresh.pause()
         while not self.app.settings_gate.stopping:
             try:
                 with self.app.settings_gate.lock:

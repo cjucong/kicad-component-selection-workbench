@@ -19,6 +19,7 @@
       if (document.querySelector('[data-composing="1"]')) throw new Error('请先完成输入法编辑');
       if (window.hasUnsavedPathSettings?.() && !window.confirm('路径配置尚未保存，放弃这些配置改动并退出？')) return;
       window.desktopExitPreparing = true;
+      await window.pauseDurableStockRefresh?.();
       cancelStockQueries();
       cancelRowStockQueries();
       document.body.inert = true;

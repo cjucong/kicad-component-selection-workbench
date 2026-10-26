@@ -227,6 +227,7 @@ let fetch = async () => { calls++; throw new TypeError('Failed to fetch'); };
         script = '''
 const assert = require('node:assert/strict');
 let rowsLoadVersion = 0, rowsLoading = false, loadedRowsBom = 'A';
+const window = {};
 let bulkSyncRunning = false;
 const bomSelect = {value:'B'}, refsInput = {value:''};
 const queryMissingButton = {}, queryAllButton = {}, syncAllButton = {};

@@ -26,6 +26,7 @@ if __package__:
 else:
     from updater import VERSION, REPOSITORY
 CORE_FILES = (
+    "part_selection_stock_refresh.py", "web/stock-refresh.js",
     "part_selection_footprint_unify.py", "unify_footprints.py",
     "web/edit-menu.js", "web/footprint-adjust.js",
     "part_selection_design_sync.py",

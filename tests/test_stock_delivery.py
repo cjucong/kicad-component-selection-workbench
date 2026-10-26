@@ -258,12 +258,22 @@ def test_old_cache_removes_fabricated_fast_dispatch_without_writing_records(scra
 def test_main_supply_surfaces_dispatch_time_and_never_labels_total_stock_ready():
     root = Path(__file__).resolve().parents[1]
     html = render_index(SimpleNamespace(project_root=root, config={}))
-    names = ("renderStock|renderStockCell|stockDeliveryText|stockNumber|stockDeliverySchemaIsVerified|"
+    names = ("stockQueryAge|renderStock|renderStockCell|stockDeliveryText|stockNumber|stockDeliverySchemaIsVerified|"
              "stockImmediateNumber|stockDeliveryHours|stockDispatchWithinFourHours|stockDeliveryIsDelayed")
     helpers = re.findall(r'function (?:' + names + r')\([^\n]*\) \{.*?\n\}', html, re.S)
     script = "const assert=require('node:assert/strict');\n" + "\n".join(helpers) + r'''
 const esc = value => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const renderSupplyOrder = () => '';
+const document = {getElementById: () => ({value:'24'})};
+const now = Date.now();
+Date.now = () => now;
+const stamp = hours => new Date(now-hours*3600000).toISOString();
+assert.match(stockQueryAge({ok:true,fetched_at:stamp(1)}),/近期已查/);
+assert.match(stockQueryAge({ok:true,fetched_at:stamp(24)}),/已过期/);
+assert.match(stockQueryAge({ok:true,fetched_at:stamp(-1)}),/查询时间异常/);
+assert.match(stockQueryAge({ok:true,fetched_at:stamp(1),status:'QueryFailed/Cached'}),/更新失败，保留旧结果/);
+assert.equal(stockQueryAge({ok:false,fetched_at:stamp(1)}),'未成功查询');
+assert.equal(stockQueryAge({ok:true,fetched_at:'invalid'}),'未成功查询');
 const deferred = {ok:true,c_code:'C123',stock:'650',channel:'合作库存/订货',delivery:'1-3个工作日'};
 const content = renderStockCell(deferred);
 assert.match(content,/商城库存 <strong>650<\/strong>/);

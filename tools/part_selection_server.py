@@ -34,6 +34,7 @@ from uuid import uuid4
 from functools import partial
 
 from part_selection_search import CandidateSearchJobs
+from part_selection_stock_refresh import StockRefreshJobs
 from part_selection_settings import SettingsGate, settings_snapshot, save_settings, choose_path, apply_runtime_settings, open_settings_directory, preview_field_mapping
 from part_selection_library import SelectionJobs
 from part_selection_footprints import FootprintChoices
@@ -1588,6 +1589,7 @@ class PartSelectionApp:
         self.bom_dir = self.config["bom_dir"]
         self.overrides_path = self.config["output_overrides"]
         self.stock_cache_path = self.config["stock_cache"]
+        self.stock_refresh = self.create_stock_refresh()
         self.local_inventory_path = self.config["local_inventory"]
         self.search_jobs = CandidateSearchJobs(self.lcsc_search, self.cached_search_seed)
         self.selection_jobs = SelectionJobs(self.run_selection_job)
@@ -1601,6 +1603,8 @@ class PartSelectionApp:
 
     def save_path_settings(self, payload):
         with self.settings_gate.editing(), self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
+            if self.stock_refresh.busy():
+                raise ValueError('请先暂停库存查询，等暂停完成后再修改路径')
             if self.search_jobs.busy() or self.selection_jobs.busy() or self.design_sync.busy():
                 raise ValueError("搜索或转换尚未完成，请结束任务后保存路径配置")
             result = save_settings(self.config, payload)
@@ -1615,6 +1619,7 @@ class PartSelectionApp:
             self.bom_dir = updated['bom_dir']
             self.overrides_path = updated['output_overrides']
             self.stock_cache_path = updated['stock_cache']
+            self.stock_refresh = self.create_stock_refresh()
             self.local_inventory_path = updated['local_inventory']
             self.inventory_previews.clear()
             self.footprint_choices = FootprintChoices(self.project_root, updated.get('converter_executable'))
@@ -1890,6 +1895,12 @@ class PartSelectionApp:
             row['spec_check'] = row_spec_check(row)
         self.enrich_local_inventory(rows)
         return sort_bom_rows(rows)
+
+    def create_stock_refresh(self):
+        key = hashlib.sha256((str(self.config['config_path'].resolve()) + '\n' +
+                              str(self.stock_cache_path.resolve())).encode('utf-8')).hexdigest()[:16]
+        return StockRefreshJobs(runtime_directory(self.project_root) / f'stock_refresh_{key}.json',
+                                self.stock_cache_path)
 
     def stock(self, c_code: str) -> dict[str, object]:
         return self.stock_queries.run(lambda: lookup_stock_with_cache(self.stock_cache_path, c_code))
@@ -4000,6 +4011,16 @@ def make_handler(app: PartSelectionApp):
                 except CancelledError:
                     json_response(self, {"ok": False, "cancelled": True, "error": "库存查询已取消"})
                 return
+            if parsed.path == '/api/stock_refresh':
+                try:
+                    query = parse_qs(parsed.query)
+                    since = int(query.get('since', ['0'])[0])
+                    if since < 0:
+                        raise ValueError('查询进度版本无效')
+                    json_response(self, app.stock_refresh.status(since, query.get('job', [''])[0]))
+                except ValueError as error:
+                    json_response(self, {'ok': False, 'error': str(error)}, status=HTTPStatus.BAD_REQUEST)
+                return
             if parsed.path == "/api/lcsc_search":
                 query = parse_qs(parsed.query)
                 keyword = query.get("keyword", [""])[0]
@@ -4044,6 +4065,19 @@ def make_handler(app: PartSelectionApp):
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
             try:
                 payload = json.loads(body)
+                if parsed.path == '/api/stock_refresh':
+                    action = payload.get('action')
+                    if action == 'pause':
+                        result = app.stock_refresh.pause()
+                    elif action == 'resume':
+                        result = app.stock_refresh.resume(payload.get('codes'))
+                    elif action == 'start':
+                        result = app.stock_refresh.start(payload.get('codes'), payload.get('mode', 'stale'),
+                                                        payload.get('max_age_hours', 24))
+                    else:
+                        raise ValueError('库存查询操作无效')
+                    json_response(self, result)
+                    return
                 if parsed.path == "/api/desktop_shutdown":
                     if not app.lifecycle:
                         raise ValueError('此后台不是由独立工作台启动的，不能从网页关闭')
@@ -4230,6 +4264,7 @@ def render_index(app: PartSelectionApp) -> str:
     path_settings_js = (Path(__file__).resolve().parent / "web" / "path-settings.js").read_text(encoding="utf-8")
     path_settings_css = (Path(__file__).resolve().parent / "web" / "path-settings.css").read_text(encoding="utf-8")
     desktop_lifecycle_js = (Path(__file__).resolve().parent / "web" / "desktop-lifecycle.js").read_text(encoding="utf-8")
+    stock_refresh_js = (Path(__file__).resolve().parent / 'web' / 'stock-refresh.js').read_text(encoding='utf-8')
     plugin_updates_js = (Path(__file__).resolve().parent / "web" / "plugin-updates.js").read_text(encoding="utf-8")
     candidate_desktop_js = (Path(__file__).resolve().parent / "web" / "candidate-desktop.js").read_text(encoding="utf-8")
     tool_desktop_js = (Path(__file__).resolve().parent / "web" / "tool-desktop.js").read_text(encoding="utf-8")
@@ -4414,6 +4449,7 @@ tr.hidden-row {{ display: none; }}
 .supply-primary input.edit {{ flex: 1 1 95px; min-width: 80px; width: 95px; margin: 0; }}
 .supply-counts {{ display:flex; flex-wrap:wrap; gap:4px 16px; align-items:baseline; line-height:1.8; }}
 .supply-delivery {{ color:#52606d; line-height:1.6; overflow-wrap:anywhere; }}
+.stock-age {{ color:#65717b; font-size:11px; line-height:1.5; overflow-wrap:anywhere; }}
 .stock-retry {{ font:inherit; padding:0; color:#a33; }}
 .footprint-edit-control {{ display:grid; grid-template-columns:minmax(0,1fr) 28px; align-items:start; gap:4px; }}
 .footprint-edit-control .footprint-library {{ grid-column:1 / -1; }}
@@ -4573,6 +4609,8 @@ tr.hidden-row {{ display: none; }}
 .filter-hint, .filter-title {{ display: none; }}
 @media (max-width: 1100px) {{ .toolbar-section {{ padding: 0 8px; }} .source-section select {{ width: 160px; }} }}
 @media (max-width: 680px) {{
+  .stock-section {{ flex-basis:100%; border-right:0; box-sizing:border-box; }}
+  .stock-section .section-actions {{ flex-wrap:wrap; row-gap:5px; }}
   .source-section {{ flex-basis: 100%; border-right: 0; }}
   .source-section select {{ width: 180px; }}
   .project-path-link {{ display: none; }}
@@ -4621,7 +4659,8 @@ tr.hidden-row {{ display: none; }}
     <div class="menu-popup">
       <button type="button" data-command="refreshSchematicRows">刷新原理图当前数据</button>
       <button type="button" data-command="importLocalInventory">导入本地库存…</button>
-      <button type="button" data-command="queryMissingStock">查询未查库存</button>
+      <button type="button" data-command="queryMissingStock">开始 / 继续库存查询</button>
+      <button type="button" data-command="pauseStockQuery">暂停库存查询</button>
       <button type="button" data-command="queryAllStock">刷新全部库存</button>
       <button type="button" data-command="designSyncMenu">同步设计…</button>
     </div>
@@ -4649,7 +4688,11 @@ tr.hidden-row {{ display: none; }}
 </section>
 <section class="toolbar-section stock-section" aria-label="库存查询">
   <span class="section-title">库存查询</span><div class="section-actions">
-  <button type="button" id="queryMissingStock" class="tool-button" disabled aria-label="查询未查库存" data-tooltip="仅查询没有库存缓存的主料及备选料，已有查询结果保留。">{toolbar_content('package-search', '查询未查')}</button>
+  <button type="button" id="queryMissingStock" class="tool-button" disabled aria-label="开始库存查询" data-tooltip="优先查询未查、失败和过期库存；暂停后可继续。">{toolbar_content('package-search', '开始查询')}</button>
+  <select id="stockFreshness" aria-label="库存有效期" title="此时间内成功查询的库存不重复查询">
+    <option value="24">超过24小时更新</option><option value="6">超过6小时更新</option><option value="1">超过1小时更新</option>
+  </select>
+  <button type="button" id="pauseStockQuery" class="tool-button" disabled aria-label="暂停库存查询" data-tooltip="暂停并保存进度，下次打开可继续。">{toolbar_content('pause', '暂停')}</button>
   <button type="button" id="queryAllStock" class="tool-button" disabled aria-label="刷新全部库存" data-tooltip="重新联网查询全部主料及备选料库存，更新旧缓存。">{toolbar_content('refresh-cw', '刷新全部')}</button>
   <button type="button" id="importLocalInventory" class="tool-button" aria-label="导入本地库存" data-tooltip="从 Excel 预览并导入现存物料；同型号已购合计为库存量。">{toolbar_content('folder-open', '本地库存')}</button>
   <label class="inventory-set-count">套数 <input type="number" id="localInventorySetCount" min="1" max="1000000" step="1" value="3" aria-label="装配套数"></label>
@@ -5051,9 +5094,10 @@ function startSyncProgressTicker(steps) {{
 function resetQueryAllButton() {{
   const unavailable = rowsLoading || loadedRowsBom === null || loadedRowsBom !== (bomSelect.value || "");
   queryMissingButton.disabled = unavailable;
-  setToolbarLabel(queryMissingButton, "查询未查");
+  setToolbarLabel(queryMissingButton, "开始查询");
   queryAllButton.disabled = unavailable;
   setToolbarLabel(queryAllButton, "刷新全部");
+  window.syncStockRefreshControls?.();
 }}
 
 function cancelStockQueries(message = "") {{
@@ -5936,13 +5980,26 @@ function renderStockCell(stock, row = null) {{
     /^https:\/\/so\.szlcsc\.com\/global\.html\?k=C\d+$/.test(stock.delivery_source_url || "")
       ? `<a href="${{esc(stock.delivery_source_url)}}" target="_blank" rel="noopener">发货时间来源</a>` : "",
     stock.stock_sz != null ? esc(`深圳 ${{stock.stock_sz}} / 江苏 ${{stock.stock_js || 0}} / 香港 ${{stock.stock_hk || 0}}`) : "",
-    stock.fetched_at ? esc(`查询时间: ${{String(stock.fetched_at).replace("T", " ")}}`) : ""].filter(Boolean);
+    stock.fetched_at ? esc(`查询时间: ${{String(stock.fetched_at).replace("T", " ")}}`) : "",
+    stock.last_checked_at ? esc(`最近尝试: ${{String(stock.last_checked_at).replace("T", " ")}}`) : "",
+    stock.error ? esc(`更新提示: ${{stock.error}}`) : ""].filter(Boolean);
   const market = Array.isArray(stock?.entries) ? '<span>商城库存 待核实</span>' : renderStock(stock);
   const delivery = stockDeliveryText(stock);
   return `<div class="supply-counts">${{market}}<span data-local-inventory>本地库存 读取中…</span></div>`
     + (stockDeliveryIsDelayed(stock) ? '<div class="supply-dispatch-warning low-stock">交期异常 · 非 4 小时内发货</div>' : "")
     + (delivery ? `<div class="supply-delivery">${{esc(delivery)}}</div>` : "")
+    + (stock.c_code ? `<div class="stock-age" data-stock-freshness>${{esc(stockQueryAge(stock))}}</div>` : "")
     + (detail.length ? `<details class="stock-details"><summary>供货详情</summary>${{detail.join("<br>")}}</details>` : "");
+}}
+
+function stockQueryAge(stock) {{
+  const date = new Date(stock?.fetched_at || "");
+  if (!stock?.ok || !Number.isFinite(date.getTime())) return "未成功查询";
+  const hours = Number(document.getElementById("stockFreshness")?.value || 24);
+  const age = Date.now() - date.getTime();
+  const status = stock.error || /Cached/i.test(stock.status || "") ? "更新失败，保留旧结果" :
+    age < 0 ? "查询时间异常" : age >= hours*3600000 ? "已过期" : "近期已查";
+  return `${{String(stock.fetched_at).replace("T", " ")}} · ${{status}}`;
 }}
 
 function renderSupplyOrder(row) {{
@@ -6059,7 +6116,7 @@ function refreshRowState(tr) {{
   tr.classList.remove("row-original", "row-changed", "row-rejected", "row-needs-sync", "row-warning", "row-ok", "row-muted");
   tr.classList.add(rowClassFromDataset(tr));
   tr.dataset.filterKey = filterKeysFromDataset(tr);
-  applyActiveFilter();
+  if (!window.stockRefreshApplying) applyActiveFilter();
 }}
 
 function bomRowMatchesSearch(row, query) {{
@@ -8124,144 +8181,6 @@ async function addCandidateAsAlternate(code) {{
   closeCandidates(true);
 }}
 
-async function loadStockProgressively(rows) {{
-  const run = beginStockQueryRun();
-  const codes = Array.from(new Set(rows.flatMap(row => [stockCode(row), ...alternateCodes(row.alternate_parts)]).filter(Boolean)));
-  if (!codes.length) {{
-    if (isActiveStockRun(run)) stockQueryController = null;
-    return;
-  }}
-  let done = 0;
-  const queue = [...codes];
-  const workerCount = Math.min(4, queue.length);
-  setState(`表格已显示，正在查询库存 0/${{codes.length}}`, "status");
-  setStockProgress(0, codes.length);
-  async function worker() {{
-    while (queue.length && isActiveStockRun(run)) {{
-      const code = queue.shift();
-      setState(`表格已显示，正在查询库存 ${{done}}/${{codes.length}}：${{code}}`, "status");
-      setStockProgress(done, codes.length, code);
-      updateRowsForStock(code, {{status: "查询中", c_code: code}});
-      try {{
-        const res = await fetch(`/api/stock?code=${{encodeURIComponent(code)}}`, {{signal: run.signal}});
-        const data = await res.json();
-        if (!isActiveStockRun(run)) return;
-        updateRowsForStock(code, data.stock || {{status: "查询失败", c_code: code}});
-      }} catch (err) {{
-        if (err.name === "AbortError") return;
-        if (!isActiveStockRun(run)) return;
-        updateRowsForStock(code, {{status: "查询失败", c_code: code, error: err.message || String(err)}});
-      }} finally {{
-        if (!isActiveStockRun(run)) return;
-        done += 1;
-        setState(`表格已显示，正在查询库存 ${{done}}/${{codes.length}}${{done === codes.length ? "：完成" : ""}}`, done === codes.length ? "saved" : "status");
-        setStockProgress(done, codes.length, "", null, done === codes.length);
-      }}
-    }}
-  }}
-  await Promise.all(Array.from({{length: workerCount}}, worker));
-  if (isActiveStockRun(run)) clearStockProgress();
-}}
-
-async function queryAllStockFromTable(mode = "missing") {{
-  const run = beginStockQueryRun();
-  const refreshAll = mode === "all";
-  const activeButton = refreshAll ? queryAllButton : queryMissingButton;
-  const label = refreshAll ? "刷新全部库存" : "查询未查库存";
-  setState(`${{label}}：正在整理待查询项`, "status");
-  setStockProgress(0, 0, "正在整理待查询项");
-  const trs = Array.from(document.querySelectorAll("tr[data-ref]"));
-  const codeMap = new Map();
-  let skipped = 0;
-  for (const tr of trs) {{
-    const row = rowDataForElement(tr) || {{}};
-    if (Array.isArray(row.stock?.entries)) {{
-      for (const entry of row.stock.entries) {{
-        const code = normalizeCCode(entry.c_code);
-        if (!code) continue;
-        if (!refreshAll && stockAlreadyQueried(entry.stock || {{}})) {{ skipped += 1; continue; }}
-        if (!codeMap.has(code)) codeMap.set(code, new Set());
-        codeMap.get(code).add(tr);
-      }}
-    }}
-    const inputCode = normalizeCCode(tr.querySelector("[data-field='replacement_c_code']")?.value || "");
-    const effectiveCode = normalizeCCode(tr.querySelector("[data-effective-code]")?.textContent || "");
-    const originalCodeValue = normalizeCCode(tr.dataset.originalCode);
-    const code = inputCode || effectiveCode || originalCodeValue;
-    if (!code) {{
-      setStockCells(tr, {{status: "请提供料号", c_code: "", error: "请提供料号"}});
-    }} else {{
-      if (refreshAll || tr.dataset.stockQueried !== "1") {{
-        if (!codeMap.has(code)) codeMap.set(code, new Set());
-        codeMap.get(code).add(tr);
-      }} else {{
-        skipped += 1;
-      }}
-    }}
-    for (const alternate of (row.alternate_parts || [])) {{
-      const alternateCode = normalizeCCode(alternate.c_code);
-      if (!alternateCode) continue;
-      if (!refreshAll && stockAlreadyQueried(alternate.stock || {{}})) {{
-        skipped += 1;
-        continue;
-      }}
-      if (!codeMap.has(alternateCode)) codeMap.set(alternateCode, new Set());
-      codeMap.get(alternateCode).add(tr);
-    }}
-  }}
-  const codes = Array.from(codeMap.keys());
-  if (!codes.length) {{
-    const message = refreshAll ? "没有可查询的 C 编码" : `没有未查询库存的 C 编码；已跳过 ${{skipped}} 行`;
-    setState(message, refreshAll ? "error" : "saved");
-    stockQueryController = null;
-    resetQueryAllButton();
-    setStockProgress(0, 0, "", null, false, false);
-    return;
-  }}
-  let done = 0;
-  const queue = [...codes];
-  const workerCount = Math.min(4, queue.length);
-  queryMissingButton.disabled = true;
-  queryAllButton.disabled = true;
-  setToolbarLabel(activeButton, "查询中");
-  const skippedText = skipped ? `，跳过已查 ${{skipped}} 行` : "";
-  setState(`${{label}} 0/${{codes.length}}${{skippedText}}`, "status");
-  setStockProgress(0, codes.length);
-  async function worker() {{
-    while (queue.length && isActiveStockRun(run)) {{
-      const code = queue.shift();
-      setState(`${{label}} ${{done}}/${{codes.length}}：${{code}}${{skippedText}}`, "status");
-      setToolbarLabel(activeButton, "查询中");
-      setStockProgress(done, codes.length, code, codeMap.get(code));
-      updateRowsForStock(code, {{status: "查询中", c_code: code}});
-      try {{
-        const res = await fetch(`/api/stock?code=${{encodeURIComponent(code)}}`, {{signal: run.signal}});
-        const data = await res.json();
-        if (!isActiveStockRun(run)) return;
-        updateRowsForStock(code, data.stock || {{status: "查询失败", c_code: code}});
-      }} catch (err) {{
-        if (err.name === "AbortError") return;
-        if (!isActiveStockRun(run)) return;
-        updateRowsForStock(code, {{status: "查询失败", c_code: code, error: err.message || String(err)}});
-      }} finally {{
-        if (!isActiveStockRun(run)) return;
-        done += 1;
-        setState(`${{label}} ${{done}}/${{codes.length}}${{done === codes.length ? "：完成" : ""}}${{skippedText}}`, done === codes.length ? "saved" : "status");
-        setToolbarLabel(activeButton, done === codes.length ? (refreshAll ? "刷新全部" : "查询未查") : "查询中");
-        setStockProgress(done, codes.length, "", null, done === codes.length);
-      }}
-    }}
-  }}
-  try {{
-    await Promise.all(Array.from({{length: workerCount}}, worker));
-  }} finally {{
-    if (isActiveStockRun(run)) {{
-      stockQueryController = null;
-      resetQueryAllButton();
-      if (done === codes.length) clearStockProgress();
-    }}
-  }}
-}}
 
 async function loadRows(anchor = null) {{
   const version = ++rowsLoadVersion;
@@ -8301,6 +8220,7 @@ async function loadRows(anchor = null) {{
       syncAllButton.disabled = bulkSyncRunning || loadedRowsBom !== (bomSelect.value || "");
       updateSyncSelection();
       resetQueryAllButton();
+      window.restoreStockRefresh?.();
     }}
   }}
 }}
@@ -8807,7 +8727,8 @@ document.getElementById("reloadRows")?.addEventListener("click", loadRows);
 async function startStockQuery(mode) {{
   try {{
     await flushRowEdits();
-    await queryAllStockFromTable(mode);
+    if (!window.startDurableStockRefresh) throw new Error('库存查询模块未加载，请重启工作台');
+    await window.startDurableStockRefresh(mode);
   }} catch (err) {{
     resetQueryAllButton();
     setStockProgress(0, 0, "", null, false, false);
@@ -8815,7 +8736,7 @@ async function startStockQuery(mode) {{
   }}
 }}
 
-document.getElementById("queryMissingStock").addEventListener("click", () => startStockQuery("missing"));
+document.getElementById("queryMissingStock").addEventListener("click", () => startStockQuery("stale"));
 document.getElementById("queryAllStock").addEventListener("click", () => startStockQuery("all"));
 syncAllButton.addEventListener("click", async () => {{
   try {{
@@ -9189,6 +9110,7 @@ window.addEventListener("workbench-tool-changed", event => {{
 <script>{pcb_js}</script>
 <script>{design_sync_js}</script>
 <script>{path_settings_js}</script>
+<script>{stock_refresh_js}</script>
 <script>{desktop_lifecycle_js}</script>
 <script>{plugin_updates_js}</script>
 <style>{tool_pages_css}</style>
