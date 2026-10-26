@@ -54,6 +54,46 @@ def test_preview_and_apply_do_not_touch_choice_or_confirmation(updates):
     session.apply.assert_called_once()
 
 
+def test_mixed_selection_only_transacts_changed_parts(updates, monkeypatch):
+    service, app, session, _ = updates
+    snapshot = deepcopy(session.snapshot.return_value)
+    unchanged = deepcopy(snapshot['parts']['R1'])
+    unchanged.update(ref='R2', uuid='r2', footprint='Local:Original', symbol_path='/sheet/second')
+    snapshot['parts']['R2'] = unchanged
+    bound = service._source(['R1'], None)
+    bound['records']['R2'] = {}
+    bound['targets']['R2'] = 'Local:Original'
+    bound['identity']['paths']['R2'] = ['/sheet/second']
+    monkeypatch.setattr(service, '_source', lambda *args:bound)
+    monkeypatch.setattr(service, '_fields', lambda *args:{})
+    monkeypatch.setattr(service.sources, 'validate', lambda *args:True)
+    session.snapshot.side_effect = lambda root, refs, **kw: {
+        **snapshot, 'parts':{ref:snapshot['parts'][ref] for ref in refs}}
+    preview = service.preview(['R1','R2'], '__schematic__')
+    state = service.previews[preview['preview_id']]
+    assert state['refs'] == ['R1'] and state['requested_refs'] == ['R1','R2']
+    assert list(state['snapshot']['parts']) == ['R1']
+    assert [item['ref'] for item in state['replacements']] == ['R1']
+    assert state['snapshot']['text'] == snapshot['text']
+    service.apply(preview['preview_id'], True)
+    assert list(session.apply.call_args.args[0]['parts']) == ['R1']
+
+
+def test_missing_blank_pcb_field_is_not_a_write(updates, monkeypatch):
+    import part_selection_pcb as module
+    service, _, session, _ = updates
+    session.snapshot.return_value['parts']['R1']['footprint'] = 'Local:New'
+    monkeypatch.setattr(service, '_fields', lambda *args:{'procurement_url':''})
+    monkeypatch.setattr(module, 'metadata_values', lambda *args:{})
+    monkeypatch.setattr(module, 'geometry_matches', lambda *args:True)
+    monkeypatch.setattr(module, 'geometry_signature', lambda *args:'same')
+    preview = service.preview(['R1'], '__schematic__')
+    assert preview['items'][0]['kind'] == 'none'
+    assert service.previews[preview['preview_id']]['replacements'] == []
+    assert service.apply(preview['preview_id'], True)['no_changes']
+    session.apply.assert_not_called()
+
+
 def test_locked_geometry_replacement_is_reported_without_library_load_or_write(updates):
     service, _, session, _ = updates
     session.snapshot.return_value['parts']['R1']['locked'] = True

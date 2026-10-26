@@ -84,6 +84,17 @@ def test_stale_geometry_rejects_rename():
     assert classify_footprint_change(record, {'footprint':'Local:Renamed','geometry_hash':'old'})['kind'] == 'none'
 
 
+def test_completed_rename_does_not_reapply_historical_geometry():
+    from part_selection_footprint_changes import classify_footprint_change
+    record = {'field_overrides':{'footprint':'Local:New'}, 'footprint_change':{
+        'schema':1,'operation':'rename','before':'Local:Old','after':'Local:New',
+        'source':{'board':{'hash':'old'},'instance_source_hash':'historical'}}}
+    assert classify_footprint_change(record, {'footprint':'Local:New',
+        'instance_source_hash':'later-edit'})['kind'] == 'none'
+    assert classify_footprint_change(record, {'footprint':'Local:Old',
+        'instance_source_hash':'later-edit'})['kind'] == 'unknown'
+
+
 def test_same_library_reselection_still_records_replace_operation(footprint_app):
     app = footprint_app
     preview = prepare(app)
@@ -151,7 +162,7 @@ def test_rename_stroke_aliases_preserve_legacy_identity(current, old_style, new_
                      ('(pad "1"', '(pad "2"')]:
         changed = board_source_hash_variants(after.replace(old, new), ['R1'])['R1']
         assert classify_footprint_change(record, {**live, 'instance_source_hash':changed[0],
-            'instance_source_hash_variants':changed})['kind'] == 'unknown', (old, new)
+            'instance_source_hash_variants':changed})['kind'] == ('unknown' if current == 'Local:Old' else 'none'), (old, new)
 
 
 def test_new_rename_evidence_canonicalizes_mixed_stroke_aliases_only():

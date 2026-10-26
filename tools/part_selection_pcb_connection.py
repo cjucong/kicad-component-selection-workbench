@@ -115,10 +115,11 @@ class PcbConnection:
         self.clock = clock or time
         self.lock = threading.RLock()
         self.opened = None
+        self.connected_at = None
 
-    def _discover(self):
+    def _discover(self, *, timeout_seconds=None):
         from part_selection_pcb_session import PcbSession
-        return PcbSession(self.root).discover()
+        return PcbSession(self.root).discover(timeout_seconds=timeout_seconds)
 
     def target(self):
         boards = list(self.root.glob('*.kicad_pcb'))
@@ -171,8 +172,28 @@ class PcbConnection:
         notify = progress or (lambda *args:None)
         with self.lock:
             result = self.inspect()
+            # A just-verified editor may briefly stop serving reads while its
+            # native UI finishes a save/close guard. Never reopen or resend writes.
+            if (result['state']=='busy' and self.connected_at is not None
+                    and self.clock.monotonic()-self.connected_at < 10):
+                deadline=self.clock.monotonic()+5
+                while self.clock.monotonic()<deadline:
+                    notify('reconnecting','PCB 刚完成连接，正在等待读取接口恢复；不会重复打开或写入')
+                    self.clock.sleep(min(.25, max(0, deadline-self.clock.monotonic())))
+                    remaining=deadline-self.clock.monotonic()
+                    if remaining<=0:
+                        break
+                    try:
+                        current=self.discover(timeout_seconds=remaining)
+                    except Exception:
+                        continue
+                    if current.get('identity_unverified') or current['state'] in (
+                            'connected','ambiguous','ipc_disabled','disconnected'):
+                        result=current
+                        break
             if result['state'] == 'connected':
                 self.opened = None
+                self.connected_at = self.clock.monotonic()
             if result['state'] != 'closed' or not open_if_closed:
                 return result
             # Manager commands are idempotent; only allow a retry after this
@@ -208,6 +229,7 @@ class PcbConnection:
                     result = {'state':'unknown', 'reason':str(exc)}
                 if result['state'] == 'connected':
                     self.opened = None
+                    self.connected_at = self.clock.monotonic()
                     notify('connected','已连接当前工程 PCB')
                     return result
                 if result['state'] == 'ambiguous':

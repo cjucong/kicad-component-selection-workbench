@@ -1,5 +1,6 @@
 """One hierarchical design read supplies both identity and mapped properties."""
 import os
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -91,6 +92,35 @@ def test_native_save_refresh_never_accepts_library_or_records_changes(scratch_pr
     snapshot = source.capture(['L9'])
     (scratch_project / 'fp-lib-table').write_text('(fp_lib_table)')
     assert not source.refresh_after_save(snapshot)
+
+
+@pytest.mark.parametrize('intervening', ['', 'value', 'record', 'identity', 'library'])
+def test_post_write_source_only_accepts_the_expected_write(scratch_project, intervening):
+    import json
+    from part_selection_design_source import DesignSource
+    app, child = app_for(scratch_project)
+    source = DesignSource(app)
+    before = source.capture(['L9'])
+    desired = {'L9':{'value':'22uH'}}
+    child.write_text(child.read_text().replace('10uH','22uH'))
+    records = deepcopy(before['records'])
+    records['L9'] = {**records['L9'], 'updated_at':'now','schematic_synced_at':'now',
+        'schematic_sync_summary':'value','schematic_field_snapshot':{'value':'22uH'}}
+    app.overrides_path.write_text(json.dumps(records))
+    if intervening == 'value':
+        child.write_text(child.read_text().replace('22uH','33uH'))
+    elif intervening == 'record':
+        records['L9']['footprint_change'] = {'schema':1,'operation':'replace'}
+        app.overrides_path.write_text(json.dumps(records))
+    elif intervening == 'identity':
+        child.write_text(child.read_text().replace('l9-symbol','other-symbol'))
+    elif intervening == 'library':
+        (scratch_project/'fp-lib-table').write_text('(fp_lib_table)')
+    if intervening:
+        with pytest.raises(ValueError, match='阶段'):
+            source.after_write(before,desired)
+    else:
+        assert source.after_write(before,desired)['fields']['L9']['value']=='22uH'
 
 
 def test_capture_all_enumerates_hierarchy_instances_not_property_references(scratch_project):

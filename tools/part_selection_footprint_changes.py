@@ -148,6 +148,10 @@ def classify_footprint_change(record: dict, live: dict) -> dict:
                 'reason': '' if target == current else '缺少可信的封装操作记录，请核对改动类型'}
     if evidence['operation'] == 'replace':
         return {'kind': 'replace', 'reason': '明确选择使用目标封装几何'}
+    if current == target:
+        # A completed rename requests no geometry write. Historical provenance
+        # protects the first rename, not all later edits to this PCB instance.
+        return {'kind': 'none', 'reason': '封装名称已生效，保留当前实例'}
     source = evidence.get('source', {})
     if source.get('board') and not source.get('instance_source_hash'):
         return {'kind':'unknown', 'reason':'旧改名记录缺少原实例身份，请重新预览并确认改名'}

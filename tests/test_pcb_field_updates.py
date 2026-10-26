@@ -224,7 +224,7 @@ app.overrides_path.write_text(json.dumps({'R1':{'field_overrides':{'footprint':'
 service=PcbUpdates(app,session=session)
 preview=service.preview(['R1'],'__schematic__')
 item=preview['items'][0]
-allowed=EDIT in ('style_only','mixed_style_only')
+allowed=CURRENT=='Renamed' or EDIT in ('style_only','mixed_style_only')
 assert preview['blocked'] is (not allowed),preview
 assert item['kind']==('unknown' if not allowed else 'rename' if CURRENT=='Old' else 'none'),preview
 if allowed:

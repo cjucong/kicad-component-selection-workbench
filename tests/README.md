@@ -199,7 +199,7 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 库存断点查询回归：`test_stock_refresh.py` 覆盖有效期、去重与旧项优先、暂停/重建/继续、崩溃恢复、料号移除、失败旧缓存、跨任务增量游标、独立取消域、4 线程上限、写进度失败及国内/国际并行；`test_stock_delivery.py` 验证行内时间、过期边界和失败标签。`python -B tests/run_stock_refresh_smoke.py` 使用真实 Chromium、HTTP 和合成上游，执行开始/暂停/磁盘重建后台队列/重载/继续，核验近期及已完成项不重查、1440/768/390 布局和生产 CAD 不写入。可设工程外绝对目录 `STOCK_SCREENSHOT_DIR` 留图，Node 需解析 Playwright。此测试不是商城联网速度或原生 KiCad 写入验证；真实 WebView2 退出另跑 `run_desktop_lifecycle_smoke.py --lifecycle-only`。
 
-`run_native_project_cycle_probe.py --report-dir <工程外绝对目录>` 使用桌面运行时，在自动清理的长路径合成工程和窄 KiCad 管理器中验证真实旧连接入口/WebView2、不弹文件选择框、此前脏 PCB 保存、整个当前工程关闭、字段与仅改名同步、标准库几何替换、PCB 自动保存和磁盘核验、重新打开及原理图定位。仅改名核验完整实例（包括铜皮、方向、网络及文字）；不接受生产工程。传输目录单独使用短路径，以免把 IPC 地址限制混入工程路径测试。
+`run_native_project_cycle_probe.py --report-dir <工程外绝对目录>` 保留旧分阶段接口的完整关闭重开回归，使用可清理的长路径合成工程，不接受生产工程。`run_native_design_keep_open.py --report-dir <工程外绝对目录>` 验证新的统一同步：23 件真实预检、仅实际变化器件提交、原理图一致时不重写、PCB 原生保存和全盘核验后保留同一会话与管理器，检查位置、角度、网络及目录/进程清理。两者均使用桌面运行时，报告在工程外；不将离线模拟称为实际生产同步。
 
 `test_design_cycle.py`、`test_design_source.py`、`test_kicad_manager_open.py`、`test_kicad_save_fallback.py` 另覆盖保存失败不关闭、关闭失败保留已保存证据、重开核验不符、格式化/器件改动区分、截断路径/无登记/登记不符，以及单次原生保存请求及干净状态回读。以下“不自动保存、单步撤销”历史原生探测记录针对底层事务适配器；当前用户同步流程另有自动保存和重开，不能将旧脚本原样成功视作新流程通过。
 
@@ -221,7 +221,9 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `test_pcb_connection.py` 另覆盖经工程管理器启动、启动等待不重复 CIM 扫描、正常关闭后再开与连接超时后的防重复启动。`test_design_sync.py` 验证原生连接等待期间异步预检可轮询及阶段计时；两个 Chromium 同步测试覆盖动态进度、耗时展开和迟到预检响应。真实探测使用正式管理器入口打开 PCB，保存后只关闭 PCB，再由正式连接逻辑复用同一管理器重开，核验编辑器归属及进度事件；不会以测试脚本直接启动 pcbnew.exe 代替此项验收。
 
-管理器专项回归还覆盖身份不明和同工程多管理器拒绝自动打开；超时后仅在重新完整核实目标已关闭时允许重试。只读预检支持取消排队和合作式停止，不允许用预检取消接口中断写入事务；浏览器关闭/切换对齐方式/迟到启动响应都需取消旧任务。逐器件进度使用独立阶段键，避免把整批耗时误标为最后一个器件。
+管理器专项回归还覆盖身份不明和同工程多管理器拒绝自动打开；超时后仅在重新完整核实目标已关闭时允许重试。只读预检支持取消排队和合作式停止，不允许用预检取消接口中断写入事务；浏览器关闭/切换对齐方式/迟到启动响应都需取消旧任务。统一同步每 25 件更新同一计数阶段，不为无变化器件堆叠进度。最近已核验连接的短暂繁忙仅限时只读重连，预算传至各地址；超时或忙碌会话不能被漏算为唯一连接。
+
+`run_native_design_keep_open.py --with-footprints --report-dir <工程外绝对目录>` 还实际通过行封装接口选库改名、标准库替换并同步原理图和 PCB，核对焊盘、网络、姿态及事务外对象，重复同步应无变化。跨原理图安全重载时 KiCad 可能有 1 nm 舍入，事务外对象采用重载后的事务基线严格比较，不放宽实际写入或保存核验。
 
 `test_pcb_schematic_identity.py` 覆盖复制工程遗留根 UUID、PCB 省略根 UUID、实际 Sheetfile 层级（含子目录）、无关页面/错误页面链/其他工程实例拒绝、缺页和循环诊断。真实 PCB 探测夹具采用三级页面、历史根实例记录和省略根 UUID 的 PCB 路径，避免只测手工拼出的平面根路径。
 

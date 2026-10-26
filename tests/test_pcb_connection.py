@@ -24,6 +24,68 @@ def test_open_editor_is_reused_without_process_scan_or_launch(scratch_project):
     inspect.assert_not_called()
 
 
+def test_recently_verified_editor_recovers_transient_ipc_without_reopening(scratch_project):
+    service, launch, _ = connection(scratch_project, [
+        {'state':'connected'}, {'state':'busy'}, {'state':'unknown'}, {'state':'connected'}])
+    assert service.ensure(open_if_closed=True)['state']=='connected'
+    progress=Mock()
+    assert service.ensure(open_if_closed=True,progress=progress)['state']=='connected'
+    launch.assert_not_called()
+    assert any(call.args[0]=='reconnecting' for call in progress.call_args_list)
+
+
+def test_transient_recovery_never_ignores_ambiguous_identity(scratch_project):
+    service, launch, _ = connection(scratch_project, [
+        {'state':'connected'}, {'state':'busy'}, {'state':'ambiguous'}])
+    service.ensure(open_if_closed=True)
+    assert service.ensure(open_if_closed=True)['state']=='ambiguous'
+    launch.assert_not_called()
+
+
+def test_transient_recovery_is_bounded_and_never_reopens(scratch_project):
+    service, launch, _ = connection(scratch_project, [{'state':'connected'}])
+    service.ensure(open_if_closed=True)
+    service.discover.side_effect=None
+    service.discover.return_value={'state':'busy'}
+    assert service.ensure(open_if_closed=True)['state']=='busy'
+    assert service.clock.monotonic()<=5.5
+    launch.assert_not_called()
+
+
+def test_recovery_propagates_remaining_budget_to_slow_discovery(scratch_project):
+    service, launch, _ = connection(scratch_project, [{'state':'connected'}])
+    service.ensure(open_if_closed=True)
+    budgets=[]
+    def slow_discover(*, timeout_seconds=None):
+        if timeout_seconds is not None:
+            budgets.append(timeout_seconds)
+            service.clock.sleep(min(1.8, timeout_seconds))
+        return {'state':'busy'}
+    service.discover=slow_discover
+    assert service.ensure(open_if_closed=True)['state']=='busy'
+    assert service.clock.monotonic()<=5
+    assert budgets and budgets[-1]<budgets[0]
+    launch.assert_not_called()
+
+
+def test_stale_connection_does_not_trigger_transient_recovery(scratch_project):
+    service, launch, _ = connection(scratch_project, [{'state':'connected'}, {'state':'busy'}])
+    service.ensure(open_if_closed=True)
+    service.clock.sleep(10)
+    assert service.ensure(open_if_closed=True)['state']=='busy'
+    assert service.discover.call_count==2
+    launch.assert_not_called()
+
+
+def test_recovery_stops_at_unverified_identity(scratch_project):
+    service, launch, _ = connection(scratch_project, [
+        {'state':'connected'}, {'state':'busy'}, {'state':'unknown','identity_unverified':True}])
+    service.ensure(open_if_closed=True)
+    assert service.ensure(open_if_closed=True)['identity_unverified']
+    assert service.discover.call_count==3
+    launch.assert_not_called()
+
+
 def test_unresolved_pcb_lock_prevents_automatic_open(scratch_project):
     service, launch, _ = connection(scratch_project, [{'state':'unknown'}])
     (scratch_project/'~Test.kicad_pcb.lck').write_text('{"username":"other","hostname":"remote"}')

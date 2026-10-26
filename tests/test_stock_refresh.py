@@ -211,6 +211,36 @@ def test_failed_refresh_keeps_success_time_and_persists_attempt(scratch_project)
     assert load_stock_cache(path)['C100'] == result
 
 
+@pytest.mark.parametrize('recover', [True, False])
+def test_stock_cache_transient_windows_share_denial_is_bounded(scratch_project, monkeypatch, recover):
+    from pathlib import Path
+    from part_stock_lookup import load_stock_cache
+    path = scratch_project / 'stock.json'
+    save_stock_cache(path, {'C100':ok('C100')})
+    original = path.read_bytes()
+    replace = Path.replace
+    attempts = []
+    def temporarily_busy(source, target):
+        if target == path:
+            attempts.append(source)
+            if not recover or len(attempts) <= 2:
+                error = PermissionError('Windows sharing denial')
+                error.winerror = 5
+                raise error
+        return replace(source, target)
+    monkeypatch.setattr(Path, 'replace', temporarily_busy)
+    if recover:
+        save_stock_cache(path, {'C200':ok('C200')})
+        assert list(load_stock_cache(path)) == ['C200']
+        assert len(attempts) == 3
+    else:
+        with pytest.raises(PermissionError):
+            save_stock_cache(path, {'C200':ok('C200')})
+        assert path.read_bytes() == original
+        assert len(attempts) <= 8
+    assert not list(scratch_project.glob('*.tmp'))
+
+
 def test_progress_cursor_from_previous_run_cannot_hide_new_results(scratch_project):
     from part_stock_lookup import lookup_stock_with_cache
     path = scratch_project / 'stock.json'

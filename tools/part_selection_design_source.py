@@ -134,3 +134,35 @@ class DesignSource:
         snapshot.clear()
         snapshot.update(fresh)
         return True
+
+    def after_write(self, snapshot: dict, desired: dict) -> dict:
+        """Bind automatic continuation to exactly the approved schematic write."""
+        fresh = self.capture(snapshot['refs'])
+        error = '同步阶段交接期间设计或选料记录已改变，未继续写入 PCB，请重新预检'
+        for key in ('refs', 'mapping', 'parameters', 'terminals'):
+            if fresh.get(key) != snapshot.get(key):
+                raise ValueError(error)
+        if fresh['identity']['paths'] != snapshot['identity']['paths']:
+            raise ValueError(error)
+        sync_metadata = {'updated_at', 'schematic_synced_at', 'schematic_sync_summary',
+                         'schematic_field_snapshot', 'workbench_undo'}
+        for ref in snapshot['refs']:
+            expected = {**snapshot['fields'][ref], **desired.get(ref, {})}
+            actual = fresh['fields'][ref]
+            if any(expected.get(key, '') != actual.get(key, '') for key in set(expected) | set(actual)):
+                raise ValueError(error)
+            for key, name in snapshot['properties'][ref].items():
+                if key in snapshot['fields'][ref] and fresh['properties'][ref].get(key) != name:
+                    raise ValueError(error)
+            old = {key:value for key,value in snapshot['records'][ref].items() if key not in sync_metadata}
+            new = {key:value for key,value in fresh['records'][ref].items() if key not in sync_metadata}
+            if old != new:
+                raise ValueError(error)
+        before, after = snapshot['versions'], fresh['versions']
+        if before['configuration'] != after['configuration'] or before['files'] != after['files']:
+            raise ValueError(error)
+        records = before['configuration']['records']
+        for path, digest in before['hashes'].items():
+            if path != records and Path(path).suffix.lower() != '.kicad_sch' and after['hashes'].get(path) != digest:
+                raise ValueError(error)
+        return fresh

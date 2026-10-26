@@ -182,7 +182,9 @@ class PcbUpdates:
             'footprint_change', {}).get('source', {}).get('instance_source_hash')]
         copper = board_copper_hashes(snapshot['text'], copper_refs) if copper_refs else {}
         instance_refs = [ref for ref in refs if source['records'][ref].get('footprint_change', {}).get(
-            'source', {}).get('instance_source_hash')]
+            'source', {}).get('instance_source_hash') and not (
+                source['records'][ref].get('footprint_change', {}).get('operation') == 'rename'
+                and snapshot['parts'][ref]['footprint'] == source['targets'][ref])]
         instance_hashes = board_source_hash_variants(snapshot['text'], instance_refs) if instance_refs else {}
         legacy_sources = {ref:source['records'][ref]['footprint_change']['source'] for ref in instance_refs
                           if source['records'][ref]['footprint_change']['source']['instance_source_hash']
@@ -200,7 +202,8 @@ class PcbUpdates:
         replacements, targets, items = [], [], []
         libraries = {}
         for index, ref in enumerate(refs):
-            notify('parts:'+ref, f'正在核对 PCB 器件 {index+1}/{len(refs)}：{ref}')
+            if index % 25 == 0 or index == len(refs)-1:
+                notify('parts', f'正在核对 PCB 器件 {index+1}/{len(refs)}：{ref}')
             original = snapshot['parts'][ref]
             if original.get('symbol_path') not in source['identity']['paths'][ref]:
                 raise ValueError(ref + ' 原理图实例与 PCB 关联不一致，请先核对 UUID / 重新关联，不能只凭同位号替换')
@@ -210,7 +213,7 @@ class PcbUpdates:
             field_changes = [{'name':folded.get(name.casefold(), name),
                               'before':current_fields.get(folded.get(name.casefold(), name), ''), 'after':value}
                              for name, value in desired.items()
-                             if current_fields.get(folded.get(name.casefold(), name)) != value]
+                             if current_fields.get(folded.get(name.casefold(), name), '') != value]
             fields = {item['name']:item['after'] for item in field_changes}
             record = deepcopy(source['records'][ref])
             record.setdefault('field_overrides', {})['footprint'] = source['targets'][ref]
@@ -254,7 +257,8 @@ class PcbUpdates:
             if kind in ('rename','none'):
                 prototype = metadata_replacement(original, footprint=source['targets'][ref] if kind == 'rename' else None,
                                                  fields=fields) if kind == 'rename' or fields else original['proto']
-                replacements.append({'ref':ref, 'proto':prototype, 'fields':fields, 'kind':common['kind']})
+                if common['kind'] != 'none':
+                    replacements.append({'ref':ref, 'proto':prototype, 'fields':fields, 'kind':common['kind']})
                 evidence_target = record.get('footprint_change', {}).get('target', {}) if kind == 'rename' else {}
                 if evidence_target.get('path'):
                     target_hash = hashlib.sha256(Path(evidence_target['path']).read_bytes()).hexdigest()
@@ -270,6 +274,10 @@ class PcbUpdates:
             if target['footprint'] != source['targets'][ref]:
                 raise ValueError('库读取返回了不同的完整封装标识，请重新预检')
             evidence = record.get('footprint_change', {})
+            expected_target = evidence.get('target', {})
+            common['selection_verified'] = bool(expected_target.get('path') and
+                expected_target.get('hash') == target['source_hash'] and
+                Path(expected_target['path']).resolve() == Path(target['source_path']).resolve())
             adaptation = evidence.get('adaptation')
             if adaptation:
                 expected = evidence.get('target', {})
@@ -325,7 +333,8 @@ class PcbUpdates:
                 continue
             if fields:
                 prototype = metadata_replacement({'proto':prototype}, fields=fields)
-            replacements.append({'ref': ref, 'proto': prototype, 'fields':fields, 'kind':common['kind']})
+            if common['kind'] != 'none':
+                replacements.append({'ref': ref, 'proto': prototype, 'fields':fields, 'kind':common['kind']})
             targets.append({'ref': ref, 'path': target['source_path'], 'hash': target['source_hash']})
             items.append({**common,
                 'old_position_mm': original['position_mm'], 'old_rotation_deg': original['rotation_deg'],
@@ -342,7 +351,9 @@ class PcbUpdates:
             for key in list(self.previews):
                 if now - self.previews[key]['time'] > 600 or len(self.previews) >= 16:
                     del self.previews[key]
-            self.previews[token] = {'refs': refs, 'snapshot': snapshot, 'source': source,
+            write_refs = [item['ref'] for item in replacements] or refs
+            scoped_snapshot = {**snapshot, 'parts':{ref:snapshot['parts'][ref] for ref in write_refs}}
+            self.previews[token] = {'refs': write_refs, 'requested_refs':refs, 'snapshot': scoped_snapshot, 'source': source,
                 'targets': targets, 'replacements': replacements, 'time': now, 'started': False,
                 'alignment': alignment, 'items':items}
         blocked_reasons = [item['blocked_reason'] for item in items if item.get('blocked_reason')]

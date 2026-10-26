@@ -43,7 +43,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert(!result.seen.includes('C100'),'Fresh inventory was re-queried');
   for(const code of succeeded) assert.equal(result.seen.filter(c=>c===code).length,1);
   const state=await (await page.request.get(process.env.STOCK_TEST_URL+'api/stock_refresh')).json();
-  assert.equal(state.succeeded,7);
+  assert.equal(state.succeeded,7,JSON.stringify(state));
   assert.equal(state.pending,0);
   assert.equal(state.failed,0);
   // A newer row refresh must not be replaced by the last batch's retained snapshot.

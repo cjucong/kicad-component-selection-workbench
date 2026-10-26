@@ -507,25 +507,40 @@ class PcbSession:
             connection = PcbConnection(self.root, discover=self.discover)
         self.connection = connection
 
-    def discover(self):
+    def discover(self, *, timeout_seconds=None):
         from kipy import KiCad
         from kipy.proto.common.types import DocumentType
         matches, errors = {}, []
         busy = False
+        deadline = None if timeout_seconds is None else time.monotonic()+max(0, timeout_seconds)
+        def exhausted():
+            return {'state':'busy','errors':errors,'inventory_incomplete':True,
+                    'reason':'PCB 接口探测等待时间已用尽；尚未核实全部会话，请稍后重试'}
         for socket in pcb_socket_candidates(self.socket):
+            remaining = None if deadline is None else deadline-time.monotonic()
+            if remaining is not None and remaining < .003:
+                return exhausted()
+            # Dial, send and receive can each consume a transport timeout.
+            timeout_ms = 600 if remaining is None else min(600, max(1, int(remaining*1000/3)))
             try:
                 # A token inherited from the schematic belongs to that server,
                 # not necessarily to the PCB server. Learn each server's token.
                 client = KiCad(socket_path=socket, client_name='component-workbench-pcb',
-                               kicad_token='', timeout_ms=600)
+                               kicad_token='', timeout_ms=timeout_ms)
                 documents = [doc for doc in client.get_open_documents(DocumentType.DOCTYPE_PCB)
                              if doc.project.path and Path(doc.project.path).resolve() == self.root]
             except Exception as exc:
                 errors.append({'socket':socket,'type':type(exc).__name__,'reason':str(exc)[:400]})
+                # A missing endpoint is not another session; a server that
+                # accepted a request but timed out cannot be ruled out safely.
+                busy = busy or isinstance(exc, TimeoutError) or (
+                    'timed out' in str(exc).lower() and not str(exc).startswith('Failed to connect to KiCad:'))
                 if getattr(exc, 'code', None) is not None:
                     from kipy.proto.common.envelope_pb2 import AS_BUSY
                     busy = busy or exc.code == AS_BUSY
                 continue
+            if deadline is not None and time.monotonic() >= deadline:
+                return exhausted()
             if not documents:
                 continue
             try:
@@ -538,6 +553,8 @@ class PcbSession:
                         'errors':errors, 'identity_unverified':True}
             identity = (token, str((self.root / doc.board_filename).resolve()))
             matches.setdefault(identity, (socket, client, doc))
+        if deadline is not None and time.monotonic() >= deadline:
+            return exhausted()
         if not matches:
             if busy:
                 return {'state':'busy','errors':errors,
@@ -547,6 +564,9 @@ class PcbSession:
         if len(matches) != 1:
             return {'state':'ambiguous','errors':errors,
                     'reason':'检测到多个属于当前工程的 PCB 编辑器，无法唯一确定目标；请只保留一个后重试'}
+        if busy:
+            return {'state':'busy','errors':errors,'inventory_incomplete':True,
+                    'reason':'部分 KiCad 会话忙碌或回复超时，尚不能唯一核实 PCB；请稍后重试'}
         socket, client, doc = next(iter(matches.values()))
         return {'state':'connected','socket':socket,'client':client,'document':doc,
                 'project':str(self.root),'file':str((self.root / doc.board_filename).resolve()),

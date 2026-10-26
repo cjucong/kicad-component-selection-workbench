@@ -123,7 +123,9 @@ with tempfile.TemporaryDirectory() as folder:
         result=service.preview(['U1'],'',source=source,alignment='center')
         assert result['items'][0]['kind']==('fields' if MODE=='fields' else 'none'),result
         session.read_library.assert_called_once()
-        prototype=service.previews[result['preview_id']]['replacements'][0]['proto']
+        replacements=service.previews[result['preview_id']]['replacements']
+        assert bool(replacements) is (MODE=='fields'), replacements
+        prototype=replacements[0]['proto'] if replacements else original['proto']
         actual=decode(prototype)
         wired={p.number:p for p in live.definition.pads}
         for pad in actual.definition.pads:

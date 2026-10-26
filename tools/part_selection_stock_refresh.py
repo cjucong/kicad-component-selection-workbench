@@ -11,7 +11,7 @@ import threading
 import time
 from uuid import uuid4
 
-from part_stock_lookup import StockQueryGroup, load_stock_cache, lookup_stock_with_cache
+from part_stock_lookup import StockQueryGroup, load_stock_cache, lookup_stock_with_cache, replace_stock_file
 
 
 def successful(stock):
@@ -65,7 +65,7 @@ class StockRefreshJobs:
                 json.dump(self.state, stream, ensure_ascii=False, indent=2)
                 stream.flush()
                 os.fsync(stream.fileno())
-            temporary.replace(self.path)
+            replace_stock_file(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)
 

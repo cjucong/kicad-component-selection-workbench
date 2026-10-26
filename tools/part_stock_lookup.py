@@ -1693,11 +1693,26 @@ def load_stock_cache(path: Path) -> dict[str, dict[str, Any]]:
     return result
 
 
+def replace_stock_file(source: Path, target: Path) -> None:
+    # Windows readers can briefly deny replacement even after the JSON is complete.
+    for attempt in range(8):
+        try:
+            source.replace(target)
+            return
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 7:
+                raise
+            time.sleep(.025 * (attempt + 1))
+
+
 def save_stock_cache(path: Path, cache: dict[str, dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
-    tmp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
+    try:
+        tmp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        replace_stock_file(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def lookup_stock_with_cache(
