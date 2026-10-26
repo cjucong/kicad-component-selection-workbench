@@ -155,7 +155,8 @@ def test_http_shutdown_auth_busy_and_real_port_release(app):
         server.server_close()
 
 
-def test_http_exit_drains_stock_while_network_is_still_blocked(app):
+@pytest.mark.parametrize('endpoint', ['/api/stock?code=C100', '/api/rows?stock=1'])
+def test_http_exit_drains_stock_while_network_is_still_blocked(app, endpoint):
     from concurrent.futures import ThreadPoolExecutor
     from part_selection_lifecycle import ServiceLifecycle
     server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(app))
@@ -181,8 +182,12 @@ def test_http_exit_drains_stock_while_network_is_still_blocked(app):
     base = f'http://127.0.0.1:{server.server_port}'
 
     def stock_request():
-        with urlopen(base+'/api/stock?code=C100', timeout=3) as response:
+        with urlopen(base+endpoint, timeout=3) as response:
             return json.load(response)
+
+    def batch_rows(*args):
+        from part_stock_lookup import enrich_rows_with_stock
+        return enrich_rows_with_stock([{'effective_c_code': 'C100'}], app.stock_cache_path)
 
     def shutdown(token):
         with urlopen(Request(base+'/api/desktop_shutdown', data=b'{}',
@@ -191,6 +196,7 @@ def test_http_exit_drains_stock_while_network_is_still_blocked(app):
 
     try:
         with patch('part_stock_lookup.urllib.request.urlopen', side_effect=blocked_network), \
+                patch.object(app, 'rows', side_effect=batch_rows), \
                 ThreadPoolExecutor(max_workers=1) as executor:
             stock = executor.submit(stock_request)
             assert started.wait(2)

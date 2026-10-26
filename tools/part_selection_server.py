@@ -3969,10 +3969,16 @@ def make_handler(app: PartSelectionApp):
                 refs = query.get("refs", [""])[0]
                 selected_bom = query.get("bom", [""])[0]
                 include_stock = query.get("stock", ["1"])[0] != "0"
+                try:
+                    rows = (app.stock_queries.run(lambda: app.rows(refs, selected_bom, True))
+                            if include_stock else app.rows(refs, selected_bom, False))
+                except CancelledError:
+                    json_response(self, {"ok": False, "cancelled": True, "error": "库存查询已取消"})
+                    return
                 json_response(
                     self,
                     {
-                        "rows": app.rows(refs, selected_bom, include_stock),
+                        "rows": rows,
                         "overrides_path": str(app.overrides_path),
                         "stock_cache_path": str(app.stock_cache_path),
                     },

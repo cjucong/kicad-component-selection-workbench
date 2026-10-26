@@ -47,6 +47,19 @@ def check_stock_cancelled():
         raise CancelledError('Stock query cancelled')
 
 
+def _wait_stock_result(pending):
+    while True:
+        check_stock_cancelled()
+        try:
+            value = pending.result(timeout=0.1)
+        except FutureTimeout:
+            if not pending.done():
+                continue
+            value = pending.result()
+        check_stock_cancelled()
+        return value
+
+
 class StockQueryGroup:
     """Cancel network-only requests without interrupting edits or cache commits."""
     def __init__(self):
@@ -94,13 +107,7 @@ def _run_stock_read(fetcher, code):
     except BaseException:
         _STOCK_READ_SLOTS.release()
         raise
-    while True:
-        check_stock_cancelled()
-        try:
-            return pending.result(timeout=0.1)
-        except FutureTimeout:
-            if pending.done():
-                raise
+    return _wait_stock_result(pending)
 
 
 class _FetchCache:
@@ -137,21 +144,16 @@ class _FetchCache:
                 self._condition.wait(0.1)
 
         if not owner:
-            while True:
+            try:
+                return deepcopy(_wait_stock_result(pending))
+            except CancelledError:
                 check_stock_cancelled()
-                try:
-                    return deepcopy(pending.result(timeout=0.1))
-                except FutureTimeout:
-                    if pending.done():
-                        raise
-                except CancelledError:
-                    check_stock_cancelled()
-                    # A stock owner can exit while a separate search shares its source.
-                    with self._condition:
-                        while self._inflight.get(key) is pending:
-                            self._condition.wait(0.1)
-                            check_stock_cancelled()
-                    return self.get(key, loader, force)
+                # A stock owner can exit while a separate search shares its source.
+                with self._condition:
+                    while self._inflight.get(key) is pending:
+                        self._condition.wait(0.1)
+                        check_stock_cancelled()
+                return self.get(key, loader, force)
         try:
             check_stock_cancelled()
             value = deepcopy(loader())
@@ -1713,19 +1715,31 @@ def enrich_rows_with_stock(
     max_workers: int = 8,
 ) -> list[dict[str, Any]]:
     codes = unique_codes_from_rows(rows)
-    cache = load_stock_cache(cache_path)
     fetched: dict[str, dict[str, Any]] = {}
+    cancelled = getattr(_STOCK_QUERY_SCOPE, 'cancelled', None)
+
+    def lookup(code):
+        previous = getattr(_STOCK_QUERY_SCOPE, 'cancelled', None)
+        _STOCK_QUERY_SCOPE.cancelled = cancelled
+        try:
+            check_stock_cancelled()
+            return lookup_stock_with_cache(cache_path, code, fetcher)
+        finally:
+            _STOCK_QUERY_SCOPE.cancelled = previous
 
     with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(codes) or 1))) as executor:
-        future_to_code = {executor.submit(lookup_stock_with_cache, cache_path, code, fetcher): code for code in codes}
+        future_to_code = {executor.submit(lookup, code): code for code in codes}
         for future in as_completed(future_to_code):
             code = future_to_code[future]
             try:
                 result = future.result()
+            except CancelledError:
+                raise
             except Exception as exc:
                 result = stock_status(code, "QueryFailed", str(exc))
             fetched[code] = result
 
+    check_stock_cancelled()
     for row in rows:
         code = normalize_c_code(
             row.get("stock_c_code") or row.get("effective_c_code") or row.get("accepted_c_code") or row.get("lcsc_match_c_code")

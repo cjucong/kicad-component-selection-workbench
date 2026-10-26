@@ -39,6 +39,104 @@ import part_stock_lookup as stock_lookup  # noqa: E402
 
 
 class FetchCacheTest(unittest.TestCase):
+    def test_stock_read_completion_at_wait_timeout_returns_real_result(self):
+        from concurrent.futures import Future, TimeoutError
+
+        class FinishesAtTimeout(Future):
+            def result(self, timeout=None):
+                value = super().result(timeout=timeout)
+                if timeout is not None:
+                    raise TimeoutError('wait expired just before completion')
+                return value
+
+        with patch.object(stock_lookup, 'Future', FinishesAtTimeout):
+            result = stock_lookup.StockQueryGroup().run(
+                lambda: stock_lookup._run_stock_read(lambda code: {'c_code': code}, 'C100'))
+        self.assertEqual(result, {'c_code': 'C100'})
+
+    def test_shared_completion_at_wait_timeout_returns_real_result(self):
+        from concurrent.futures import Future, TimeoutError
+
+        class FinishesAtTimeout(Future):
+            def result(self, timeout=None):
+                value = super().result(timeout=timeout)
+                if timeout is not None:
+                    raise TimeoutError('wait expired just before completion')
+                return value
+
+        cache = stock_lookup._FetchCache()
+        pending = FinishesAtTimeout()
+        pending.set_result(['completed'])
+        cache._inflight[('same', 8)] = pending
+        self.assertEqual(cache.get(('same', 8), lambda: self.fail('unexpected fetch')), ['completed'])
+
+    def test_completed_source_timeout_is_not_retried_as_a_wait_timeout(self):
+        from concurrent.futures import Future, TimeoutError
+        cache = stock_lookup._FetchCache()
+        pending = Future()
+        pending.set_exception(TimeoutError('source timed out'))
+        cache._inflight[('same', 8)] = pending
+        with self.assertRaisesRegex(TimeoutError, 'source timed out'):
+            cache.get(('same', 8), lambda: self.fail('unexpected fetch'))
+
+    def test_shared_owner_cancel_at_timeout_boundary_retries_independent_search(self):
+        from concurrent.futures import CancelledError, Future, TimeoutError
+        cache = stock_lookup._FetchCache()
+        key = ('same', 8)
+        pending = Future()
+        pending.set_exception(CancelledError())
+        cache._inflight[key] = pending
+
+        def result(timeout=None):
+            if timeout is not None:
+                del cache._inflight[key]
+                raise TimeoutError('wait expired just before cancellation')
+            raise CancelledError()
+
+        with patch.object(pending, 'result', side_effect=result):
+            self.assertEqual(cache.get(key, lambda: ['independent search']), ['independent search'])
+
+    def test_batch_cancellation_drains_queued_and_active_reads_without_cache_writes(self):
+        from concurrent.futures import CancelledError
+        from _scratch import temporary_project
+        group = stock_lookup.StockQueryGroup()
+        started, release = threading.Event(), threading.Event()
+        finished = threading.Event()
+        calls, completed = [], []
+        lock = threading.Lock()
+
+        def fetch(code):
+            with lock:
+                calls.append(code)
+                if len(calls) == 4:
+                    started.set()
+            try:
+                self.assertTrue(release.wait(3))
+                return {'ok': True, 'c_code': code, 'stock': '123'}
+            finally:
+                with lock:
+                    completed.append(code)
+                    if len(completed) == 4:
+                        finished.set()
+
+        with temporary_project(prefix='cancel-stock-batch-') as root:
+            path = Path(root) / 'stock.json'
+            rows = [{'effective_c_code': 'C'+str(code)} for code in range(100, 108)]
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                request = executor.submit(group.run,
+                    lambda: stock_lookup.enrich_rows_with_stock(rows, path, fetcher=fetch))
+                try:
+                    self.assertTrue(started.wait(2))
+                    group.cancel()
+                    with self.assertRaises(CancelledError):
+                        request.result(timeout=1)
+                    self.assertFalse(path.exists())
+                    self.assertEqual(len(calls), 4)
+                finally:
+                    release.set()
+                    self.assertTrue(finished.wait(2))
+            self.assertFalse(path.exists())
+
     def test_partner_fetch_reuses_results_without_sharing_nested_quotes(self):
         cache = type(stock_lookup._PARTNER_PRODUCT_CACHE)()
         payload = json.dumps({"code": 200, "result": [{
