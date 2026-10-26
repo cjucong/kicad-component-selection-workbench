@@ -69,7 +69,7 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertTrue(all(p.read_bytes() == data for p, data in before.items()))
         self.assertFalse((self.root / 'sym-lib-table').exists())
 
-    def test_merge_save_as_and_symbol_reference_and_idempotent_reuse(self):
+    def test_merge_save_as_publishes_only_footprint_and_reuses_idempotently(self):
         preview = self.prepare()
         before = self.old.read_bytes()
         self.assertIn('conflict', self.service.commit(self.choice(preview)))
@@ -83,12 +83,23 @@ class FootprintChoicesTest(unittest.TestCase):
         imported = self.pretty / 'Chosen0603.kicad_mod'
         self.assertTrue(imported.exists())
         self.assertIn('(footprint "Chosen0603"', imported.read_text())
-        sym_lib, _ = result['symbol'].split(':', 1)
-        symbols = list(self.root.glob('Libraries/DSMU/LCSC/symbols/*.kicad_sym'))
-        self.assertEqual(len(symbols), 1)
-        self.assertIn('DSMU:Chosen0603', symbols[0].read_text())
-        self.assertIn(sym_lib, (self.root / 'sym-lib-table').read_text())
+        self.assertNotIn('symbol', result)
+        self.assertFalse((self.root / 'Libraries/DSMU/LCSC').exists())
+        self.assertFalse((self.root / 'sym-lib-table').exists())
+        transaction = json.loads((Path(result['backup']) / 'transaction.json').read_text())
+        self.assertEqual([Path(path).as_posix() for path in transaction['files']],
+                         ['Libraries/DSMU/DSMU.pretty/Chosen0603.kicad_mod'])
         self.assertEqual(self.service.commit(selected)['footprint'], result['footprint'])
+
+    def test_conversion_preserves_existing_symbol_library_and_registration(self):
+        table = self.root / 'sym-lib-table'
+        table.write_text('(sym_lib_table (lib (name "User") (type "KiCad") (uri "User.kicad_sym")))')
+        symbol = self.root / 'User.kicad_sym'
+        symbol.write_text('(kicad_symbol_lib (symbol "UserPart"))')
+        before = {path: path.read_bytes() for path in (table, symbol)}
+        self.service.commit(self.choice(self.prepare(), name='Chosen0603'))
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+        self.assertFalse((self.root / 'Libraries/DSMU/LCSC').exists())
 
     def test_new_library_and_independent_library(self):
         for mode in ('new', 'independent'):
@@ -98,6 +109,8 @@ class FootprintChoicesTest(unittest.TestCase):
                     target_library='MyParts', target_folder='Libraries/DSMU'))
                 self.assertTrue((self.root / result['target_path']).is_dir())
                 self.assertIn(result['footprint'].split(':')[0], (self.root / 'fp-lib-table').read_text())
+                self.assertFalse(list(self.root.rglob('*.kicad_sym')))
+                self.assertFalse((self.root / 'sym-lib-table').exists())
 
     def test_invalid_paths_names_and_overwrite_are_rejected(self):
         preview = self.prepare()
@@ -391,16 +404,16 @@ class FootprintChoicesTest(unittest.TestCase):
         preview = self.prepare()
         table = self.root / 'fp-lib-table'
         before = table.read_bytes()
-        original_open = Path.open
-        def fail_table(path, *args, **kwargs):
-            if path == self.root / 'sym-lib-table' and args and args[0] == 'xb':
+        from os import replace
+        def fail_table(source, destination):
+            if destination == table:
                 raise OSError('locked table')
-            return original_open(path, *args, **kwargs)
-        with patch.object(Path, 'open', fail_table):
+            return replace(source, destination)
+        with patch('part_selection_footprints.os.replace', side_effect=fail_table):
             with self.assertRaises(OSError):
-                self.service.commit(self.choice(preview, name='Chosen0603'))
+                self.service.commit(self.choice(preview, name='Chosen0603', target_mode='new', target_library='Chosen'))
         self.assertEqual(table.read_bytes(), before)
-        self.assertFalse((self.pretty / 'Chosen0603.kicad_mod').exists())
+        self.assertFalse((self.root / 'Libraries/DSMU/Chosen.pretty/Chosen0603.kicad_mod').exists())
         self.assertEqual(list(self.root.glob('Libraries/DSMU/LCSC/symbols/*.kicad_sym')), [])
 
     def test_rename_preview_is_local_only_and_restricted_to_original_geometry(self):
@@ -490,17 +503,20 @@ class FootprintChoicesTest(unittest.TestCase):
         self.assertEqual(result['footprint'], 'DSMU:R0603')
         self.assertTrue(result['overwritten'])
 
-    def test_overwrite_rolls_back_destination_if_symbol_registration_fails(self):
+    def test_overwrite_rolls_back_destination_if_table_publication_fails(self):
         preview = self.prepare()
         choice = self.choice(preview)
         token = self.service.commit(choice)['conflict']['token']
         files = {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
-        original_open = Path.open
-        def fail_table(path, *args, **kwargs):
-            if path == self.root / 'sym-lib-table' and args and args[0] == 'xb':
+        from os import replace
+        from part_selection_library import table_text
+        def fail_table(source, destination):
+            if destination == self.root / 'fp-lib-table':
                 raise OSError('locked table')
-            return original_open(path, *args, **kwargs)
-        with patch.object(Path, 'open', fail_table), self.assertRaisesRegex(OSError, 'locked'):
+            return replace(source, destination)
+        with patch('part_selection_footprints.os.replace', side_effect=fail_table), \
+             patch('part_selection_footprints.table_text', side_effect=lambda *args: table_text(*args) + '\n'), \
+             self.assertRaisesRegex(OSError, 'locked'):
             self.service.commit({**choice, 'collision':'overwrite', 'collision_token':token})
         self.assertEqual(files, {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
         self.assertNotIn('result', self.service.previews[preview['preview_id']])

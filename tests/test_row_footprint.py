@@ -173,6 +173,37 @@ def stage_conversion(service, code, progress=None):
     return {'footprint':f'LCSC_{code}:R0603','symbol':f'LCSC_{code}:Part'}
 
 
+@pytest.mark.parametrize('operation', ['row', 'candidate', 'rollback'])
+def test_converted_footprint_does_not_publish_unused_symbols(footprint_app, operation):
+    app = footprint_app
+    before = project_files(app.project_root)
+    with patch('part_selection_footprints.LibraryImporter.convert',
+               side_effect=lambda code, progress=None: stage_conversion(app.footprint_choices, code, progress)):
+        if operation == 'candidate':
+            preview = app.select_candidate({'refs':'R1', 'footprint_mode':'convert', 'phase':'preview',
+                'candidate':{'c_code':'C100', 'model':'Resistor', 'package':'0603'}})['preview']
+            apply = app.select_candidate
+        else:
+            preview = prepare(app, 'convert')
+            apply = app.row_footprint
+        payload = {'footprint_choice':choice(preview, 'converted', existing_id='Local:Original', name='Imported')}
+        if operation == 'rollback':
+            with patch.object(app, 'save_field_override', side_effect=OSError('disk unavailable')):
+                with pytest.raises(OSError, match='disk unavailable'):
+                    apply(payload)
+            assert project_files(app.project_root) == before
+        else:
+            result = apply(payload)
+            assert result['ok']
+            assert (app.project_root/'Local.pretty/Imported.kicad_mod').is_file()
+            assert 'symbol' not in result['library']
+            assert load_overrides(app.overrides_path)['R1']['field_overrides']['footprint'] == 'Local:Imported'
+        assert not list(app.project_root.rglob('*.kicad_sym'))
+        assert not (app.project_root/'sym-lib-table').exists()
+        assert not (app.project_root/'Libraries').exists()
+        assert (app.project_root/'test.kicad_sch').read_bytes() == before['test.kicad_sch']
+
+
 def test_network_conversion_does_not_block_local_preview_and_reuses_cache(footprint_app):
     app = footprint_app
     initial = prepare(app)

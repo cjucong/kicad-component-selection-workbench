@@ -955,23 +955,7 @@ class FootprintChoices:
             atom = parse_sexpr(source, 'footprint').children[1]
             source = source[:atom.start] + json.dumps(name) + source[atom.end:]
             writes = {target: source.encode('utf-8')} if target_before is None or overwrite else {}
-            symbol_path, symbol_lib = None, None
             tables = [('fp-lib-table', nickname, pretty, 'fp_lib_table')]
-            if not renaming:
-                symbol_source = state['symbol'].read_text(encoding='utf-8-sig')
-                tree = parse_sexpr(symbol_source, 'kicad_symbol_lib')
-                props = [p for s in tree.children_named('symbol') for p in s.children_named('property') if p.arg() == 'Footprint']
-                if len(props) != 1:
-                    raise ValueError('转换符号缺少唯一封装引用')
-                atom = props[0].children[2]
-                symbol_source = symbol_source[:atom.start] + json.dumps(footprint) + symbol_source[atom.end:]
-                symbol_lib = 'LCSC_' + state['code'] + '_' + hashlib.sha256(footprint.encode()).hexdigest()[:8]
-                symbol_path = checked_path(self.root, self.root / 'Libraries/DSMU/LCSC/symbols' / (symbol_lib + '.kicad_sym'))
-                if symbol_path.exists() and symbol_path.read_bytes() != symbol_source.encode('utf-8'):
-                    raise ValueError('转换符号已有人修改，拒绝覆盖')
-                if not symbol_path.exists():
-                    writes[symbol_path] = symbol_source.encode('utf-8')
-                tables.append(('sym-lib-table', symbol_lib, symbol_path, 'sym_lib_table'))
             for table, lib, path, kind in tables:
                 table_path = checked_path(self.root, self.root / table)
                 text = table_text(table_path, lib, '${KIPRJMOD}/' + path.relative_to(self.root).as_posix(), kind)
@@ -988,7 +972,7 @@ class FootprintChoices:
                 if data is not None:
                     (backup / str(index)).write_bytes(data)
             (backup / 'transaction.json').write_text(json.dumps({'c_code': state['code'], 'footprint': footprint,
-                'symbol': symbol_lib, 'files': [str(p.relative_to(self.root)) for p in writes]}, indent=2), encoding='utf-8')
+                'files': [str(p.relative_to(self.root)) for p in writes]}, indent=2), encoding='utf-8')
             touched = []
             self._verify(state)
             if (target.read_bytes() if target.exists() else None) != target_before:
@@ -1028,7 +1012,6 @@ class FootprintChoices:
                 result.update(renamed=True, geometry_source=entry['id'],
                               copper_matched=True, visual_differences=visual_differences)
             else:
-                result['symbol'] = symbol_lib + ':' + state['converted']['symbol'].split(':', 1)[1]
                 result['alignment'] = aligned['alignment']
                 if aligned.get('mapping') is not None:
                     result['adaptation'] = self._adaptation(aligned)
@@ -1037,7 +1020,6 @@ class FootprintChoices:
                     'source':reference.get('source','library'),
                     'refs':[reference['placement']['ref']] if reference.get('placement') else [],
                     'placement':{k:v for k,v in reference.get('placement',{}).items() if k!='path'}}
-                published.extend([symbol_path, self.root / 'sym-lib-table'])
             state.update(result=result, choice=deepcopy(choice), published={p: digest(p) for p in published}, rollback=original)
             return deepcopy(result)
 
