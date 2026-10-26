@@ -412,8 +412,7 @@ print(json.dumps({'origin':xy(f.GetPosition()),'orientation':f.GetOrientationDeg
         (-0.4,-0.2),(0.6,-0.2),(0.3,0.7)]
 
 
-@pytest.mark.parametrize('extra', ['(model "unknown.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))',
-                                  '(future_geometry (at 1 2))'])
+@pytest.mark.parametrize('extra', ['(future_geometry (at 1 2))'])
 @pytest.mark.parametrize('transform', [None, {'rotation_deg': 0, 'offset_mm': [2, 0]}])
 def test_nonidentity_unsupported_objects_are_rejected_not_dropped(geometry, workspace, extra, transform):
     converted, reference, output = [workspace / n for n in ['in.kicad_mod','ref.kicad_mod','out.kicad_mod']]
@@ -421,6 +420,60 @@ def test_nonidentity_unsupported_objects_are_rejected_not_dropped(geometry, work
     reference.write_text(footprint([(n,x+2,y) for n,x,y in POINTS]), encoding='utf-8')
     result = geometry.align_module(converted, reference, output, transform=transform)
     assert not result['ok'] and 'unsupported' in result['reason'].lower() and not output.exists()
+
+
+@pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')
+@pytest.mark.parametrize('transform', [
+    {'rotation_deg':0,'offset_mm':[0.9756,-0.5716]},
+    {'rotation_deg':90,'offset_mm':[7,-5]},
+    {'rotation_deg':37,'offset_mm':[0.2,-0.8]}])
+def test_native_alignment_moves_model_with_copper_without_loading_model_files(geometry,workspace,transform):
+    converted,reference,output=[workspace/name for name in ('in.kicad_mod','ref.kicad_mod','out.kicad_mod')]
+    converted.write_text(footprint(extra='''
+      (model "${KIPRJMOD}/missing-model.step" (hide yes) (opacity 0.5)
+        (offset (xyz 1 2 3)) (scale (xyz 1.5 0.8 2)) (rotate (xyz 10 20 30)))
+      (model "missing-second.wrl" (offset (xyz -2 0 1))
+        (scale (xyz 1 1 1)) (rotate (xyz -13 12 -20)))'''),encoding='utf-8')
+    reference.write_text(footprint(),encoding='utf-8')
+    before=converted.read_bytes(),reference.read_bytes()
+    result=geometry.align_module(converted,reference,output,transform=transform)
+    assert result['ok'],result
+    models=native('''import pcbnew,json,sys
+f=pcbnew.PCB_IO_KICAD_SEXPR().Parse(open(sys.argv[1],encoding='utf-8').read()).Cast()
+def vector(v):return [v.x,v.y,v.z]
+print(json.dumps([{'path':m.m_Filename,'offset':vector(m.m_Offset),'rotation':vector(m.m_Rotation),
+  'scale':vector(m.m_Scale),'show':m.m_Show,'opacity':m.m_Opacity} for m in f.Models()]))''',output)
+    assert len(models)==2
+    angle=math.radians(transform['rotation_deg']);c,s=math.cos(angle),math.sin(angle)
+    dx,dy=transform['offset_mm']
+    for model,offset,rotation,scale,show,opacity,path in zip(models,
+            [(1,2,3),(-2,0,1)],[(10,20,30),(-13,12,-20)],[(1.5,.8,2),(1,1,1)],
+            [False,True],[.5,1.0],['${KIPRJMOD}/missing-model.step','missing-second.wrl']):
+        assert model['path']==path
+        assert model['offset']==pytest.approx([c*offset[0]-s*offset[1]+dx,s*offset[0]+c*offset[1]-dy,offset[2]],abs=1e-8)
+        assert model['rotation']==pytest.approx([rotation[0],rotation[1],rotation[2]-transform['rotation_deg']],abs=1e-8)
+        assert model['scale']==pytest.approx(scale)
+        assert model['show']==show and model['opacity']==pytest.approx(opacity)
+    pads=geometry._pad_positions(geometry._parse_module(output.read_text(encoding='utf-8')))
+    for number,x,y in POINTS:
+        assert pads[number]==pytest.approx([c*x+s*y+dx,-s*x+c*y+dy],abs=2e-6)
+    assert (converted.read_bytes(),reference.read_bytes())==before
+
+
+@pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')
+def test_native_automatic_alignment_preserves_models_and_identity_copy(geometry,workspace):
+    converted,reference,output=[workspace/name for name in ('model.kicad_mod','ref.kicad_mod','out.kicad_mod')]
+    converted.write_text(footprint(extra='''(model "missing.step" (offset (xyz 1 2 3))
+        (scale (xyz 1 1 1)) (rotate (xyz 10 20 30)))'''),encoding='utf-8')
+    identity=geometry.align_module(converted,converted,output)
+    assert identity['ok'] and output.read_bytes()==converted.read_bytes()
+    reference.write_text(footprint([(n,x+2,y-4) for n,x,y in POINTS]),encoding='utf-8')
+    result=geometry.align_module(converted,reference,output)
+    assert result['ok'],result
+    model=geometry._parse_module(output.read_text(encoding='utf-8')).child('model')
+    assert model.arg()=='missing.step'
+    assert [float(n.value) for n in model.child('offset').child('xyz').children[1:]]==pytest.approx([3,6,3])
+    assert [float(n.value) for n in model.child('rotate').child('xyz').children[1:]]==pytest.approx([10,20,30])
 
 
 @pytest.mark.skipif(KICAD is None, reason='Real bundled KiCad Python is unavailable')

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -33,7 +34,29 @@ def _items(footprint):
 
 def _inventory(footprint):
     return (len(list(footprint.Pads())), len(list(footprint.GraphicalItems())),
-            len(list(footprint.GetFields())),len(list(footprint.Zones())))
+            len(list(footprint.GetFields())),len(list(footprint.Zones())),footprint.Models().size())
+
+
+def _model_state(footprint):
+    return [(model.m_Filename,model.m_Show,model.m_Opacity,
+             *[value for vector in (model.m_Offset,model.m_Rotation,model.m_Scale)
+               for value in (vector.x,vector.y,vector.z)]) for model in footprint.Models()]
+
+
+def _transform_models(pcbnew,footprint,angle,dx,dy):
+    # KiCad 3D uses Y-up and negated Z/Y/X model Euler angles (create_scene.cpp).
+    c,s=math.cos(math.radians(angle)),math.sin(math.radians(angle))
+    models=footprint.Models()
+    for index in range(models.size()):
+        model=models[index]
+        values=[value for vector in (model.m_Offset,model.m_Rotation,model.m_Scale)
+                for value in (vector.x,vector.y,vector.z)]
+        if not all(math.isfinite(value) for value in [model.m_Opacity,*values]):
+            raise ValueError('Nonfinite 3D model placement')
+        x,y,z=model.m_Offset.x,model.m_Offset.y,model.m_Offset.z
+        model.m_Offset=pcbnew.VECTOR3D(c*x-s*y+dx,s*x+c*y-dy,z)
+        model.m_Rotation=pcbnew.VECTOR3D(model.m_Rotation.x,model.m_Rotation.y,model.m_Rotation.z-angle)
+        models[index]=model
 
 
 def _align(pcbnew, payload):
@@ -42,7 +65,7 @@ def _align(pcbnew, payload):
     _outside_project(output)
     if output.resolve() == Path(payload['converted']).resolve():
         raise ValueError('Output must not overwrite the input footprint')
-    footprint = _load(pcbnew,payload['converted'])
+    footprint = _load(pcbnew,payload['converted'],allow_models=True)
     items = _items(footprint)
     for item in items:
         if item.GetClass() not in {'PAD','PCB_SHAPE','PCB_TEXT','PCB_TEXTBOX','PCB_FIELD','ZONE'}:
@@ -55,6 +78,8 @@ def _align(pcbnew, payload):
     for item in items:
         item.Rotate(origin,pcbnew.EDA_ANGLE(angle,pcbnew.DEGREES_T))
         item.Move(move)
+    _transform_models(pcbnew,footprint,angle,dx,dy)
+    models=_model_state(footprint)
     # Transform children, not the footprint root: saving must keep library
     # origin (0,0) and orientation zero without undoing the child transforms.
     if footprint.GetPosition() != origin or abs(footprint.GetOrientationDegrees()) > 1e-9:
@@ -67,9 +92,15 @@ def _align(pcbnew, payload):
     with tempfile.TemporaryDirectory(prefix='g',suffix='.pretty',dir=output.parent) as directory:
         pcbnew.PCB_IO_KICAD_SEXPR().FootprintSave(directory,footprint)
         staged = Path(directory)/(name+'.kicad_mod')
-        saved = _load(pcbnew,staged)
+        saved = _load(pcbnew,staged,allow_models=True)
         if _inventory(saved) != inventory:
             raise ValueError('Native save dropped or changed footprint objects')
+        actual_models=_model_state(saved)
+        if len(actual_models)!=len(models) or any(
+                actual[:2]!=expected[:2] or any(not math.isclose(a,b,rel_tol=0,abs_tol=1e-6)
+                                               for a,b in zip(actual[2:],expected[2:]))
+                for actual,expected in zip(actual_models,models)):
+            raise ValueError('Native save changed 3D model placement or properties')
         if saved.GetPosition() != origin or abs(saved.GetOrientationDegrees()) > 1e-9:
             raise ValueError('Native save changed the library origin/orientation')
         os.replace(staged,output)

@@ -2,6 +2,8 @@
 
 ## 手动焊盘对应
 
+3D 引用回归：`test_footprint_geometry.py` 覆盖带缺失 STEP/WRL 路径的恒等复制、自动平移、手动平移/旋转、多个模型、XYZ 偏移/欧拉角、非均匀缩放、显隐和透明度，实际原生保存回读且不加载模型文件。`run_native_tool_windows_probe.py` 的六位号 8→10 保存测试同时从库/合成立创入口应用非零手动偏移，使用默认名称，检查工程库文件中仍保留模型引用；报告仅记录测试工程的保存选择，失败写出对应回溯。未知顶层对象仍保留拒绝回归。
+
 `test_footprint_pad_mapping.py` 覆盖一对一对应、对齐子集、8→10 / 10→8、不同编号、额外编号冲突、显式放弃、原理图端子验证、源库保护、现有/新建工程库发布及回滚。`test_pad_mapping_native_types.py` 用真实 KiCad protobuf 核验焊盘 UUID、网络、symbol-pin、正反面变换、新焊盘无网及重复同步保留后来分配的网络。`test_pcb_update.py` 和 `run_design_sync_smoke.py` 核验严格模式阈值、映射/几何明细及放弃已接网端子的独立二次确认。
 
 `test_footprint_overlay_ui.py` 的 `pad-mapping` 使用 Chromium 验证两个来源的映射、额外焊盘、放弃确认、原始→最终编号、对齐子集及筛选不重置草稿。未启用手动对应时，原有编号不兼容测试仍拒绝发布；明确对应和放弃后允许应用，不再把编号不同一律当作只能预览。

@@ -167,6 +167,67 @@ def check_native_mapping(app, tools, report):
     assert all(path.read_bytes()==data for path,data in originals.items()), 'Original library entries changed'
 
 
+def check_native_grouped_default_save(app, tools, report):
+    from part_selection_overrides import load_overrides
+    from part_stock_lookup import save_stock_cache
+    refs='Q6,Q7,Q9,Q56,Q57,Q62'
+    app.save_override({'refs':refs,'stock_c_code':'C202'})
+    save_stock_cache(app.stock_cache_path,{'C202':{'ok':True,'c_code':'C202','package':'SMD','model':'Switch'}})
+    originals={path:path.read_bytes() for path in (app.project_root/'Local.pretty').glob('*.kicad_mod')}
+    def convert(importer,code,progress=None):
+        folder=importer.root/'Libraries/DSMU/LCSC'/code
+        pretty=folder/f'LCSC_{code}.pretty';pretty.mkdir(parents=True)
+        (pretty/'Q10.kicad_mod').write_bytes((app.project_root/'Local.pretty/Q10.kicad_mod').read_bytes())
+        (folder/f'LCSC_{code}.kicad_sym').write_text('(kicad_symbol_lib (symbol "Switch" '
+            f'(property "Footprint" "LCSC_{code}:Q10")))',encoding='utf-8')
+        return {'footprint':f'LCSC_{code}:Q10','symbol':f'LCSC_{code}:Switch','c_code':code}
+    requests=[]
+    original_request=app.row_footprint
+    def trace(payload,*args,**kwargs):
+        if payload.get('footprint_choice'):
+            requests.append(payload['footprint_choice'])
+            (report/'default-save-choices.json').write_text(json.dumps(requests,ensure_ascii=False,indent=2),encoding='utf-8')
+        try:
+            return original_request(payload,*args,**kwargs)
+        except Exception:
+            (report/'default-save-error.log').write_text(traceback.format_exc(),encoding='utf-8')
+            raise
+    with patch.object(app,'row_footprint',side_effect=trace),patch('part_selection_footprints.LibraryImporter.convert',autospec=True,side_effect=convert):
+        for mode,expected in [('library','Q10_mapped'),('convert','SMD')]:
+            response=tools.main_action('open',{'kind':'footprint','request_id':uuid4().hex,
+                'payload':{'refs':refs,'bom':'__schematic__'}})
+            assert response['ok'],response
+            entry=next(e for e in tools.entries.values() if e['kind']=='footprint' and not e['closed'])
+            child=entry['window'];page=f'[data-fp-page={mode}] '
+            wait(child,f'!!document.querySelector("[data-fp-tab={mode}]")')
+            child.evaluate_js(f'document.querySelector("[data-fp-tab={mode}]").click(); true')
+            if mode=='library':
+                wait(child,"[...document.querySelectorAll('[data-fp-items] option')].some(o=>o.value==='Local:Q10')")
+                child.evaluate_js('const s=document.querySelector("[data-fp-items]");s.value="Local:Q10";'
+                    's.dispatchEvent(new Event("change",{bubbles:true}));true')
+            wait(child,f'!!document.querySelector("{page}.fp-scene:not([hidden])")')
+            child.evaluate_js(f'document.querySelector("{page}.fp-pad-mapping").open=true;'
+                f'document.querySelector("{page}[data-fp-mapping-enabled]").click();true')
+            for axis,value in [('dx','0.9756'),('dy','-0.5716')]:
+                child.evaluate_js(f'const i=document.querySelector("{page}[data-fp-{axis}]");i.value="{value}";'
+                    'i.dispatchEvent(new Event("input",{bubbles:true}));true')
+            child.evaluate_js(f'document.querySelector("{page}[data-fp-ack]").click();true')
+            wait(child,f'document.querySelector("{page}.fp-apply").disabled===false')
+            assert child.evaluate_js(f'document.querySelector("{page}[data-fp-name]").value')==expected
+            child.evaluate_js(f'document.querySelector("{page}.fp-apply").click();true')
+            for _ in range(250):
+                if entry['closed']:break
+                if child.evaluate_js('document.body.innerText.includes("封装保存失败")'):
+                    raise AssertionError(str(child.evaluate_js('document.body.innerText'))[-4000:])
+                time.sleep(.1)
+            assert entry['closed'],mode+' grouped default save failed'
+            records=load_overrides(app.overrides_path)
+            assert all(records[ref]['field_overrides']['footprint']=='Local:'+expected for ref in refs.split(','))
+            assert (app.project_root/'Local.pretty'/f'{expected}.kicad_mod').is_file()
+            assert 'missing-model.step' in (app.project_root/'Local.pretty'/f'{expected}.kicad_mod').read_text(encoding='utf-8')
+    assert all(path.read_bytes()==data for path,data in originals.items())
+
+
 def run(report):
     import webview
     result = {'passed':False,'checks':{},'timings_ms':{}}
@@ -180,7 +241,9 @@ def run(report):
             pads = ' '.join(f'(pad "{n}" smd rect (at {(n-1)%4-1.5} {((n-1)//4)*2}) '
                            '(size 0.5 1) (layers "F.Cu" "F.Paste" "F.Mask"))' for n in range(1,count+1))
             (pretty/(name+'.kicad_mod')).write_text(f'(footprint "{name}" (version 20241229) '
-                f'(generator test) (layer "F.Cu") {pads})',encoding='utf-8')
+                f'(generator test) (layer "F.Cu") {pads}'+
+                (' (model "${KIPRJMOD}/missing-model.step" (offset (xyz 1 2 3)) '
+                 '(scale (xyz 1 1 1)) (rotate (xyz 10 20 30)))' if name=='Q10' else '')+')',encoding='utf-8')
         (root/'fp-lib-table').write_text('(fp_lib_table (version 7) (lib (name "Local") '
             '(type "KiCad") (uri "${KIPRJMOD}/Local.pretty")))', encoding='utf-8')
         (root/'example.kicad_sch').write_text('(kicad_sch (symbol (property "Reference" "R1") '
@@ -349,6 +412,8 @@ def run(report):
                 result['checks']['native_update_network_does_not_block_tools']=True
                 check_native_grouped_preview(app,tools,report)
                 result['checks']['grouped_8_to_10_saved_pcb_preview']=True
+                check_native_grouped_default_save(app,tools,report)
+                result['checks']['grouped_default_save_both_sources']=True
                 check_native_mapping(app,tools,report)
                 result['checks']['native_mapping_both_sources_and_project_copy']=True
                 tools.check_exit(); tools.cancel_exit()

@@ -351,7 +351,7 @@ def align_module(converted: Path, reference: Path, output: Path, *, method='rigi
             output.parent.mkdir(parents=True,exist_ok=True)
             output.write_bytes(raw)
         else:
-            _validate_supported(source)
+            _validate_supported(source, allow_models=True)
             mapped = output.parent / ('mapped-' + uuid4().hex + '.kicad_mod')
             mapped.write_bytes(raw)
             _run_worker({'operation': 'align', 'converted': str(mapped.resolve()),

@@ -2,6 +2,8 @@
 
 ## 统一手动焊盘适配
 
+`footprint_geometry_worker.py` 的非恒等变换支持 3D 模型引用，不加载或下载 STEP/WRL。模型路径、缩放、显隐、透明度和 Z 高度保留；按 KiCad 的 Y-up 3D 坐标调整 XY 偏移，Z 欧拉角减去封装转角，X/Y 欧拉角不变。依据 [KiCad 10 create_scene.cpp](https://gitlab.com/kicad/code/kicad/-/blob/10.0/3d-viewer/3d_rendering/raytracing/create_scene.cpp) 的模型矩阵顺序。SWIG 的模型迭代返回副本，变换后须写回 `Models()[index]`。原生保存回读检查模型数量和属性；未知顶层几何仍拒绝，不可通过放开白名单静默丢对象。
+
 库封装预览的 `default_id` 是候选库条目，`default_reference_id` 是后端选定的比较基准；存在已保存 PCB 时后者为 `PCB:<位号>`，两者不可混用。`chooseLibraryFootprint` 必须保留服务端基准，仅旧响应缺少该字段时回退到 `default_id`。比较和应用发送同一基准，不放宽后端基准归属校验。`library-pcb-reference` 及真实窗口的已保存 PCB、六位号 8→10 预览覆盖此回归。
 
 `part_selection_pad_mapping.py` 负责完整一对一对应、对齐子集、明确放弃、最终编号冲突和原理图额外端子检查。`web/footprint-adjust.js` 为库封装和立创封装共用编辑器；排除对齐不等于放弃电气对应。启用适配才可增减编号，旧接口未提供完整映射时保持严格。含 net-tie / jumper 焊盘组的封装若需要改号，明确拒绝并要求先处理组定义，不静默破坏组关系。
