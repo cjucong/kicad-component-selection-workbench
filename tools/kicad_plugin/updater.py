@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import zipfile
 
-VERSION = '0.1.37'
+VERSION = '0.1.39'
 REPOSITORY = 'cjucong/kicad-component-selection-workbench'
 IDENTIFIER = 'com.smu.part-selection'
 MAX_DOWNLOAD = 40 * 1024 * 1024
