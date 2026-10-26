@@ -106,6 +106,16 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   });
   await page.getByText('封装仅改名',{exact:true}).waitFor();
   assert.equal(await page.locator('.workbench-chrome').isVisible(),false);
+  let starts=0;
+  await page.route('**/api/start_design_sync',async route=>{starts++;await route.fulfill({json:{ok:true,job_id:'save-uncertain'}})});
+  await page.route('**/api/design_sync_job?*',async route=>route.fulfill({json:{ok:false,job_id:'save-uncertain',done:true,
+   stage:'uncertain',message:'PCB 保存结果未确认，不会重复更新',elapsed_seconds:65,stage_elapsed_seconds:0,
+   phase_results:{schematic:{ok:true},pcb:{ok:false,applied:true,readback_verified:true,saved:false,save_uncertain:true,uncertain:true}},
+   result:{ok:false,retry_stage:null}}}));
+  await page.locator('[data-design-apply]').click();
+  await page.getByText('原理图：已完成   ·   PCB：已更新，保存待核验',{exact:true}).waitFor();
+  assert.equal(starts,1);
+  assert.equal(await page.locator('[data-design-apply]').isDisabled(),true,'Uncertain save cannot replay PCB update');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({ok:true,selected:true,filtered:true,all:true,row_scope:true,tool_route:true,widths:[1440,768,390]}));
  } finally {await browser.close();}

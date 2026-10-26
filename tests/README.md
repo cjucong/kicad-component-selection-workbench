@@ -1,5 +1,13 @@
 # 插件回归测试
 
+`test_footprint_overlay_ui.py` 的 `viewport` 场景使用真实 Chromium 滚轮/右键/按钮，验证两个来源的鼠标锚点缩放、同比例并排、滚轮平移、缩放上限、展开/Esc/窄屏，以及缩放后的毫米拖动。查看操作不能清除确认、发起网络读取或改变配准；切换封装重置视图。
+
+PCB 保存超时：`test_pcb_session.py` 覆盖保存独立限时、禁止 Req0 重发、断开迟到回复连接、实时/磁盘/会话不一致不误报、失败证据。`run_native_project_cycle_probe.py --save-reply-timeout --report-dir <工程外目录>` 在可清理的真实 KiCad 工程完成原生保存，并注入 5.2 秒延迟与丢失回复，验证 UI 阶段、单次保存、只读恢复及保存重开后的字段、几何、网络和走线；这是故障注入，不声称复现了生产工程的具体耗时原因。
+
+无法使用系统定位按键的环境可单独运行 `run_native_pcb_save_probe.py --report-dir <工程外目录>`：创建 23 个正背面器件的临时工程，通过管理器打开 PCB、原生事务更新、严格回读、真实保存加慢回复/丢失回复注入、只读恢复并关闭重开。核对所选及未选封装（重开仅使用既有 1 nm/角度序列化兼容）、网络和走线；不模拟或宣称通过原理图定位，测试工程及进程正常退出后自动清理。
+
+`run_native_footprint_viewport_probe.py --report-dir <工程外目录>` 在真实 WebView2 中验证两个来源的缩放、平移、展开、Esc 和配准不变并截图；输入图层为合成夹具，滚轮事件通过 DOM 派发，不声称物理鼠标端到端或 KiCad 同步验证。该只读探测不访问工程、商城或 PCB。运行完整回归时将 `PYTHONPATH` 设置为仓库 `tools` 的绝对路径，以供桌面运行时子进程导入模块。
+
 `run_native_grouped_footprint_probe.py` 另以真实 IPC 验证锁定实例读取、改名和新增自定义字段、同批无变化项、原生回读及单次撤销；新增字段不能带原生序列化不保留的 `text.parent`。它不依赖原理图定位快捷键，不能替代完整保存/关闭/重开测试。
 
 锁定实例：`test_pcb_session.py` 验证只读快照不拒绝锁定；`test_pcb_update.py`、`test_pcb_field_updates.py` 覆盖无需更新/改名/字段允许与几何拒绝、底层禁止伪装成字段来移动/旋转/改网络/解锁。`test_design_sync.py`、`test_design_sync_ui.py` 验证受阻原因、读取完成状态及解锁后重新预检。`run_native_project_cycle_probe.py --report-dir <工程外目录> --locked-metadata` 在可清理真实 KiCad 工程验证锁定字段/改名/无需更新、保存关闭重开保持锁定及几何，并确认不安全写入在备份和事务前拒绝；然后仅对测试夹具显式解锁，继续既有几何替换闭环。

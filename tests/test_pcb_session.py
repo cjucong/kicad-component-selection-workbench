@@ -60,6 +60,94 @@ def test_absolute_filename_cannot_escape_document_project(scratch_project):
         select_document([doc(scratch_project, str(scratch_project.parent / 'other.kicad_pcb'))], scratch_project)
 
 
+@pytest.mark.parametrize('lost_reply', [False, True])
+def test_save_has_own_deadline_and_reconciles_lost_reply(monkeypatch, scratch_project, lost_reply):
+    from unittest.mock import Mock
+    path = scratch_project / 'test.kicad_pcb'
+    text = '(kicad_pcb (version 20241229) (general))'
+    expected = {'document_path':str(path), 'text':text, 'parts':{'R1':{}}, 'revision':'v1'}
+    session = sessions.PcbSession(scratch_project)
+    session.snapshot = Mock(return_value=expected)
+    transport = Obj(send_timeout=4000, recv_timeout=4000, resend_time=60000, close=Mock())
+    native = Obj(_timeout_ms=4000, _conn=transport, _connected=True)
+    def save():
+        assert transport.recv_timeout > 4000, 'Save still uses the ordinary 4 second read budget'
+        assert transport.resend_time > transport.recv_timeout, 'Save must not be retransmitted'
+        path.write_text(text)
+        if lost_reply:
+            raise TimeoutError('Error receiving reply from KiCad: Timed out')
+    board = Obj(save=Mock(side_effect=save), get_as_string=lambda:text)
+    session._board = Mock(return_value=(Obj(_client=native),board,None))
+    progress = Mock()
+    result = session.save_verified(expected, scratch_project.parent / 'save-recovery', progress)
+    assert result['saved']
+    assert bool(result.get('reply_timeout_recovered')) is lost_reply
+    board.save.assert_called_once()
+    assert native._timeout_ms == transport.send_timeout == transport.recv_timeout == 4000
+    assert transport.resend_time == 60000
+    if lost_reply:
+        transport.close.assert_called_once()
+        assert not native._connected
+        assert session.snapshot.call_args.kwargs['open_if_closed'] is False
+        assert any(call.args[0] == 'save_reconcile' for call in progress.call_args_list)
+
+
+@pytest.mark.parametrize('changed', ['disk', 'live', 'session', 'offline'])
+def test_uncertain_save_never_replays_or_accepts_unverified_state(monkeypatch, scratch_project, changed):
+    from unittest.mock import Mock
+    monkeypatch.setattr(sessions, 'SAVE_RECONCILE_SECONDS', 0, raising=False)
+    path = scratch_project / 'test.kicad_pcb'
+    text = '(kicad_pcb (version 20241229) (general))'
+    expected = {'document_path':str(path), 'text':text, 'parts':{'R1':{}}, 'revision':'v1', 'session_id':'original'}
+    after = {**expected}
+    if changed == 'live': after['text'] += ' changed'
+    if changed == 'session': after['session_id'] = 'different'
+    session = sessions.PcbSession(scratch_project)
+    session.snapshot = Mock(side_effect=[expected, RuntimeError('offline') if changed == 'offline' else after])
+    def save():
+        path.write_text('(kicad_pcb (general))' if changed == 'disk' else text)
+        raise TimeoutError('Error receiving reply from KiCad: Timed out')
+    board = Obj(save=Mock(side_effect=save), get_as_string=lambda:text)
+    session._board = Mock(return_value=(None,board,None))
+    backup = scratch_project.parent / 'uncertain-save'
+    with pytest.raises(RuntimeError, match='保存.*未.*核验|保存.*未确认'):
+        session.save_verified(expected, backup)
+    board.save.assert_called_once()
+    assert (backup / 'expected-live.json').is_file()
+    assert (backup / 'save-error.json').is_file()
+
+
+def test_late_disk_write_reconciles_without_another_save(monkeypatch, scratch_project):
+    from unittest.mock import Mock
+    path = scratch_project / 'test.kicad_pcb'
+    text = '(kicad_pcb (version 20241229) (general))'
+    expected = {'document_path':str(path), 'text':text, 'parts':{'R1':{}}, 'revision':'v1'}
+    session = sessions.PcbSession(scratch_project)
+    session.snapshot = Mock(return_value=expected)
+    board = Obj(save=Mock(side_effect=TimeoutError('Timed out')), get_as_string=lambda:text)
+    session._board = Mock(return_value=(None,board,None))
+    monkeypatch.setattr(sessions.time, 'sleep', lambda seconds:path.write_text(text))
+    result = session.save_verified(expected, scratch_project.parent / 'late-save')
+    assert result['saved'] and result['reply_timeout_recovered']
+    board.save.assert_called_once()
+    assert session.snapshot.call_count == 3
+
+
+def test_save_error_is_not_reclassified_as_success_from_old_disk(monkeypatch, scratch_project):
+    from unittest.mock import Mock
+    path = scratch_project / 'test.kicad_pcb'
+    text = '(kicad_pcb (version 20241229) (general))'
+    path.write_text(text)
+    expected = {'document_path':str(path), 'text':text, 'parts':{'R1':{}}, 'revision':'v1'}
+    session = sessions.PcbSession(scratch_project)
+    session.snapshot = Mock(return_value=expected)
+    board = Obj(save=Mock(side_effect=OSError('disk full')), get_as_string=lambda:text)
+    session._board = Mock(return_value=(None,board,None))
+    with pytest.raises(sessions.PcbSaveUnverified, match='disk full'):
+        session.save_verified(expected, scratch_project.parent / 'failed-save')
+    board.save.assert_called_once()
+
+
 def test_saved_board_comparison_ignores_only_standalone_footprint_headers():
     disk = '(kicad_pcb (version 20260206) (footprint "Lib:R" (at 1 2 90) (pad "1" (net "VCC"))))'
     live = disk.replace('(footprint "Lib:R"', '(footprint "Lib:R" (version 20260206) (generator "pcbnew") (generator_version "10.0")')

@@ -300,7 +300,8 @@ class DesignSync:
                 if phase == 'schematic':
                     job['phase_results']['schematic'] = {'ok':False,'error':str(exc)}
                 else:
-                    job['phase_results']['pcb'] = {'ok':False,'error':str(exc),'uncertain':uncertain}
+                    job['phase_results']['pcb'] = {**getattr(exc, 'pcb_result', {}),
+                        'ok':False,'error':str(exc),'uncertain':uncertain}
                 self._update(key,done=True,ok=False,needs_confirmation=False,
                     stage='uncertain' if uncertain else 'partial' if partial else 'failed',
                     message=str(exc),error=str(exc),result={'ok':False,

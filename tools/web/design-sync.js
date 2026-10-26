@@ -147,7 +147,7 @@
     }
     function phases(value) {
       q('[data-design-phases]').textContent = Object.entries(value || {}).map(([name,result]) =>
-        `${name==='schematic'?'原理图':'PCB'}：${result.ok?'已完成':result.uncertain?'结果待核验':'未完成'}`).join('   ·   ');
+        `${name==='schematic'?'原理图':'PCB'}：${result.save_uncertain?'已更新，保存待核验':result.ok?'已完成':result.uncertain?'结果待核验':'未完成'}`).join('   ·   ');
       const schematicDone = value?.schematic?.ok;
       if (schematicDone && !state.notified.has('schematic')) {
         state.notified.add('schematic'); Promise.resolve(notify()).catch(()=>{});

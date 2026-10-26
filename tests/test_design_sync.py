@@ -323,6 +323,25 @@ def test_uncertain_pcb_publish_is_not_automatically_repeated():
     finally:service.close()
 
 
+def test_unverified_save_retains_applied_stage_and_cannot_replay():
+    from part_selection_pcb_session import PcbSaveUnverified
+    service, app, _ = coordinator()
+    app.design_sync_fields.return_value = {'R1':{'value':'100k','footprint':'Local:New'}}
+    app.pcb_updates.apply.side_effect = PcbSaveUnverified('保存结果未确认', '/external/recovery')
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'pcb'})
+        job = service.start(preview['preview_id'], {})
+        state = await_job(service, job['job_id'])
+        assert state['stage'] == 'uncertain' and state['result']['retry_stage'] is None
+        pcb = state['phase_results']['pcb']
+        assert pcb['applied'] and pcb['readback_verified'] and pcb['save_uncertain'] and not pcb['saved']
+        assert service.start(preview['preview_id'], {})['job_id'] == job['job_id']
+        with pytest.raises(ValueError): service.continue_pcb(job['job_id'],preview['preview_id'],{})
+        app.pcb_updates.apply.assert_called_once()
+    finally:
+        service.close()
+
+
 def test_real_app_desired_fields_are_read_only_and_missing_is_not_empty(scratch_project):
     import json
     from part_selection_server import PartSelectionApp

@@ -21,6 +21,7 @@
   window.addEventListener('blur', dismiss);
   document.addEventListener('contextmenu', event => {
     if (!event.isTrusted) return;
+    if (event.target.closest('.fp-viewport')) return;
     const el = event.target.closest('input,textarea,[contenteditable]');
     const inputSelection = el && typeof el.selectionStart === 'number' && el.selectionEnd > el.selectionStart;
     const selected = inputSelection || !!getSelection()?.toString();

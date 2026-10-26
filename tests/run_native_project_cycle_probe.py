@@ -94,7 +94,7 @@ def finished(sync,job):
     raise AssertionError(value)
 
 
-def run(report, *, locked_metadata=False):
+def run(report, *, locked_metadata=False, save_reply_timeout=False):
     from part_selection_footprint_geometry import _find_kicad_python
     from part_selection_paths import resolve_config
     from part_selection_server import PartSelectionApp
@@ -201,7 +201,23 @@ def run(report, *, locked_metadata=False):
             assert state['stage']=='awaiting_pcb_confirmation',state
             assert not any(pid in owned_managers(root) for pid in pids),'Initial manager never exited'
             results['checks']['dirty_pcb_saved_before_whole_project_close']=True
-            done=finished(app.design_sync,app.design_sync.continue_pcb(state['job_id'],state['pcb_preview']['preview_id'],{}))
+            with ExitStack() as save_fault:
+                if save_reply_timeout:
+                    from kipy.board import Board
+                    original_save=Board.save
+                    saves=[]
+                    def lost_reply(board):
+                        saves.append(True)
+                        time.sleep(5.2)
+                        original_save(board)
+                        raise TimeoutError('Error receiving reply from KiCad: Timed out (injected after real save)')
+                    save_fault.enter_context(patch.object(Board, 'save', lost_reply))
+                done=finished(app.design_sync,app.design_sync.continue_pcb(state['job_id'],state['pcb_preview']['preview_id'],{}))
+                if save_reply_timeout:
+                    assert saves==[True], 'Save was replayed'
+                    assert done['phase_results']['pcb']['save_reply_timeout_recovered'],done
+                    assert any(step['stage']=='pcb:save_reconcile' for step in done['steps']),done
+                    results['checks']['injected_slow_save_lost_reply_readonly_recovery_no_replay']=True
             assert done['stage']=='complete' and done['result']['saved'],done
             client,board,_=session._board()
             after=footprint_map(board)
@@ -368,6 +384,7 @@ if __name__=='__main__':
     parser.add_argument('--report-dir',type=Path)
     parser.add_argument('--launch-child',type=Path)
     parser.add_argument('--locked-metadata',action='store_true',help='Verify locked field/rename/no-op sync before geometry checks')
+    parser.add_argument('--save-reply-timeout',action='store_true',help='Inject a slow/lost reply after one real native save; prove read-only recovery')
     args=parser.parse_args()
     if args.launch_child:
         assert args.launch_child.parent.name.startswith('pcb-probe-') and args.launch_child.name=='project'
@@ -375,4 +392,4 @@ if __name__=='__main__':
     else:
         assert args.report_dir and args.report_dir.is_absolute() and not args.report_dir.resolve().is_relative_to(ROOT)
         args.report_dir.mkdir(parents=True,exist_ok=True)
-        raise SystemExit(run(args.report_dir,locked_metadata=args.locked_metadata))
+        raise SystemExit(run(args.report_dir,locked_metadata=args.locked_metadata,save_reply_timeout=args.save_reply_timeout))

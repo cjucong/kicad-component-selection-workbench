@@ -56,6 +56,63 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='viewport') {
+   for(const library of [false,true]) {
+    await page.evaluate(library=>library?openLibrary('library'):openComparison(),library);
+    await page.locator('.fp-scene:not([hidden])').waitFor();
+    const viewport=page.locator('.fp-viewport'), scene=page.locator('.fp-scene');
+    const initial=await scene.boundingBox(), area=await viewport.boundingBox();
+    const x=area.x+area.width*.55,y=area.y+area.height*.45;
+    await page.locator('[data-fp-ack]').check();
+    const before=await page.evaluate(()=>({calls:calls.length, dx:document.querySelector('[data-fp-dx]').value}));
+    await page.mouse.move(x,y);await page.mouse.wheel(0,-300);
+    await page.waitForFunction(()=>Number(document.querySelector('[data-fp-zoom-value]').value.replace('%',''))>100);
+    const enlarged=await scene.boundingBox(), ratio=enlarged.width/initial.width;
+    assert.ok(ratio>1.1);
+    assert.ok(Math.abs((x-initial.x)/initial.width-(x-enlarged.x)/enlarged.width)<0.002,'cursor anchor preserved');
+    assert.equal(await page.locator('[data-fp-ack]').isChecked(),true,'viewing must not clear acknowledgement');
+    assert.deepEqual(await page.evaluate(()=>({calls:calls.length,dx:document.querySelector('[data-fp-dx]').value})),before);
+    await page.locator('[data-fp-wheel]').selectOption('pan');
+    const old=await scene.boundingBox();
+    await page.mouse.move(x,y);await page.mouse.wheel(35,60);await page.waitForTimeout(60);
+    const moved=await scene.boundingBox();assert.ok(Math.abs(moved.y-old.y+60)<1);assert.equal(moved.width,old.width);
+    await page.mouse.down({button:'right'});await page.mouse.move(x+40,y+25,{steps:4});await page.mouse.up({button:'right'});
+    const dragged=await scene.boundingBox();assert.ok(Math.abs(dragged.x-moved.x-40)<1);
+    assert.equal(await page.locator('[data-fp-dx]').inputValue(),before.dx,'camera pan cannot move target geometry');
+    await page.locator('[data-fp-zoom=fit]').click();
+    assert.equal(await page.locator('[data-fp-zoom-value]').innerText(),'100%');
+    for(let i=0;i<3;i++) await viewport.dispatchEvent('wheel',{deltaY:-100000,deltaMode:1,ctrlKey:true,clientX:x,clientY:y});
+    assert.equal(await page.locator('[data-fp-zoom-value]').innerText(),'1600%');
+    assert.equal(await page.locator('[data-fp-zoom=in]').isDisabled(),true);
+    await page.locator('[data-fp-zoom=fit]').click();
+    await page.locator('[data-fp-zoom=in]').click();assert.equal(await page.locator('[data-fp-zoom-value]').innerText(),'125%');
+    const stage=page.locator('[data-fp-stage=converted]'), rect=await stage.boundingBox();
+    await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height/2);await page.mouse.down();
+    await page.mouse.move(rect.x+rect.width*.6,rect.y+rect.height/2,{steps:5});await page.mouse.up();
+    assert.ok(Math.abs(Number(await page.locator('[data-fp-dx]').inputValue())-1)<0.01,'geometry drag uses zoom-correct mm');
+    await page.locator('[data-fp-align=reset]').click();
+    await page.locator('[data-fp-view=side]').check();
+    const widths=await page.locator('[data-fp-stage]').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width));
+    assert.ok(Math.abs(widths[0]-widths[1])<1,'side-by-side retains equal scale');
+    await page.locator('[data-fp-expand]').click();
+    const expanded=await viewport.boundingBox();assert.ok(expanded.height>area.height+80);
+    await page.screenshot({path:require('node:path').join(process.env.FP_SHOTS,`viewport-${library?'library':'converted'}.png`)});
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.fp-overlay').count(),1,'Escape collapses preview before closing dialog');
+    assert.equal(await page.locator('.fp-expanded').count(),0);
+    await page.locator(library?'[data-fp-items]':'[data-fp-existing]').selectOption('Local:B');
+    await page.waitForFunction(()=>document.querySelector('[data-fp-zoom-value]').value==='100%');
+    await close();
+   }
+   await page.setViewportSize({width:520,height:800});
+   await page.evaluate(()=>openComparison());
+   await page.locator('.fp-scene:not([hidden])').waitFor();
+   await page.locator('[data-fp-expand]').click();
+   const narrow=await page.locator('.fp-expanded').boundingBox();assert.ok(narrow.x>=0&&narrow.x+narrow.width<=520);
+   await page.screenshot({path:require('node:path').join(process.env.FP_SHOTS,'viewport-narrow.png')});
+   await page.keyboard.press('Escape');await close();
+   await page.setViewportSize({width:1440,height:1000});
+  }
   if(check==='all'||check==='batch') {
    await page.evaluate(()=>{
     window.result=undefined;window.batchCalls=[];

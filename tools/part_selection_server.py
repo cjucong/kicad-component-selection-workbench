@@ -2139,7 +2139,8 @@ class PartSelectionApp:
                 session.verify(state['snapshot'], expected, state['replacements'])
             saved = session.save_verified(expected,
                 runtime_directory(self.project_root) / ('pcb-save-' + uuid4().hex), progress=progress)
-            result.update(saved=True, save_path=saved['path'])
+            result.update(saved=True, save_path=saved['path'],
+                          save_reply_timeout_recovered=bool(saved.get('reply_timeout_recovered')))
             state['result'] = deepcopy(result)
             notify('project_close', 'PCB 已保存，正在保存并正常关闭当前工程')
             closed = self.prepare_kicad_for_external_schematic_write(refs)

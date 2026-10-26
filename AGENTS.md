@@ -29,6 +29,10 @@
 
 ## 测试与临时产物
 
+- 封装预览缩放/平移仅操作共同视图，不改变几何、手动配准或确认状态，不触发联网重绘；库/立创/PCB 预览保持同比例。右键平移与左键目标调整隔离，画布不弹文字编辑菜单，其他区域保留复制菜单；缩放后毫米坐标仍准确。保留 `test_footprint_overlay_ui.py` 的 `viewport` 场景及两个入口验证。
+
+- PCB 保存独立使用 60 秒回复限时，普通 IPC 读取仍为 4 秒；单次保存禁用等待期内 Req0 重发，失败连接关闭以免迟到回复或后台重发。超时后最多 30 秒只读核验原会话、完整实时内容和磁盘，不自动打开编辑器、不重发保存或事务；未确认保留编辑器及工程外证据，UI 分开显示已更新与保存待核验。保留 `test_pcb_session.py`、同步状态回归、`run_native_project_cycle_probe.py --save-reply-timeout` 和 `run_native_pcb_save_probe.py` 的 23 件真实保存加故障注入闭环，不将其称为生产故障完全复现。
+
 - PCB 锁定是写入策略，不是读取限制：快照/无需更新不拒绝锁定，仅改名和字段更新须保留锁及完整实例几何。换几何在逐位号预检中阻止，不能自动解锁或静默跳过；底层事务须拒绝借元数据路径移动/旋转/改焊盘/网络/锁状态。受阻预检不得关闭编辑器，UI 区分读取成功和操作受阻。保留对应 session/update/field/design-sync 回归和真实 `run_native_project_cycle_probe.py --locked-metadata`。
 
 - 新增 PCB 自定义字段使用 KiCad 嵌入式字段序列化，不设置 `text.parent`（原生回读不保留）；不能为接受该差异而放宽完整暂存/回读校验。保留 `test_pcb_field_updates.py` 和 `run_native_grouped_footprint_probe.py` 的真实锁定实例改名、新字段、批量无变化及单次撤销验证。

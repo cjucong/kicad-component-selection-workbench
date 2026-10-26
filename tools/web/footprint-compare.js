@@ -197,6 +197,94 @@ window.chooseLibraryFootprint = function chooseLibraryFootprint(preview, options
   });
 };
 
+function mountFootprintViewport(root) {
+  const q = selector => root.querySelector(selector);
+  const viewport = q('.fp-viewport'), scene = q('.fp-scene'), comparison = q('.fp-comparison');
+  const controls = document.createElement('div'); controls.className = 'fp-zoom-tools';
+  const button = (action, icon, title) => `<button type="button" data-fp-zoom="${action}" title="${title}" aria-label="${title}"><svg aria-hidden="true"><use href="#toolbar-icon-${icon}"></use></svg></button>`;
+  controls.innerHTML = button('out', 'zoom-out', '缩小封装') + '<output data-fp-zoom-value aria-label="预览缩放比例">100%</output>' +
+    button('in', 'zoom-in', '放大封装') + button('fit', 'scan', '适应窗口') +
+    '<select data-fp-wheel aria-label="滚轮操作" title="滚轮缩放或平移；Ctrl + 滚轮缩放，右键拖动视图"><option value="zoom">滚轮缩放</option><option value="pan">滚轮平移</option></select>' +
+    '<button type="button" data-fp-expand title="展开预览" aria-label="展开预览" aria-pressed="false"><svg aria-hidden="true"><use href="#toolbar-icon-maximize"></use></svg></button>';
+  q('.fp-compare-toolbar').append(controls);
+  viewport.title = '滚轮缩放；右键拖动画面';
+  let scale = 1, offset = [0, 0], gesture = null;
+  function render() {
+    scene.style.transform = `translate(${offset[0]}px, ${offset[1]}px) scale(${scale})`;
+    q('[data-fp-zoom-value]').value = `${Math.round(scale * 100)}%`;
+    q('[data-fp-zoom=in]').disabled = scale >= 16;
+    q('[data-fp-zoom=out]').disabled = scale <= 0.25;
+  }
+  function zoom(next, x, y) {
+    if (scene.hidden || gesture) return;
+    next = Math.max(0.25, Math.min(16, next));
+    const rect = scene.getBoundingClientRect();
+    offset = offset.map((value, i) => value + ((i ? y - rect.y : x - rect.x) / scale) * (scale - next));
+    scale = next; render();
+  }
+  function reset() {
+    const id = gesture?.id; gesture = null;
+    if (id !== undefined && viewport.hasPointerCapture(id)) viewport.releasePointerCapture(id);
+    viewport.classList.remove('fp-panning');
+    scale = 1; offset = [0, 0]; render();
+  }
+  controls.querySelectorAll('[data-fp-zoom]').forEach(node => node.onclick = () => {
+    if (node.dataset.fpZoom === 'fit') { reset(); return; }
+    const rect = viewport.getBoundingClientRect();
+    zoom(scale * (node.dataset.fpZoom === 'in' ? 1.25 : 0.8), rect.x + rect.width / 2, rect.y + rect.height / 2);
+  });
+  viewport.addEventListener('wheel', event => {
+    if (scene.hidden) return;
+    event.preventDefault(); event.stopPropagation();
+    if (gesture) return;
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+    if (event.ctrlKey || q('[data-fp-wheel]').value === 'zoom') {
+      zoom(scale * Math.exp(-Math.max(-600, Math.min(600, event.deltaY * unit)) * 0.002), event.clientX, event.clientY);
+    } else {
+      offset[0] -= (event.shiftKey && !event.deltaX ? event.deltaY : event.deltaX) * unit;
+      if (!event.shiftKey || event.deltaX) offset[1] -= event.deltaY * unit;
+      render();
+    }
+  }, {passive:false});
+  viewport.addEventListener('pointerdown', event => {
+    if (event.button !== 2 || scene.hidden || gesture) return;
+    event.preventDefault(); event.stopPropagation();
+    gesture = {id:event.pointerId, x:event.clientX, y:event.clientY, offset:[...offset]};
+    viewport.setPointerCapture(event.pointerId); viewport.classList.add('fp-panning');
+  }, true);
+  viewport.addEventListener('pointermove', event => {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    offset = [gesture.offset[0] + event.clientX - gesture.x, gesture.offset[1] + event.clientY - gesture.y];
+    render();
+  });
+  function finish(event) {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    if (event.type !== 'pointerup') { offset = gesture.offset; render(); }
+    gesture = null; viewport.classList.remove('fp-panning');
+    if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+  }
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) viewport.addEventListener(type, finish);
+  viewport.addEventListener('contextmenu', event => { event.preventDefault(); event.stopPropagation(); });
+  viewport.addEventListener('auxclick', event => { if (event.button === 2) event.preventDefault(); });
+  function expand(value) {
+    comparison.classList.toggle('fp-expanded', value);
+    const node = q('[data-fp-expand]');
+    node.setAttribute('aria-pressed', String(value));
+    node.title = value ? '收起预览' : '展开预览'; node.setAttribute('aria-label', node.title);
+    reset();
+  }
+  q('[data-fp-expand]').onclick = () => expand(!comparison.classList.contains('fp-expanded'));
+  function keyboard(event) {
+    const top = [...document.querySelectorAll('.fp-overlay')].filter(node => node.getClientRects().length).at(-1);
+    if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229 &&
+        (!top || top.contains(comparison)) && comparison.classList.contains('fp-expanded') && comparison.getClientRects().length) {
+      event.preventDefault(); event.stopImmediatePropagation(); expand(false);
+    }
+  }
+  window.addEventListener('keydown', keyboard, true);
+  return {reset, destroy() { window.removeEventListener('keydown', keyboard, true); }};
+}
+
 window.chooseFootprint = function chooseFootprint(preview, options = {}) {
   return new Promise(resolve => {
     const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
@@ -250,6 +338,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
     </section></form>`;
     const q = selector => overlay.querySelector(selector);
     q('.fp-radio-owner').onsubmit = event => event.preventDefault();
+    const viewport = mountFootprintViewport(overlay);
     const previousFocus = document.activeElement;
     const cache = new Map(), layerState = new Map(), urls = new Set();
     let closed = false, sequence = 0, controller = null, detail = null, libraryDetail = null;
@@ -317,6 +406,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
           : localOnly || (!adjustment?.isMapped() && (!reference || !preview.compatible || detail?.alignment?.ok !== true)) || adjustment?.isValid() === false);
     }
     function clearImages() {
+      viewport.reset();
       adjustment?.clear();
       overlay.querySelectorAll('[data-fp-source-layers], [data-fp-marker-source]').forEach(e => e.replaceChildren());
       urls.forEach(url => URL.revokeObjectURL(url));
@@ -448,6 +538,7 @@ window.chooseFootprint = function chooseFootprint(preview, options = {}) {
       if (closed) return;
       closed = true;
       ++sequence;
+      viewport.destroy();
       controller?.abort();
       clearImages();
       cache.clear();

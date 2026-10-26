@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 
-def native_build(root, *, manual_mapping=False):
+def native_build(root, *, manual_mapping=False, save_batch=False):
     import pcbnew as p
     root = Path(root)
     board = p.BOARD()
@@ -35,6 +35,8 @@ def native_build(root, *, manual_mapping=False):
     symbols, definitions, defined, labels = [], [], set(), []
     from kicad_sexpr import parse_sexpr
     cases = [('R1', 37, False, 8), ('R2', -25, False, 10), ('U1', 90, True, 8), ('U2', -17, True, 10)] if manual_mapping else [('R1', 37, False, 2), ('R2', -25, False, 2), ('U1', 90, True, 4)]
+    if save_batch:
+        cases += [(f'R{index}', index*13 % 360, bool(index % 2), 2) for index in range(3, 23)]
     for index, (ref, angle, back, count) in enumerate(cases):
         def raw(name, size, pad_count=count):
             pad_xy = ([(-1, 0), (1, 0)] if pad_count == 2 else
@@ -706,11 +708,12 @@ def main():
     parser.add_argument('--report-dir', type=Path)
     parser.add_argument('--long-path', action='store_true')
     parser.add_argument('--manager-width', type=int)
+    parser.add_argument('--save-batch', action='store_true')
     args = parser.parse_args()
     if args.build:
         if not args.build.parent.name.startswith('pcb-probe-') or args.build.name != 'project':
             parser.error('Only a disposable capability fixture may be built')
-        native_build(args.build)
+        native_build(args.build, save_batch=args.save_batch)
         return 0
     if not args.report_dir or not args.report_dir.is_absolute():
         parser.error('--report-dir requires an external absolute directory')

@@ -9,10 +9,64 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 from uuid import uuid4
 
 from kicad_sexpr import parse_sexpr
 from part_selection_footprints import tree_data
+
+
+SAVE_TIMEOUT_MS = 60000
+SAVE_RECONCILE_SECONDS = 30
+
+
+class PcbSaveUnverified(RuntimeError):
+    def __init__(self, message, backup_dir):
+        super().__init__(message)
+        self.pcb_result = {'ok':False, 'applied':True, 'readback_verified':True,
+                           'saved':False, 'save_uncertain':True, 'backup_dir':str(backup_dir)}
+
+
+def save_document_once(client, board, notify):
+    """Bound one save, never let Req0 retransmit this non-idempotent command."""
+    native = getattr(client, '_client', None)
+    transport = getattr(native, '_conn', None)
+    previous = []
+    failure = []
+    worker = None
+    done = threading.Event()
+    def save():
+        try:
+            board.save()
+        except BaseException as exc:
+            failure.append(exc)
+        finally:
+            done.set()
+    try:
+        for owner, name, value in ((native, '_timeout_ms', SAVE_TIMEOUT_MS),
+                                   (transport, 'send_timeout', 4000),
+                                   (transport, 'recv_timeout', SAVE_TIMEOUT_MS),
+                                   (transport, 'resend_time', SAVE_TIMEOUT_MS + 60000)):
+            if owner is not None and hasattr(owner, name):
+                previous.append((owner, name, getattr(owner, name)))
+                setattr(owner, name, value)
+        worker = threading.Thread(target=save, name='pcb-save-once', daemon=True)
+        started = time.monotonic()
+        worker.start()
+        while not done.wait(5):
+            notify('save', f'正在等待 KiCad 保存 PCB（{time.monotonic()-started:.0f} s / 最多 60 s），不会重复提交')
+        worker.join()
+        if failure:
+            raise failure[0]
+    finally:
+        if worker is not None and worker.ident is not None:
+            worker.join()
+        for owner, name, value in reversed(previous):
+            setattr(owner, name, value)
+        if failure and transport is not None:
+            # An unanswered request must not later resend or consume a stale reply.
+            transport.close()
+            native._connected = False
 
 
 def fingerprint(value):
@@ -466,10 +520,10 @@ class PcbSession:
                 'project':str(self.root),'file':str((self.root / doc.board_filename).resolve()),
                 'session':fingerprint([socket, str(doc), client._client._kicad_token]),'errors':errors}
 
-    def _board(self, progress=None):
+    def _board(self, progress=None, *, open_if_closed=True):
         from kipy.board import Board
         options = {'progress':progress} if progress else {}
-        result = self.connection.ensure(open_if_closed=True, **options)
+        result = self.connection.ensure(open_if_closed=open_if_closed, **options)
         if result['state'] != 'connected':
             raise ValueError(result.get('reason') or 'PCB 无法连接，请打开当前工程 PCB 并启用 IPC 后重试')
         client, doc = result['client'], result['document']
@@ -483,11 +537,12 @@ class PcbSession:
             transport.send_timeout = transport.recv_timeout = 4000
         return client, Board(client._client, doc), doc
 
-    def snapshot(self, project_root: Path, refs: list[str], progress=None) -> dict:
+    def snapshot(self, project_root: Path, refs: list[str], progress=None, *, open_if_closed=True) -> dict:
         if Path(project_root).resolve() != self.root or not refs or len(set(refs)) != len(refs):
             raise ValueError('无效的工程或位号清单')
         with self.lock:
-            client, board, doc = self._board(progress) if progress else self._board()
+            client, board, doc = (self._board(progress, open_if_closed=False) if not open_if_closed else
+                                  self._board(progress) if progress else self._board())
             if progress:
                 progress('reading', '正在读取 PCB 实时内容和所选封装')
             text = board.get_as_string()
@@ -524,22 +579,50 @@ class PcbSession:
             backup_dir.mkdir(parents=True, exist_ok=False)
             if path.exists():
                 (backup_dir / 'disk-before.kicad_pcb').write_bytes(path.read_bytes())
-            _, board, _ = self._board()
+            client, board, document = self._board(open_if_closed=False)
+            if document is not None and fingerprint([self.socket, str(document), client._client._kicad_token]) != expected['session_id']:
+                raise ValueError('PCB 编辑器会话在保存前已改变，未发出保存请求')
             if board.get_as_string() != expected['text']:
                 raise ValueError('PCB 在保存前已改变，未发出保存请求')
+            (backup_dir / 'expected-live.json').write_text(json.dumps(expected, ensure_ascii=False), encoding='utf-8')
             notify('save', '正在保存 PCB（包括此前未保存的编辑）')
-            board.save()
-            notify('save_verify', '正在核验 PCB 磁盘文件与实时内容')
-            actual = self.snapshot(self.root, refs)
-            if (actual != expected or not path.is_file() or
-                    saved_board_data(path.read_text(encoding='utf-8-sig')) !=
-                    saved_board_data(expected['text'])):
-                (backup_dir / 'expected-live.json').write_text(json.dumps(expected, ensure_ascii=False), encoding='utf-8')
+            save_error = None
+            try:
+                save_document_once(client, board, notify)
+            except Exception as exc:
+                save_error = exc
+            timed_out = save_error is not None and (isinstance(save_error, TimeoutError) or
+                any(word in str(save_error).lower() for word in ('timed out', 'timeout')))
+            deadline = time.monotonic() + (SAVE_RECONCILE_SECONDS if timed_out else 0)
+            wanted = saved_board_data(expected['text'])
+            actual, error = None, str(save_error or '')
+            while True:
+                notify('save_reconcile' if timed_out else 'save_verify',
+                    '保存回复超时，正在只读核验磁盘与 PCB 实时内容；不会重复写入' if timed_out else '正在核验 PCB 磁盘文件与实时内容')
+                try:
+                    actual = self.snapshot(self.root, refs, open_if_closed=False)
+                    if actual != expected:
+                        error = 'PCB 实时内容或编辑器会话已改变'
+                        break
+                    if path.is_file() and saved_board_data(path.read_text(encoding='utf-8-sig')) == wanted:
+                        if save_error is None or timed_out:
+                            notify('save_confirmed', 'PCB 已保存，磁盘与实时内容核验完成' + ('（保存回复超时已恢复）' if timed_out else ''))
+                            return {'ok':True, 'saved':True, 'path':str(path), 'backup_dir':str(backup_dir),
+                                    'reply_timeout_recovered':timed_out}
+                    error = str(save_error or 'PCB 磁盘文件与实时内容不一致')
+                except Exception as exc:
+                    error = str(exc)
+                if not timed_out or time.monotonic() >= deadline:
+                    break
+                time.sleep(1)
+            if actual is not None:
                 (backup_dir / 'actual-live.json').write_text(json.dumps(actual, ensure_ascii=False), encoding='utf-8')
-                if path.is_file():
-                    (backup_dir / 'disk-after.kicad_pcb').write_bytes(path.read_bytes())
-                raise RuntimeError('PCB 保存回读未通过，已保留编辑器；请检查磁盘与实时内容，不要重复更新。恢复材料：' + str(backup_dir))
-            return {'ok':True, 'saved':True, 'path':str(path), 'backup_dir':str(backup_dir)}
+            if path.is_file():
+                (backup_dir / 'disk-after.kicad_pcb').write_bytes(path.read_bytes())
+            (backup_dir / 'save-error.json').write_text(json.dumps({'save_error':str(save_error or ''),
+                'verification_error':error}, ensure_ascii=False), encoding='utf-8')
+            raise PcbSaveUnverified('PCB 更新及实时回读已完成，但保存结果未确认；已保留编辑器，不会重复更新或关闭工程。'
+                '请检查保存对话框或磁盘错误。详情：' + error + '；恢复材料：' + str(backup_dir), backup_dir)
 
     def read_library(self, lib_id: str, *, back=False) -> dict:
         if self.library_reader:

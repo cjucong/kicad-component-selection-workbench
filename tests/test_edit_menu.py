@@ -56,6 +56,11 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
   const count=await page.evaluate(()=>requests.length);
   await page.evaluate(()=>document.querySelector('#content').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true})));
   assert.equal(await page.evaluate(()=>requests.length),count,'Synthetic events cannot request editing menus');
+  await page.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<div class="fp-viewport">Preview canvas</div>'));
+  const beforeCanvas=await page.evaluate(()=>requests.filter(r=>!r.dismiss).length);
+  await select('#text');
+  await page.locator('.fp-viewport').click({button:'right'});
+  assert.equal(await page.evaluate(()=>requests.filter(r=>!r.dismiss).length),beforeCanvas,'Canvas right drag cannot open native editing menu');
   assert.deepEqual(errors,[]);
  } finally {await browser.close()}
 })().catch(e=>{console.error(e);process.exit(1)});
