@@ -30,9 +30,9 @@ class DesignSource:
                       set(root.glob('*.kicad_sch')) | set(directory.glob('*.kicad_sch')) |
                       set(root.glob('*.kicad_pro')))
 
-    def capture(self, refs: list[str]) -> dict:
+    def capture(self, refs: list[str] | None = None, *, allow_legacy=False) -> dict:
         from part_selection_pcb import schematic_identity
-        if not refs or len(set(refs)) != len(refs):
+        if refs is not None and (not refs or len(set(refs)) != len(refs)):
             raise ValueError('请选择不重复的位号')
         config = self._configuration()
         files = self._files(config)
@@ -42,6 +42,8 @@ class DesignSource:
         fields, properties, terminals, pages = {}, {}, {}, {}
 
         def read(path):
+            if path in pages:
+                return pages[path], hashes[str(path)]
             content = path.read_bytes()
             digest = hashlib.sha256(content).hexdigest()
             previous = hashes.setdefault(str(path), digest)
@@ -67,8 +69,30 @@ class DesignSource:
                 raise ValueError(ref + ' 多单元或多实例的字段不一致，请先核对')
             fields[ref], properties[ref] = values, names
 
-        identity = schematic_identity(Path(config['root']), Path(config['directory']), refs,
-                                       read_page=read, visit_symbol=visit)
+        # Only old single-page, identity-free fixtures may use property references.
+        # This is opt-in for footprint editing, never for PCB association checks.
+        legacy = None
+        if allow_legacy and len(files) == 1 and Path(files[0]).suffix == '.kicad_sch':
+            path = Path(files[0])
+            page, _ = read(path)
+            symbols = page.children_named('symbol')
+            if (not page.child('uuid') and not page.children_named('sheet')
+                    and all(not symbol.child('uuid') and not symbol.child('instances') for symbol in symbols)):
+                legacy = {}
+                for symbol in symbols:
+                    prop = next((prop for prop in symbol.children_named('property') if prop.arg() == 'Reference'), None)
+                    ref = prop.arg(2).strip().upper() if prop else ''
+                    if ref and (refs is None or ref in refs):
+                        visit(ref, symbol, path)
+                        legacy[ref] = []
+                if refs is not None and set(refs) != set(legacy):
+                    raise ValueError('原理图缺少位号，请重新预检')
+        identity = ({'paths':legacy, 'hashes':{str(path):hashes[str(path)]}}
+                    if legacy is not None else
+                    schematic_identity(Path(config['root']), Path(config['directory']), refs,
+                                       read_page=read, visit_symbol=visit))
+        if refs is None:
+            refs = list(identity['paths'])
         records = load_overrides(Path(config['records']))
         result = {'refs':list(refs), 'fields':fields,
                   'records':{ref:deepcopy(records.get(ref, {})) for ref in refs},

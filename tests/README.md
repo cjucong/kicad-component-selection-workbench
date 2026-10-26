@@ -1,5 +1,11 @@
 # 插件回归测试
 
+层级批量回归另覆盖根页、嵌套页、重复实例与孤立旧页排除，以及 UUID/引脚/字节变化使预览失效。写回接口不能覆盖所选层级实例时必须在关窗和任何写入前拒绝；验证结果中的嵌套 missing_refs 也不得误报成功。
+
+同名封装批量管理：`test_footprint_batch.py` 验证完整库 ID、跨行范围及过期成员检测、各位号独立选料/撤回记录和合行不继承其他物料。Chromium `batch` 场景验证范围确认及共享库铜皮差异确认；`test_footprint_choices.py` 保证风险确认不能绕过编号/局部中心安全检查。`run_native_grouped_footprint_probe.py` 从 R1 单行打开，验证实际扩展至同封装 R1/R2 后分别更新正背面 PCB 实例，保留各自网络、位置、走线及撤销。
+
+同步阶段与恢复：`test_design_sync.py`、`test_design_cycle.py`、`test_design_sync_ui.py` 验证常驻真实状态/耗时、无变化跳过关窗、保存成功但导航失败时不重放写入，以及单独重试打开/定位。`test_pcb_native_types.py` 对保存重开角度兼容 KiCad 七/八位小数格式化；仍拒绝非格式化角度、超过 1 nm 的坐标变化、未知字段及网络/几何变化。真实完整闭环由 `run_native_project_cycle_probe.py` 单独验证，不把模拟测试视作原生通过。
+
 `test_export_folder.py` 用一次性工程通过两个真实导出 HTTP 入口检查写入并关闭文件后才打开实际目录（含中文、空格和自定义路径），以及导出失败不打开、目录打开失败不影响已导出文件。shell 调用在测试中替换，不打开用户的资源管理器，不读写生产数据。
 
 `test_stock_delivery.py` 覆盖主商品渲染交期（4 小时、24 小时、工作日）、SSR/卡片三重身份、页脚排除、候选缓存、国际查询补齐与网络失败保留、主表转义及旧缓存保护。`test_bom_export_template.py` 另验证本地库存零值/未知/无编码/陈旧编码，以及跨行共享不扣减；均使用合成数据。

@@ -188,6 +188,11 @@ class DesignSync:
             now = state.get('_finished', time.monotonic())
             result['elapsed_seconds'] = max(0, now-state['_time'])
             result['stage_elapsed_seconds'] = max(0, now-state.get('_stage_started',state['_time']))
+            for step in result.get('steps', []):
+                if step['status'] in ('running', 'waiting'):
+                    step['seconds'] = max(0, now-step.pop('started_at', now))
+                else:
+                    step.pop('started_at', None)
             return result
 
     def job_id(self, preview_id):
@@ -198,6 +203,22 @@ class DesignSync:
         with self.lock:
             job = self.jobs[key]
             now = time.monotonic()
+            explicit_status = values.pop('step_status', None)
+            steps = job.setdefault('steps', [])
+            next_stage = values.get('stage', job['stage'])
+            failed = values.get('ok') is False
+            if not steps or next_stage != job['stage']:
+                if steps and steps[-1]['status'] in ('running', 'waiting'):
+                    steps[-1].update(status='failed' if failed else 'succeeded',
+                        seconds=max(0, now-steps[-1]['started_at']))
+                steps.append({'stage':next_stage, 'message':values.get('message', job['message']),
+                    'status':explicit_status or ('failed' if failed else 'waiting' if next_stage in
+                        ('queued', 'awaiting_pcb_confirmation') else 'succeeded' if values.get('done') else 'running'),
+                    'started_at':now, 'seconds':0})
+                job['steps'] = steps[-512:]
+            elif explicit_status or values.get('done'):
+                steps[-1].update(status=explicit_status or ('failed' if failed else 'succeeded'),
+                    seconds=max(0, now-steps[-1]['started_at']))
             if values.get('stage',job['stage']) != job['stage']:
                 job.setdefault('timings', []).append({'stage':job['stage'],
                     'message':job['message'], 'seconds':max(0,now-job.get('_stage_started',job['_time']))})
@@ -223,12 +244,18 @@ class DesignSync:
                 schematic = self.app.bulk_sync_bom_state_to_schematic(result['bom'],
                     selected_refs=result['refs'], prepared_fields=state['desired'],progress=progress,
                     validate_source=lambda:self.sources.refresh_after_save(state['source']))
-                if not schematic.get('ok') or not schematic.get('schematic_verify',{}).get('ok') or schematic.get('missing_refs'):
+                if (not schematic.get('ok') or not schematic.get('schematic_verify',{}).get('ok')
+                        or schematic.get('missing_refs') or schematic.get('schematic_verify',{}).get('missing_refs')):
                     raise ValueError('原理图写入或回读未通过，未继续 PCB')
                 with self.lock:
                     self.jobs[key]['phase_results']['schematic'] = deepcopy(schematic)
                 if result['destination'] == 'schematic':
-                    self.app.reopen_and_locate_design(result['refs'], progress=progress)
+                    if schematic.get('already_synced'):
+                        self._update(key, stage='navigation_skipped', step_status='skipped',
+                            message='原理图已是最新，跳过保存、关闭和定位')
+                    else:
+                        phase = 'navigation'
+                        self._navigate(key)
                     self._update(key,done=True,stage='complete',message='原理图同步完成',result={'ok':True})
                     return
                 phase = 'pcb_preview'
@@ -245,16 +272,26 @@ class DesignSync:
             phase = 'pcb_apply'
             pcb_token = result['pcb_preview']['preview_id']
             pcb = self.app.sync_design_pcb(pcb_token,
-                progress=lambda stage,message:self._update(key,stage='pcb:'+stage,message=message))
+                progress=lambda stage,message:self._update(key,stage='pcb:'+stage,message=message,
+                    step_status='skipped' if stage == 'no_changes' else None))
             if not pcb.get('ok'):
                 raise RuntimeError('PCB 发布结果未确认，请只读核验，不要重复执行')
             with self.lock:
                 self.jobs[key]['phase_results']['pcb'] = deepcopy(pcb)
+            if pcb.get('navigation_error'):
+                phase = 'navigation'
+                raise ValueError(pcb['navigation_error'])
             self._update(key,done=True,stage='complete',needs_confirmation=False,
-                message='设计同步完成，PCB 已保存并重新打开',result={'ok':True,'saved':True})
+                message='PCB 已是最新，无需保存或重开' if pcb.get('no_changes') else '设计同步完成，PCB 已保存并重新打开',
+                result={'ok':True,'saved':bool(pcb.get('saved'))})
         except Exception as exc:
             with self.lock:
                 job = self.jobs[key]
+                if phase == 'navigation':
+                    self._update(key,done=True,ok=False,stage='navigation_failed',
+                        message='设计已同步；重新打开或定位未完成：' + str(exc),error=str(exc),
+                        result={'ok':False,'retry_stage':'navigation'})
+                    return
                 uncertain = phase == 'pcb_apply' and not isinstance(exc, ValueError)
                 partial = job['phase_results'].get('schematic',{}).get('ok') is True
                 if phase == 'schematic':
@@ -265,6 +302,47 @@ class DesignSync:
                     stage='uncertain' if uncertain else 'partial' if partial else 'failed',
                     message=str(exc),error=str(exc),result={'ok':False,
                         'retry_stage':None if uncertain else 'pcb' if phase != 'schematic' else 'schematic'})
+
+    def _navigate(self, key):
+        self._update(key, stage='navigation', message='设计已保存，正在重新打开并定位器件')
+        result = self.app.reopen_and_locate_design(self.jobs[key]['refs'],
+            progress=lambda stage, message:self._update(key, stage='navigation:'+stage, message=message))
+        if not result.get('ok'):
+            raise ValueError(result.get('message') or '定位未完成')
+
+    def retry_navigation(self, key):
+        with self.lock:
+            if self.closed:
+                raise ValueError('同步服务正在退出')
+            job = self.jobs.get(key)
+            if not job or job['stage'] != 'navigation_failed' or not job['done']:
+                raise ValueError('此任务不能重试定位，请查询当前任务状态')
+            if not any(result.get('ok') for result in job['phase_results'].values()):
+                raise ValueError('设计尚未核验完成，不能重试定位')
+            self._update(key,done=False,ok=True,stage='queued',message='等待重新打开并定位；不重复写入设计')
+            self.pool.submit(self._retry_navigation, key)
+            return self.status(key)
+
+    def _retry_navigation(self, key):
+        try:
+            pcb = self.jobs[key]['phase_results'].get('pcb', {})
+            if pcb.get('resume_preview_id'):
+                recovered = self.app.resume_design_pcb_navigation(pcb['resume_preview_id'],
+                    progress=lambda stage,message:self._update(key,stage='navigation:'+stage,message=message))
+                self.jobs[key]['phase_results']['pcb'] = deepcopy(recovered)
+                if recovered.get('navigation_error'):
+                    raise ValueError(recovered['navigation_error'])
+            else:
+                self._navigate(key)
+            with self.lock:
+                pcb = self.jobs[key]['phase_results'].get('pcb')
+                if pcb and pcb.get('ok'):
+                    pcb.pop('navigation_error', None)
+                    pcb['located_ref'] = self.jobs[key]['refs'][0]
+            self._update(key,done=True,ok=True,stage='complete',message='设计已同步，重新打开及定位完成',result={'ok':True})
+        except Exception as exc:
+            self._update(key,done=True,ok=False,stage='navigation_failed',message='设计已同步；定位未完成：'+str(exc),
+                error=str(exc),result={'ok':False,'retry_stage':'navigation'})
 
     def continue_pcb(self, job_id, preview_id, acknowledgments):
         with self.lock:

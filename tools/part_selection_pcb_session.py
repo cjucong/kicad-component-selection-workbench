@@ -46,7 +46,7 @@ def footprint_bytes(item):
 
 
 def persisted_footprint_matches(before, after):
-    """Only reopen may quantize world coordinates and seven-decimal angles."""
+    """Only reopen may quantize coordinates and KiCad's saved decimal angles."""
     first, second = deepcopy(before.proto), deepcopy(after.proto)
     first.ParseFromString(footprint_bytes(before))
     second.ParseFromString(footprint_bytes(after))
@@ -77,7 +77,7 @@ def persisted_footprint_matches(before, after):
                     return False
                 if abs(x - y) > (1 if coordinate else 5e-8):
                     return False
-                if angle and x != y and round(x, 7) != y:
+                if angle and x != y and not any(round(x, digits) == y for digits in (7, 8)):
                     return False
                 setattr(a, field.name, y)
         left, right = a.ListFields(), b.ListFields()

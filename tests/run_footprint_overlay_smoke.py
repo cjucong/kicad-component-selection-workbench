@@ -56,6 +56,38 @@ const {chromium} = require('playwright'), assert = require('node:assert/strict')
   });
   const check=process.env.FP_CASE || 'all';
   const close=async()=>{await page.locator('[data-fp-close]').click(); await page.waitForFunction(()=>!document.querySelector('.fp-overlay'));};
+  if(check==='all'||check==='batch') {
+   await page.evaluate(()=>{
+    window.result=undefined;window.batchCalls=[];
+    window.openFootprintManager({load:async mode=>({...structuredClone(preview),kind:mode==='rename'?'rename':'library',
+      default_id:'Local:A',current_footprints:['Local:A'],scope:{footprint:'Local:A',rows:2,refs:['R1','R2','R3']},
+      items:preview.existing.slice(0,2).map(e=>({...e,library:'Local'}))}),
+      apply:async choice=>{batchCalls.push(choice);return true;}}).then(value=>result=value);
+   });
+   await page.locator('[data-fp-scope-title]').getByText('Local:A',{exact:true}).waitFor();
+   assert.match(await page.locator('[data-fp-scope-summary]').innerText(),/2 行.*3 个器件/);
+   await page.locator('[data-fp-tab=rename]').click();
+   const rename=page.locator('[data-fp-page=rename]');
+   await rename.locator('[data-fp-name]').fill('Local:BatchRename');
+   await page.screenshot({path:require('node:path').join(process.env.FP_SHOTS,'batch-scope.png')});
+   await rename.locator('.fp-apply').click();
+   assert.equal(await page.evaluate(()=>batchCalls.length),0,'batch requires scope confirmation');
+   await page.locator('[data-fp-scope-ack]').check();
+   await rename.locator('.fp-apply').click();
+   await page.waitForFunction(()=>result!==undefined);
+   assert.equal(await page.evaluate(()=>batchCalls[0].scope_acknowledged),true);
+   await page.evaluate(()=>{
+    window.result=undefined;
+    window.chooseLibraryFootprint({...structuredClone(preview),kind:'rename',default_id:'Local:A',
+      copper_differences:['PCB:R2']}).then(value=>result=value);
+   });
+   await page.locator('[data-fp-name]').fill('Local:SharedRename');
+   assert.equal(await page.locator('.fp-apply').isEnabled(),false);
+   await page.locator('[data-fp-copper-ack]').check();
+   await page.locator('.fp-apply').click();
+   await page.waitForFunction(()=>result!==undefined);
+   assert.equal(await page.evaluate(()=>result.copper_acknowledged),true);
+  }
   if(check==='all'||check==='custom-name') {
    for(const library of [true,false]) {
     await page.evaluate(library=>{

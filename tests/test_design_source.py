@@ -91,3 +91,62 @@ def test_native_save_refresh_never_accepts_library_or_records_changes(scratch_pr
     snapshot = source.capture(['L9'])
     (scratch_project / 'fp-lib-table').write_text('(fp_lib_table)')
     assert not source.refresh_after_save(snapshot)
+
+
+def test_capture_all_enumerates_hierarchy_instances_not_property_references(scratch_project):
+    from part_selection_design_source import DesignSource
+    app, child = app_for(scratch_project)
+    path = scratch_project / 'Design.kicad_sch'
+    path.write_text(path.read_text().replace(' (uuid "new-root")', ''' (uuid "new-root")
+      (symbol (uuid "root-symbol") (property "Reference" "R1")
+        (property "Footprint" "Local:1206")
+        (instances (project "Design" (path "/old-root" (reference "R1")))))''', 1))
+    child.write_text(child.read_text().replace('(property "Reference" "L9")', '(property "Reference" "L999")'))
+    result = DesignSource(app).capture()
+    assert set(result['refs']) == {'R1', 'L9'}
+    assert result['fields']['L9']['footprint'] == 'Local:1206'
+    assert set(result['identity']['paths']) == {'R1', 'L9'}
+
+
+def test_capture_all_excludes_orphans_and_invalidates_identity_only_change(scratch_project):
+    from part_selection_design_source import DesignSource
+    app, child = app_for(scratch_project)
+    (app.config['schematic_dir'] / 'Orphan.kicad_sch').write_text(child.read_text().replace('L9', 'L99'))
+    source = DesignSource(app)
+    result = source.capture()
+    assert result['refs'] == ['L9']
+    child.write_text(child.read_text().replace('l9-symbol', 'new-symbol'))
+    assert not source.validate(result)
+
+
+def test_legacy_capture_is_explicit_and_cannot_relax_real_identity(scratch_project):
+    from part_selection_design_source import DesignSource
+    records = scratch_project / 'records.json'
+    records.write_text('{}')
+    page = scratch_project / 'Legacy.kicad_sch'
+    page.write_text('(kicad_sch (symbol (property "Reference" "R1") (property "Footprint" "Local:R")))')
+    source = DesignSource(SimpleNamespace(project_root=scratch_project, overrides_path=records,
+        config={'schematic_dir':scratch_project}))
+    with pytest.raises(ValueError, match='UUID'):
+        source.capture(['R1'])
+    snapshot = source.capture(allow_legacy=True)
+    assert snapshot['refs'] == ['R1']
+    assert snapshot['fields']['R1']['footprint'] == 'Local:R'
+    assert not snapshot['identity']['paths']['R1']
+    page.write_text(page.read_text() + '\n')
+    assert not source.validate(snapshot)
+    page.write_text(page.read_text().replace('(kicad_sch ', '(kicad_sch (uuid "real-root") '))
+    with pytest.raises(ValueError, match='实例|关联|位号'):
+        source.capture(['R1'], allow_legacy=True)
+
+
+def test_legacy_opt_in_does_not_guess_missing_project_identity(scratch_project):
+    from part_selection_design_source import DesignSource
+    from part_selection_server import PartSelectionApp
+    from part_selection_overrides import load_overrides
+    app, _ = app_for(scratch_project)
+    (scratch_project / 'Design.kicad_pro').unlink()
+    with pytest.raises(ValueError, match='L9'):
+        DesignSource(app).capture(['L9'], allow_legacy=True)
+    with pytest.raises(ValueError, match='完整库封装'):
+        PartSelectionApp.footprint_scope(app, ['L9'], load_overrides(app.overrides_path))

@@ -17,7 +17,7 @@ from part_selection_pcb_session import PcbSession, replacement, encode, metadata
 from part_selection_runtime import runtime_directory
 
 
-def schematic_identity(root, directory, refs, *, read_page=None, visit_symbol=None):
+def schematic_identity(root, directory, refs=None, *, read_page=None, visit_symbol=None):
     from kicad_sexpr import parse_sexpr
     root, directory = Path(root).resolve(), Path(directory).resolve()
     projects = {path.stem for path in root.glob('*.kicad_pro')}
@@ -78,7 +78,7 @@ def schematic_identity(root, directory, refs, *, read_page=None, visit_symbol=No
             parts = tuple(filter(None, instance.arg().split('/')))
             if len(parts) == 1:
                 anchors.add(parts[0])
-    paths = {ref: set() for ref in refs}
+    paths = {ref: set() for ref in refs} if refs is not None else {}
 
     def walk(path, chain, ancestors):
         path = path.resolve()
@@ -94,11 +94,11 @@ def schematic_identity(root, directory, refs, *, read_page=None, visit_symbol=No
                 ref = ref_node.arg().upper() if ref_node else ''
                 prefix = tuple(filter(None, instance.arg().split('/')))
                 rooted = len(prefix) == len(chain) + 1 and prefix[0] in anchors and prefix[1:] == chain
-                if ref in paths and (prefix == chain or rooted):
+                if ref and (refs is None or ref in paths) and (prefix == chain or rooted):
                     if visit_symbol:
                         visit_symbol(ref, symbol, path)
                     relative = '/' + '/'.join((*chain, identifier.arg()))
-                    paths[ref].add(relative)
+                    paths.setdefault(ref, set()).add(relative)
                     paths[ref].add('/' + root_uuid + relative)
                     if rooted:
                         paths[ref].add('/' + prefix[0] + relative)

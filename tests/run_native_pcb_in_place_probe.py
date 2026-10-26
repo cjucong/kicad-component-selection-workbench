@@ -287,13 +287,17 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   const prefix=center?'Center_':'Standard_';
   for(const ref of refs) {
    const target=ref==='R2'?'R1':ref;
+   if(await page.evaluate(({ref,target,prefix})=>currentRows.find(row=>row.ref===ref)?.footprint==='Local:'+prefix+target,{ref,target,prefix})) continue;
    const row=page.locator(`#rows tr[data-refs="${ref}"]`);await row.waitFor();
    await row.getByRole('button',{name:'预览／管理封装'}).click();
    const library=page.locator('[data-fp-page="library"]');
    await library.locator('[data-fp-items] option[value="Local:'+prefix+target+'"]').waitFor({state:'attached'});
    await library.locator('[data-fp-items]').selectOption('Local:'+prefix+target);
    await library.getByText('Local:'+prefix+target+' · 焊盘 '+(ref.startsWith('R')?2:4)+' 个 · 编号 '+(ref.startsWith('R')?'1, 2':'1, 2, 3, 4'),{exact:true}).waitFor();
-   await library.locator('[data-fp-ack]').check();await library.locator('.fp-apply').click();
+   await library.locator('[data-fp-ack]').check();
+   const scope=page.locator('[data-fp-scope-ack]');
+   if(await scope.isVisible()) await scope.check();
+   await library.locator('.fp-apply').click();
    await page.waitForFunction(({ref,target,prefix})=>currentRows.find(row=>row.ref===ref)?.footprint==='Local:'+prefix+target,{ref,target,prefix});
   }
   for(const width of [1440,800,390]) {
@@ -569,6 +573,10 @@ def run_probe(report, extra_checks=None, *, long_path=False, manager_width=None)
                 completed_app.search_jobs.close()
                 completed_app.design_sync.close()
             results['stage'] = 'center_workbench_flow'
+            # New previews intentionally use the saved PCB as their source.
+            # Persist this probe's completed first replacement before the next one.
+            board.save()
+            disk = (root / 'Probe.kicad_pcb').read_bytes()
             center_before = session.snapshot(root, ['R1', 'U1'])
             center_changes = []
             for ref, original in center_before['parts'].items():

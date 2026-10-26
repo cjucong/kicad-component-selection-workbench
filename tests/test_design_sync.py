@@ -163,6 +163,70 @@ def test_schematic_failure_stops_before_pcb():
     finally:service.close()
 
 
+def test_nested_missing_verification_refs_never_report_schematic_success():
+    service, app, _ = coordinator()
+    app.bulk_sync_bom_state_to_schematic.return_value = {
+        'ok':True, 'schematic_verify':{'ok':True,'missing_refs':['R1']}}
+    try:
+        preview = service.preview({'refs':['R1'],'destination':'both'})
+        state = await_job(service, service.start(preview['preview_id'], {})['job_id'])
+        assert state['stage'] == 'failed' and not state['phase_results']['schematic']['ok']
+        app.pcb_updates.preview.assert_not_called()
+        app.reopen_and_locate_design.assert_not_called()
+    finally:
+        service.close()
+
+
+def test_locate_failure_preserves_verified_schematic_and_only_retries_navigation():
+    service, app, _ = coordinator()
+    app.reopen_and_locate_design.side_effect = ValueError('locate failed')
+    try:
+        preview = service.preview({'refs':['R1'], 'destination':'schematic'})
+        state = await_job(service, service.start(preview['preview_id'], {})['job_id'])
+        assert state['phase_results']['schematic']['ok'] is True
+        assert state['stage'] == 'navigation_failed'
+        assert state['result']['retry_stage'] == 'navigation'
+        assert any(step['status'] == 'failed' for step in state['steps'])
+        app.reopen_and_locate_design.side_effect = None
+        result = service.retry_navigation(state['job_id'])
+        final = await_job(service, result['job_id'])
+        assert final['stage'] == 'complete'
+        app.bulk_sync_bom_state_to_schematic.assert_called_once()
+    finally:
+        service.close()
+
+
+def test_already_synced_schematic_does_not_navigate():
+    service, app, _ = coordinator()
+    app.bulk_sync_bom_state_to_schematic.return_value.update(already_synced=True)
+    try:
+        preview = service.preview({'refs':['R1'], 'destination':'schematic'})
+        state = await_job(service, service.start(preview['preview_id'], {})['job_id'])
+        assert state['stage'] == 'complete'
+        app.reopen_and_locate_design.assert_not_called()
+        assert any(step['status'] == 'skipped' for step in state['steps'])
+    finally:
+        service.close()
+
+
+def test_pcb_navigation_failure_is_retryable_without_replaying_apply():
+    service, app, _ = coordinator()
+    app.design_sync_fields.return_value = {'R1':{'value':'100k','footprint':'Local:New'}}
+    app.pcb_updates.apply.return_value.update(saved=True, cycle_complete=True, navigation_error='locate failed')
+    try:
+        preview = service.preview({'refs':['R1'], 'destination':'pcb'})
+        state = await_job(service, service.start(preview['preview_id'], {})['job_id'])
+        assert state['stage'] == 'navigation_failed'
+        assert state['phase_results']['pcb']['saved']
+        final = await_job(service, service.retry_navigation(state['job_id'])['job_id'])
+        assert final['stage'] == 'complete'
+        assert 'navigation_error' not in final['phase_results']['pcb']
+        app.pcb_updates.apply.assert_called_once()
+        app.bulk_sync_bom_state_to_schematic.assert_not_called()
+    finally:
+        service.close()
+
+
 def test_pcb_only_unsynced_fields_offer_both_without_writes():
     service, app, _ = coordinator()
     try:
@@ -172,6 +236,26 @@ def test_pcb_only_unsynced_fields_offer_both_without_writes():
         app.bulk_sync_bom_state_to_schematic.assert_not_called()
         app.pcb_updates.preview.assert_not_called()
     finally:service.close()
+
+
+def test_saved_pcb_reconnect_retry_verifies_without_repeating_apply():
+    service, app, _ = coordinator()
+    app.design_sync_fields.return_value = {'R1':{'value':'100k','footprint':'Local:New'}}
+    app.pcb_updates.apply.return_value.update(saved=True, navigation_error='IPC timeout', resume_preview_id='pcb-one')
+    app.resume_design_pcb_navigation = Mock(return_value={'ok':True,'saved':True,'reopened':True,'cycle_complete':True})
+    try:
+        preview = service.preview({'refs':['R1'], 'destination':'pcb'})
+        state = await_job(service, service.start(preview['preview_id'], {})['job_id'])
+        assert state['stage'] == 'navigation_failed' and state['phase_results']['pcb']['saved']
+        final = await_job(service, service.retry_navigation(state['job_id'])['job_id'])
+        assert final['stage'] == 'complete' and final['phase_results']['pcb']['reopened']
+        app.resume_design_pcb_navigation.assert_called_once()
+        assert app.resume_design_pcb_navigation.call_args.args == ('pcb-one',)
+        app.pcb_updates.apply.assert_called_once()
+        app.bulk_sync_bom_state_to_schematic.assert_not_called()
+        app.reopen_and_locate_design.assert_not_called()
+    finally:
+        service.close()
 
 
 def test_schematic_diff_separates_recorded_rename_from_unclassified_name_edit():

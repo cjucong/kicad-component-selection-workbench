@@ -33,9 +33,15 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
      return {ok:true,json:async()=>({ok:true,job_id:'job-1'})};
     }
     if(path.includes('continue_design_sync')) {phase=1;return {ok:true,json:async()=>({ok:true,job_id:'job-1'})};}
+    if(path==='/api/retry_design_navigation') {mode='navigation-done';return {ok:true,json:async()=>({ok:true,job_id:'job-1'})};}
     if(path.includes('design_sync_job')) {
      if(mode==='rejected') return {ok:true,json:async()=>({ok:false,stage:'expired',done:true})};
      if(mode==='disconnect') throw Error('offline');
+     if(mode==='navigation'||mode==='navigation-done') return {ok:true,json:async()=>({
+      ok:mode==='navigation-done',job_id:'job-1',done:true,stage:mode==='navigation'?'navigation_failed':'complete',
+      phase_results:{pcb:{ok:true,saved:true}},message:mode==='navigation'?'设计已同步；定位未完成':'重新打开及定位完成',
+      steps:[{stage:'pcb:save_verify',message:'PCB 磁盘核验',status:'succeeded',seconds:1.2},
+       {stage:'navigation',message:'定位器件',status:mode==='navigation'?'failed':'succeeded',seconds:.3}]})};
      return {ok:true,json:async()=> phase ? {ok:true,job_id:'job-1',done:true,stage:'complete',
       phase_results:{schematic:{ok:true},pcb:{ok:true}},message:'设计同步完成；PCB 改动尚未保存'} :
       {ok:true,job_id:'job-1',done:true,stage:'awaiting_pcb_confirmation',needs_confirmation:true,
@@ -95,6 +101,20 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
   assert.equal(await page.locator('[data-design-apply]').isEnabled(),false);
   await page.getByRole('button',{name:'查询任务状态',exact:true}).click();
   assert.equal(await page.evaluate(()=>calls.filter(x=>x.path==='/api/start_design_sync').length),3);
+  await page.evaluate(()=>mode='navigation');
+  await page.getByRole('button',{name:'查询任务状态',exact:true}).click();
+  await page.locator('[data-design-navigation]').waitFor();
+  assert.match(await page.locator('[data-design-phases]').innerText(),/PCB.*完成/);
+  assert.equal(await page.locator('[data-design-steps] [data-step-status=failed]').count(),1);
+  if(process.env.DESIGN_SYNC_SCREENSHOTS) {
+   await page.addStyleTag({path:require('node:path').join(require('node:path').dirname(process.env.DESIGN_SYNC_JS),'design-sync.css')});
+   await page.screenshot({path:require('node:path').join(process.env.DESIGN_SYNC_SCREENSHOTS,'navigation-retry.png')});
+  }
+  await page.locator('[data-design-navigation]').click();
+  await page.waitForFunction(()=>document.querySelector('[data-design-status]').textContent==='重新打开及定位完成');
+  assert.equal(await page.locator('[data-design-steps] [data-step-status=failed]').count(),0);
+  assert.equal(await page.evaluate(()=>calls.filter(x=>x.path==='/api/start_design_sync').length),3);
+  assert.equal(await page.evaluate(()=>calls.filter(x=>x.path==='/api/retry_design_navigation').length),1);
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''

@@ -24,6 +24,9 @@ def same_parts(first, second):
 
 def grouped_checks(root, report, session, client, board, results):
     close_owned_schematic(results['pid'])
+    schematic = root/'Parts.kicad_sch'
+    schematic.write_text(schematic.read_text(encoding='utf-8').replace(
+        'Local:Original_R2', 'Local:Original_R1'), encoding='utf-8')
     app = PartSelectionApp(resolve_config(root))
     app.pcb_updates.session = session
     paths = [root/'Parts.kicad_sch', root/'Probe.kicad_pcb', app.overrides_path, root/'fp-lib-table']
@@ -103,7 +106,8 @@ def grouped_checks(root, report, session, client, board, results):
                 else:
                     path.write_bytes(content)
             with patch('part_selection_footprints.LibraryImporter.convert', autospec=True, side_effect=convert):
-                preview = app.row_footprint({'refs':'R1,R2','bom':'__schematic__','mode':mode})['preview']
+                preview = app.row_footprint({'refs':'R1','bom':'__schematic__','mode':mode})['preview']
+            assert preview['scope']['refs'] == ['R1','R2'], preview['scope']
             reference = preview.get('default_reference_id') or preview['default_id']
             if mode == 'convert':
                 detail = app.footprint_choices.comparison(preview['preview_id'], reference)
@@ -112,7 +116,8 @@ def grouped_checks(root, report, session, client, board, results):
                 app.footprint_choices.library_detail(preview['preview_id'], reference)
             saved = app.row_footprint({'footprint_choice':{'preview_id':preview['preview_id'],
                 'source':'converted' if mode=='convert' else 'rename','existing_id':reference,
-                'target_mode':'existing','target_library':'Local','name':name,'acknowledged':True}})
+                'target_mode':'existing','target_library':'Local','name':name,'acknowledged':True,
+                'scope_acknowledged':True}})
             assert saved['ok'], saved
             sync_fixture_adapter(app, ['R1','R2'])
             after = footprint_map(board)

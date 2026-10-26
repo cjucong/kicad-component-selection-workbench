@@ -230,9 +230,10 @@ def run(report):
             results['checks']['rename_geometry_pads_nets_saved_reopened']=True
             preview=app.design_sync.preview({'refs':['R1'],'destination':'pcb'})
             done=finished(app.design_sync,app.design_sync.start(preview['preview_id'],{}))
-            assert done['stage']=='complete' and done['result']['saved'],done
+            assert done['stage']=='complete' and not done['result']['saved'],done
+            assert done['phase_results']['pcb']['no_changes'],done
             assert footprint_bytes(footprint_map(session._board()[1])['R1'])==footprint_bytes(renamed)
-            results['checks']['pcb_only_saved_reopened_located']=True
+            results['checks']['pcb_already_current_skips_save_close_reopen']=True
             # Only the upstream converter output is synthetic. Publication and
             # the full save/sync/reopen cycle below use the real native path.
             def converted_fixture(importer, code, progress=None):

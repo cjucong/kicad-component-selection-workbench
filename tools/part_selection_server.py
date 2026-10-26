@@ -2116,12 +2116,19 @@ class PartSelectionApp:
 
     def sync_design_pcb(self, preview_id, progress=None):
         """Publish once, verify/save, normally restart only the verified project."""
-        from part_selection_pcb_session import persisted_footprint_matches, decode
         notify = progress or (lambda *args: None)
         with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock:
+            state = self.pcb_updates.previews[preview_id]
+            if state.get('result', {}).get('saved'):
+                if state['result'].get('cycle_complete') or state['result'].get('navigation_error'):
+                    return deepcopy(state['result'])
+                raise RuntimeError('PCB 已保存但关闭重开核验未完成；请只读核验，不要重复写入')
             result = self.apply_design_pcb(preview_id, progress=progress, restore_schematic=False, auto_save=True)
             state = self.pcb_updates.previews[preview_id]
             if result.get('cycle_complete'):
+                return result
+            if result.get('no_changes'):
+                notify('no_changes', 'PCB 已是最新，跳过保存、关闭和重新打开')
                 return result
             refs = state['refs']
             session = self.pcb_updates.session
@@ -2138,16 +2145,47 @@ class PartSelectionApp:
                 raise RuntimeError('PCB 已更新并保存，但关闭工程未完成；请勿重复应用。详情：' + str(closed.get('message', '')))
             if 'ProjectClosed=1' not in str(closed.get('message', '')):
                 raise RuntimeError('PCB 已保存，但未核验当前工程退出，未完成关闭重开流程；请勿重复应用')
+            state['_saved_expected'] = expected
+            state['_saved_backup'] = saved['backup_dir']
+            return self.resume_design_pcb_navigation(preview_id, progress=progress)
+
+    def resume_design_pcb_navigation(self, preview_id, progress=None):
+        """Retry only reopening/verification after a confirmed saved PCB, never publish."""
+        from part_selection_pcb_session import persisted_footprint_matches, decode
+        notify = progress or (lambda *args: None)
+        with SCHEMATIC_SYNC_TRANSACTION_LOCK, self.selection_save_lock:
+            state = self.pcb_updates.previews[preview_id]
+            result = deepcopy(state['result'])
+            if not result.get('saved') or '_saved_expected' not in state:
+                raise ValueError('缺少已保存 PCB 核验快照，不能重试打开')
+            refs, expected = state['refs'], state['_saved_expected']
+            session = self.pcb_updates.session
             notify('project_reopen', '正在通过工程管理器重新打开 PCB 并核验保存结果')
-            reopened = session.snapshot(self.project_root, refs, progress=progress)
+            try:
+                reopened = session.snapshot(self.project_root, refs, progress=progress)
+            except Exception as exc:
+                result.update(navigation_error=str(exc), resume_preview_id=preview_id)
+                state['result'] = deepcopy(result)
+                return result
             for ref in refs:
                 if not persisted_footprint_matches(decode(expected['parts'][ref]['proto']), decode(reopened['parts'][ref]['proto'])):
-                    recovery = Path(saved['backup_dir'])
+                    recovery = Path(state['_saved_backup'])
                     for name, snapshot in (('before-reopen', expected), ('after-reopen', reopened)):
                         (recovery / (name + '.json')).write_text(json.dumps(snapshot, ensure_ascii=False), encoding='utf-8')
                     raise RuntimeError(ref + ' 保存重开后的封装或字段核验失败，请停止重复同步。恢复材料：' + str(recovery))
-            self.reopen_and_locate_design(refs, progress=progress)
-            result.update(cycle_complete=True, reopened=True, located_ref=refs[0])
+            result.update(cycle_complete=True, reopened=True)
+            state['result'] = deepcopy(result)
+            try:
+                located = self.reopen_and_locate_design(refs, progress=progress)
+                if not located.get('ok'):
+                    raise ValueError(located.get('message') or '定位未完成')
+            except Exception as exc:
+                result['navigation_error'] = str(exc)
+                state['result'] = deepcopy(result)
+                return result
+            result.pop('navigation_error', None)
+            result.pop('resume_preview_id', None)
+            result.update(located_ref=refs[0])
             state['result'] = deepcopy(result)
             return result
 
@@ -2197,6 +2235,30 @@ class PartSelectionApp:
             result[ref] = desired
         return result
 
+    def footprint_scope(self, anchor_refs, overrides, footprint=None, *, source=None):
+        from part_selection_design_source import DesignSource
+        sources = DesignSource(self)
+        source = source if source is not None else sources.capture(allow_legacy=True)
+        if not sources.validate(source) or any(
+                overrides.get(ref, {}) != source['records'][ref] for ref in source['refs']):
+            raise ValueError('原理图、配置或工作台记录发生变化，请重新预览；没有保存封装修改')
+        actual = {ref:{key:fields.get(key, '') for key in SCHEMATIC_SYNC_FIELDS}
+                  for ref, fields in source['fields'].items()}
+        effective = {ref:str(overrides.get(ref, {}).get('field_overrides', {}).get(
+            'footprint', fields.get('footprint', ''))) for ref, fields in actual.items()}
+        ids = {effective.get(ref, '') for ref in anchor_refs}
+        if footprint is None:
+            if len(ids) != 1 or not next(iter(ids)):
+                raise ValueError('请从绑定同一完整库封装的器件打开封装管理')
+            footprint = next(iter(ids))
+        refs = sorted((ref for ref, identifier in effective.items() if identifier == footprint), key=ref_sort_key)
+        if not set(anchor_refs) <= set(refs):
+            raise ValueError('封装影响范围发生变化，请重新预览')
+        groups = {(str(overrides.get(ref, {}).get('field_overrides', {}).get('comment', actual[ref].get('comment',''))),
+                   str(overrides.get(ref, {}).get('field_overrides', {}).get('value', actual[ref].get('value',''))))
+                  for ref in refs}
+        return {'footprint':footprint, 'refs':refs, 'rows':len(groups)}, {ref:actual[ref] for ref in refs}, source
+
     def row_footprint(self, payload, progress=None):
         """Standalone footprint edits never go through candidate selection or stock writes."""
         choice = payload.get("footprint_choice")
@@ -2214,24 +2276,27 @@ class PartSelectionApp:
             if not refs:
                 raise ValueError("refs are required")
             initial = load_overrides(self.overrides_path)
+            anchors = list(refs)
+            scope, actual, source = self.footprint_scope(anchors, initial)
+            refs = scope['refs']
             revisions = {ref: initial.get(ref, {}) for ref in refs}
-            actual = self.read_schematic_fields(self.config["schematic_dir"], refs, SCHEMATIC_SYNC_FIELDS)
-            if any(ref not in actual for ref in refs):
-                raise ValueError("部分位号不存在于已保存原理图，请重新读取")
             context = {"operation": "row-footprint", "refs": refs, "revisions": revisions,
-                       "actual": actual, "bom": payload.get("bom", "")}
+                       "actual": actual, "bom": payload.get("bom", ""), 'scope':scope, 'anchors':anchors,
+                       'source':source}
         with self.selection_save_lock, OVERRIDES_UPDATE_LOCK:
             current = load_overrides(self.overrides_path)
+            scope, _, _ = self.footprint_scope(context['anchors'], current, context['scope']['footprint'],
+                                              source=context['source'])
+            if scope != context['scope']:
+                raise ValueError('同名封装的影响范围发生变化，请重新预览；没有保存封装修改')
             if any(current.get(ref, {}) != revisions[ref] for ref in refs):
                 raise ValueError("预览期间该行已被修改，请重新打开；没有保存封装修改")
-            if self.read_schematic_fields(self.config["schematic_dir"], refs, SCHEMATIC_SYNC_FIELDS) != actual:
-                raise ValueError("原理图字段发生变化，请重新预览")
             ids = list(dict.fromkeys(str(current.get(ref, {}).get("field_overrides", {}).get("footprint",
                 actual[ref].get("footprint", ""))) for ref in refs))
             codes = {normalize_lcsc_c_code("" if current.get(ref, {}).get("decision") in
                 {"ClearSelection", "Reject", "NoChange", "DNP"} else
                 current.get(ref, {}).get("stock_c_code") or choose_effective_c_code(
-                    {"accepted_c_code": actual[ref].get("lcsc_c_code", "")}, current.get(ref, {}))) for ref in refs}
+                    {"accepted_c_code": actual[ref].get("lcsc_c_code", "")}, current.get(ref, {}))) for ref in context['anchors']}
             code = next(iter(codes)) if len(codes) == 1 else ""
             package = ""
             if code:
@@ -2239,6 +2304,8 @@ class PartSelectionApp:
                 if normalize_lcsc_c_code(cached.get("c_code", code)) == code:
                     package = str(cached.get("package") or "")
             if choice is not None:
+                if set(refs) != set(context['anchors']) and choice.get('scope_acknowledged') is not True:
+                    raise ValueError('请确认影响范围：应用到全部同封装器件')
                 changes_geometry = self.footprint_choices.changes_geometry(choice)
                 library = self.footprint_choices.commit(choice)
                 if "conflict" in library:
@@ -2253,7 +2320,7 @@ class PartSelectionApp:
                 except Exception:
                     self.footprint_choices.rollback(choice["preview_id"])
                     raise
-                return {**result, "library": library}
+                return {**result, "library": library, 'scope':context['scope']}
         mode = payload.get("mode", "library")
         if mode == "library":
             preview = self.footprint_choices.prepare_library(ids, package, refs=refs)
@@ -2272,6 +2339,7 @@ class PartSelectionApp:
             preview = self.footprint_choices.prepare(code, ids, package, progress, refs=refs)
         else:
             raise ValueError("Invalid footprint mode")
+        preview['scope'] = context['scope']
         self.footprint_choices.bind(preview["preview_id"], context)
         return {"ok": True, "preview": preview}
 
@@ -2447,7 +2515,8 @@ class PartSelectionApp:
                                             field_mapping=self.config.get("field_mapping"))
             fields = {key: str(value or "").strip() for key, value in update["field_overrides"].items()}
             cache = load_stock_cache(self.stock_cache_path) if parts else {}
-            inherited, merges = edited_row_merge_updates(parts, overrides, refs, fields, cache)
+            # Footprint management must not inherit another row's material selection.
+            inherited, merges = ({}, []) if footprint_change is not None else edited_row_merge_updates(parts, overrides, refs, fields, cache)
             if merges:
                 backup = runtime_directory(self.project_root) / f"row_merge_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
                 save_overrides(backup / "overrides_before.json", overrides)
@@ -3380,6 +3449,9 @@ class PartSelectionApp:
 
         # A repeated request must not interrupt KiCad when the saved fields match.
         preflight = self.verify_schematic_field_values(ref_field_map)
+        if prepared_fields is not None and preflight.get('missing_refs'):
+            raise ValueError('当前原理图写回接口无法定位这些层级实例，未关闭工程或写入任何字段：' +
+                             ', '.join(preflight['missing_refs']))
         if preflight.get("ok") and not preflight.get("missing_refs"):
             preflight["phase"] = "already_synced_on_disk"
             aggregate["already_synced"] = True
@@ -3963,6 +4035,9 @@ def make_handler(app: PartSelectionApp):
                 if parsed.path == '/api/continue_design_sync':
                     json_response(self, app.design_sync.continue_pcb(str(payload.get('job_id') or ''),
                         str(payload.get('preview_id') or ''), payload.get('acknowledgments', {})))
+                    return
+                if parsed.path == '/api/retry_design_navigation':
+                    json_response(self, app.design_sync.retry_navigation(str(payload.get('job_id') or '')))
                     return
                 if parsed.path == '/api/pcb_update_preview':
                     refs = split_refs(payload.get('refs', ''))

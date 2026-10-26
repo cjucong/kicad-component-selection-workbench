@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import math
@@ -67,6 +68,37 @@ def geometry(source):
             return node.value
         return [part for child in node.children if (part := clean(child)) is not None]
     return [clean(n) for n in tree.children[2:] if clean(n) is not None]
+
+
+def copper_content(source):
+    """Local copper details, independent of labels and tolerated pad-center rounding."""
+    ignored = {'uuid', 'tstamp', 'net', 'pinfunction', 'pintype'}
+    def clean(node):
+        if node.head in ignored:
+            return None
+        if not node.children:
+            try:
+                return str(Decimal(node.value).normalize())
+            except (InvalidOperation, ValueError):
+                return node.value
+        return [value for child in node.children if (value := clean(child)) is not None]
+    items = []
+    for node in parse_sexpr(source, 'footprint').children:
+        layer = node.child('layer') if node.children else None
+        if node.head == 'pad':
+            values = [value for child in node.children if child.head != 'at' and (value := clean(child)) is not None]
+            at = node.child('at')
+            values.append(['angle', str(Decimal(at.arg(3) or '0').normalize()) if at else '0'])
+            items.append(values)
+        elif node.head == 'zone' or node.head.startswith('fp_') and layer and layer.arg().endswith('.Cu'):
+            items.append(clean(node))
+    return sorted(json.dumps(item, sort_keys=True) for item in items)
+
+
+def rename_copper_differences(entries, reference):
+    basis = copper_content(reference['path'].read_text(encoding='utf-8-sig'))
+    return [entry['id'] for entry in entries
+            if copper_content(entry['path'].read_text(encoding='utf-8-sig')) != basis]
 
 
 def footprint_info(path):
@@ -353,6 +385,7 @@ class FootprintChoices:
             except ValueError:
                 suggested = existing[0].get('placement',{}).get('footprint',default).split(':', 1)[1]
             return {'ok': True, 'preview_id': key, 'kind': 'rename', 'c_code': code, 'suggested_name': suggested,
+                    'copper_differences':rename_copper_differences(existing, existing[0]),
                     'default_id': default, 'libraries': list(libs), 'original_ids': originals, 'package': package,
                     'current_footprints': list(existing_ids),
                     'default_library': library_default,
@@ -752,6 +785,10 @@ class FootprintChoices:
                     missing = sorted(set(rename_ids) - {e['id'] for e in originals})
                     raise ValueError('该行缺少原封装：' + '、'.join(missing) + '；请先拆行再仅改名')
                 baseline_text = entry['path'].read_text(encoding='utf-8-sig')
+                copper_differences = rename_copper_differences(originals, entry)
+                if copper_differences and choice.get('copper_acknowledged') is not True:
+                    raise ValueError('共享库铜皮存在差异：' + '、'.join(copper_differences) +
+                        '。仅改名会保留各 PCB 实例几何，但以后从库更新可能统一铜皮；请明确确认此风险')
                 differences = []
                 visual_differences = []
                 for original in originals:

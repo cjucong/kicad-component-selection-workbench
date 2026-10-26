@@ -41,6 +41,7 @@
       <p data-design-status role="status">正在读取设计数据…</p>
       <div class="design-progress" data-design-progress hidden><progress aria-label="同步进度" data-design-bar></progress>
       <span data-design-elapsed></span></div>
+      <ol data-design-steps class="design-sync-steps" aria-label="同步阶段" aria-live="polite"></ol>
       <details data-design-timing hidden><summary>阶段耗时</summary><div data-design-timing-items></div></details>
       <div class="design-sync-options"><label data-design-alignment-label>封装对齐 <select data-design-alignment aria-label="封装对齐"><option value="center">中心对齐</option><option value="rigid">焊盘原位</option></select></label></div>
       <div data-design-changes></div>
@@ -49,7 +50,7 @@
       <label hidden><input type="checkbox" data-design-drops>确认移除所列原端子，保留现有走线、过孔和区域，并检查悬空及铜皮接触</label>
       <label hidden><input type="checkbox" data-design-connected>再次确认：放弃的端子已分配网络，可能使电路断开；接受此修改并人工检查连接与 DRC</label></div>
       <p class="design-sync-safety" data-design-safety></p></div>
-      <footer><button type="button" data-design-refresh hidden>重新预检</button><button type="button" data-design-query hidden>查询任务状态</button>
+      <footer><button type="button" data-design-navigation hidden>仅重试打开 / 定位</button><button type="button" data-design-refresh hidden>重新预检</button><button type="button" data-design-query hidden>查询任务状态</button>
       <button type="button" data-design-both hidden>改为全部同步</button><button type="button" data-design-apply disabled></button></footer>`;
     document.body.append(panel);
     if (!child) panel.showModal();
@@ -74,6 +75,9 @@
       if (active) bar.removeAttribute('value');
       else {bar.max=1;bar.value=value.ok===false?0:1;}
       const timings = value.timings || [];
+      const statuses = {running:'进行中',waiting:'等待',succeeded:'已完成',failed:'未完成',skipped:'已跳过'};
+      q('[data-design-steps]').innerHTML = (value.steps || []).map(step =>
+        `<li data-step-status="${escape(step.status)}"><span>${escape(statuses[step.status] || step.status)}</span><span>${escape(step.message)}</span><time>${Number(step.seconds || 0).toFixed(1)} s</time></li>`).join('');
       q('[data-design-timing]').hidden = !timings.length;
       q('[data-design-timing-items]').innerHTML = timings.map(item=>
         `<div>${escape(item.message)} <span>${Number(item.seconds).toFixed(1)} s</span></div>`).join('');
@@ -91,6 +95,7 @@
       q('[data-design-close]').disabled = value;
       q('[data-design-alignment]').disabled = value;
       q('[data-design-refresh]').disabled = value;
+      q('[data-design-navigation]').disabled = value;
       q('[data-design-apply]').disabled = true;
     }
     function enabled() {
@@ -153,6 +158,7 @@
       const previous = state.preflightJob; state.preflightJob = null;
       state.loading = true; state.preview = null;
       q('[data-design-apply]').disabled = true; q('[data-design-query]').hidden = true;
+      q('[data-design-navigation]').hidden = true;
       q('[data-design-geometry]').checked = false; q('[data-design-movement]').checked = false;
       status('正在读取设计并预检…');
       progress({},true);
@@ -216,6 +222,7 @@
               }
               q('[data-design-refresh]').hidden = !['partial','failed'].includes(value.stage);
               q('[data-design-query]').hidden = value.stage !== 'uncertain';
+              q('[data-design-navigation]').hidden = value.stage !== 'navigation_failed';
               status(value.message || value.error || '同步结束', !value.ok);
               if (value.stage === 'complete' && !state.notified.has('complete')) {
                 state.notified.add('complete'); Promise.resolve(notify()).catch(()=>{});
@@ -242,6 +249,16 @@
     q('[data-design-connected]').onchange = enabled;
     q('[data-design-refresh]').onclick = preflight;
     q('[data-design-query]').onclick = poll;
+    q('[data-design-navigation]').onclick = async () => {
+      if (state.busy || !state.job) return;
+      busy(true); q('[data-design-navigation]').hidden = true;
+      try {
+        await request('/api/retry_design_navigation', {job_id:state.job});
+      } catch (error) {
+        status(error.message,true);
+      }
+      await poll();
+    };
     q('[data-design-both]').onclick = () => {state.payload.destination='both';state.continuation=null;void preflight();};
     q('[data-design-apply]').onclick = async () => {
       if (q('[data-design-apply]').disabled || state.busy) return;

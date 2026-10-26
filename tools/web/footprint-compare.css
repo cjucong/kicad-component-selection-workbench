@@ -165,6 +165,12 @@
 .fp-dialog .fp-rename-field input { height:38px; }
 .fp-rename-field input[readonly] { background:#f6f8f9; color:#687e89; }
 .fp-rename-hint { font-size:12px; color:#657b87; margin:0 0 0 80px; }
+.fp-batch-scope { padding:10px 16px; background:#f2f6f4; border-bottom:1px solid #cedad5; font-size:12px; line-height:1.6; }
+.fp-batch-scope strong, .fp-batch-scope p { overflow-wrap:anywhere; }
+.fp-batch-scope details { margin:3px 0; }
+.fp-batch-scope p { margin:4px 0; max-height:80px; overflow:auto; }
+.fp-batch-scope label, [data-fp-copper-warning] { display:flex; align-items:flex-start; gap:6px; }
+[data-fp-copper-warning] { color:#925719; font-size:12px; line-height:1.6; }
 .fp-loading { min-height:200px; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; gap:10px; color:#637580; overflow-wrap:anywhere; }
 .fp-load-error { color:#a23b37; }
 .fp-loading button { background:#fff; border:1px solid #b8c4cd; border-radius:4px; padding:5px 14px; font:inherit; cursor:pointer; }

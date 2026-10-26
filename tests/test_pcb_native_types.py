@@ -58,6 +58,10 @@ elif MODE.startswith('persisted_'):
  if mode=='rounding':
   actual.proto.position.y_nm+=1
   actual.proto.orientation.value_degrees=126.9999993
+ elif mode=='eight_decimal_rounding':
+  expected.proto.orientation.value_degrees=54.00002872281633
+  actual.proto.orientation.value_degrees=54.00002872
+  actual.definition.pads[0].proto.position.x_nm+=1
  elif mode=='limit':actual.proto.position.x_nm-=1
  elif mode=='pad_rounding':actual.definition.pads[0].proto.position.x_nm+=1
  elif mode=='pad_position':actual.definition.pads[0].proto.position.x_nm+=2
@@ -79,7 +83,7 @@ elif MODE.startswith('persisted_'):
  elif mode=='unknown':actual.proto.MergeFromString(b'\xd8\x07\x01')
  elif mode=='pad_unknown':actual.definition.pads[0].proto.MergeFromString(b'\xd8\x07\x01')
  elif mode=='order':actual.definition.items=list(reversed(actual.definition.items))
- assert persisted_footprint_matches(expected,actual)==(mode in ('rounding','limit','order','pad_rounding','field_rounding','polygon_rounding')), mode
+ assert persisted_footprint_matches(expected,actual)==(mode in ('rounding','eight_decimal_rounding','limit','order','pad_rounding','field_rounding','polygon_rounding')), mode
  if mode in ('rounding','limit'):assert footprint_bytes(expected)!=footprint_bytes(actual)
 else:
  from part_selection_pcb_session import footprint_bytes, encode, PcbSession
@@ -111,7 +115,7 @@ print('verified')
 
 @pytest.mark.parametrize('mode', ['ids', 'unsupported', 'order', 'field_change', 'geometry_change',
                                 'net_change', 'id_change', 'count_change', 'position_change', 'metadata_change',
-                                *('persisted_'+mode for mode in ('rounding','limit','position','angle',
+                                *('persisted_'+mode for mode in ('rounding','eight_decimal_rounding','limit','position','angle',
                                     'pad_rounding','pad_position','pad_angle','field','net','uuid',
                                     'size','count','metadata','presence','order','unknown','pad_unknown',
                                     'noncanonical_angle','field_rounding','field_position',

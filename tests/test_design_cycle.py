@@ -73,3 +73,42 @@ def test_no_manager_does_not_claim_a_completed_restart(scratch_project,monkeypat
     with pytest.raises(RuntimeError,match='未核验当前工程退出'):app.sync_design_pcb('token')
     assert state['result']['saved'] and not state['result'].get('cycle_complete')
     app.reopen_and_locate_design.assert_not_called()
+
+
+def test_no_changes_skips_save_close_reopen_and_locate(scratch_project, monkeypatch):
+    app, state, session = app_for(scratch_project, monkeypatch)
+    app.apply_design_pcb.side_effect = None
+    app.apply_design_pcb.return_value = {'ok':True, 'saved':False, 'no_changes':True}
+    result = app.sync_design_pcb('token')
+    assert result['ok'] and result['no_changes'] and not result['saved']
+    session.save_verified.assert_not_called()
+    app.prepare_kicad_for_external_schematic_write.assert_not_called()
+    app.reopen_and_locate_design.assert_not_called()
+
+
+def test_navigation_failure_keeps_verified_pcb_and_never_repeats_save(scratch_project, monkeypatch):
+    app, state, session = app_for(scratch_project, monkeypatch)
+    app.reopen_and_locate_design.side_effect = ValueError('search window unavailable')
+    result = app.sync_design_pcb('token')
+    assert result['ok'] and result['saved'] and result['cycle_complete']
+    assert result['navigation_error'] == 'search window unavailable'
+    assert app.sync_design_pcb('token') == result
+    session.save_verified.assert_called_once()
+    app.prepare_kicad_for_external_schematic_write.assert_called_once()
+
+
+def test_reopen_connection_failure_preserves_saved_result_and_retries_only_navigation(scratch_project, monkeypatch):
+    app, state, session = app_for(scratch_project, monkeypatch)
+    session.snapshot.side_effect = [session.snapshot.return_value, RuntimeError('IPC unavailable')]
+    result = app.sync_design_pcb('token')
+    assert result['ok'] and result['saved'] and not result.get('reopened')
+    assert result['navigation_error'] == 'IPC unavailable'
+    assert result['resume_preview_id'] == 'token'
+    assert app.sync_design_pcb('token') == result
+    session.snapshot.side_effect = None
+    recovered = app.resume_design_pcb_navigation('token')
+    assert recovered['cycle_complete'] and recovered['reopened'] and recovered['located_ref'] == 'R1'
+    assert 'navigation_error' not in recovered
+    session.save_verified.assert_called_once()
+    app.prepare_kicad_for_external_schematic_write.assert_called_once()
+    app.apply_design_pcb.assert_called_once()

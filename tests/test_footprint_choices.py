@@ -610,6 +610,28 @@ class FootprintChoicesTest(unittest.TestCase):
         result = self.service.commit(self.choice(preview, source='rename', name='Renamed'))
         self.assertEqual(result['visual_differences'], ['DSMU:Other'])
 
+    def test_rename_copper_size_difference_requires_explicit_acknowledgment(self):
+        (self.pretty / 'Other.kicad_mod').write_text(module('Other', width=1.2))
+        preview = self.service.prepare_rename(['DSMU:0603', 'DSMU:Other'], 'Renamed')
+        self.assertEqual(preview['copper_differences'], ['DSMU:Other'])
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        with self.assertRaisesRegex(ValueError, '共享库铜皮存在差异'):
+            self.service.commit(self.choice(preview, source='rename', name='Renamed'))
+        self.assertFalse((self.pretty / 'Renamed.kicad_mod').exists())
+        result = self.service.commit(self.choice(preview, source='rename', name='Renamed',
+            copper_acknowledged=True))
+        self.assertEqual(result['footprint'], 'DSMU:Renamed')
+
+    def test_copper_acknowledgment_cannot_bypass_numbered_center_safety(self):
+        (self.pretty / 'Other.kicad_mod').write_text(
+            module('Other', width=1.2).replace('(at 0.75 0)', '(at 0.9 0)'))
+        preview = self.service.prepare_rename(['DSMU:0603', 'DSMU:Other'], 'Refused')
+        self.service.library_detail(preview['preview_id'], 'DSMU:0603')
+        with self.assertRaisesRegex(ValueError, '局部中心不同'):
+            self.service.commit(self.choice(preview, source='rename', name='Refused',
+                copper_acknowledged=True))
+        self.assertFalse((self.pretty / 'Refused.kicad_mod').exists())
+
     def test_grouped_paths_accept_single_pad_nanometer_history(self):
         from part_selection_footprint_geometry import estimate_alignment
         def align(converted, reference, output, *, method):
