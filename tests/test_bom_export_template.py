@@ -63,6 +63,7 @@ def test_template_columns_come_first_and_preserve_engineering_details(scratch_pr
         "Comment", "Value", "Footprint", "LCSC_URL", "Stock", "Delivery", "MOQ",
         "MPQ", "Price", "Param", "ReviewStatus", "PerReferenceSelection",
         "SchematicSyncStatus", "Note", "本地库存", "本地库存说明",
+        "PcbSyncStatus", "PendingPcbRefs", "UnverifiedPcbRefs",
     ]
     row = rows[0]
     assert [row[key] for key in TEMPLATE_COLUMNS] == [
@@ -90,6 +91,19 @@ def test_missing_metadata_uses_design_value_and_footprint_not_fake_product(scrat
     assert row["参数/规格"] == "100nF, 50V, X7R"
     assert row["商品编号"] == "C1001"
     assert row["物料编码"] == ""
+
+
+def test_pending_export_includes_unfinished_pcb_and_distinguishes_schematic(scratch_project):
+    result, _, rows = export_rows(scratch_project, [
+        make_row('U1', field_changed_refs='', pcb_changed_refs='U1'),
+        make_row('U2', field_changed_refs='', pcb_unverified_refs='U2'),
+        make_row('U3', field_changed_refs='', pcb_sync_by_ref={'U3':{'status':'synced'}}),
+    ], export_filter='needs_sync')
+    assert result['count'] == 2
+    assert [row['位号'] for row in rows] == ['U1', 'U2']
+    assert all(row['SchematicSyncStatus'] == 'SyncedOrNoDiff' for row in rows)
+    assert rows[0]['PcbSyncStatus'] == 'NeedsPcbUpdate' and rows[0]['PendingPcbRefs'] == 'U1'
+    assert rows[1]['PcbSyncStatus'] == 'NeedsPcbVerification' and rows[1]['UnverifiedPcbRefs'] == 'U2'
 
 
 def test_stale_product_metadata_is_not_exported_for_new_code(scratch_project):

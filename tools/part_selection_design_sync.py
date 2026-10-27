@@ -343,6 +343,10 @@ class DesignSync:
                         result={'ok':False,'retry_stage':'navigation'})
                     return
                 uncertain = phase == 'pcb_apply' and not isinstance(exc, ValueError)
+                if uncertain and hasattr(self.app, 'design_status'):
+                    pcb_state = self.app.pcb_updates.previews.get((result.get('pcb_preview') or {}).get('preview_id'))
+                    if pcb_state:
+                        self.app.design_status.uncertain(pcb_state, str(exc))
                 partial = job['phase_results'].get('schematic',{}).get('ok') is True
                 if phase == 'schematic':
                     job['phase_results']['schematic'] = {'ok':False,'error':str(exc)}

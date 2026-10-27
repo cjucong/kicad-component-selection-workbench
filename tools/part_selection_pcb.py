@@ -15,6 +15,7 @@ from part_selection_pcb_geometry import solve_placement, adapted_placement, mapp
 from part_selection_pad_mapping import dropped_terminal_report, verify_extra_terminals
 from part_selection_pcb_session import PcbSession, replacement, encode, metadata_replacement, metadata_values, geometry_signature, geometry_matches
 from part_selection_runtime import runtime_directory
+from part_selection_design_status import pcb_fields
 
 
 def schematic_identity(root, directory, refs=None, *, read_page=None, visit_symbol=None):
@@ -147,18 +148,7 @@ class PcbUpdates:
 
     @staticmethod
     def _fields(source, ref):
-        fields = {}
-        for key, value in source['actual'][ref].items():
-            name = source['design']['properties'][ref][key]
-            builtin = {'value':'Value','description':'Description'}.get(key)
-            if builtin:
-                fields[builtin] = value
-                if name.casefold() == builtin.casefold():
-                    continue
-            if key == 'footprint' and name.casefold() == 'footprint':
-                continue
-            fields[name] = value
-        return fields
+        return pcb_fields(source['actual'][ref], source['design']['properties'][ref])
 
     def _completion_key(self, ref, original, record, source):
         table_hash = source['design']['versions']['hashes'].get(str(Path(self.app.project_root)/'fp-lib-table'))
@@ -359,6 +349,8 @@ class PcbUpdates:
             self.previews[token] = {'refs': write_refs, 'requested_refs':refs, 'snapshot': scoped_snapshot, 'source': source,
                 'targets': targets, 'replacements': replacements, 'time': now, 'started': False,
                 'alignment': alignment, 'items':items}
+        if hasattr(self.app, 'design_status'):
+            self.app.design_status.observe(self.previews[token])
         blocked_reasons = [item['blocked_reason'] for item in items if item.get('blocked_reason')]
         return {'ok': True, 'preview_id': token, 'items': items, 'reason':'\n'.join(blocked_reasons),
                 'blocked':any(item['kind'] == 'unknown' or item.get('blocked_reason') for item in items),

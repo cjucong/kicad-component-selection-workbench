@@ -74,6 +74,8 @@ PCB 保存超时：`test_pcb_session.py` 覆盖保存独立限时、禁止 Req0 
 
 更新回归包含 `test_tool_windows.py` 的网络阻塞并发场景（工具可打开，退出和重复更新受保护），以及 `test_plugin_updates.py` 的 TLS 中断重试、证书拒绝、超时提示。真实 WebView2 的 `run_native_tool_windows_probe.py` 还通过实际桥接挂起更新检查并打开设置窗口；网络延迟为受控测试，不代表真实下载验证。
 
+`test_design_status.py` 使用一次性工程验证原理图无差异但 PCB 未完成、同名几何待核验、预检受阻、保存结果未知、重启恢复、目标库/实例变化使证据失效、属性映射、缺失/歧义/损坏 PCB，以及 Chromium 主表筛选、组数/器件计数和局部刷新保持焦点。主表读取不调用原生 IPC、不写 CAD 或确认状态；`run_native_design_keep_open.py --with-footprints` 另验证真实同步保存后对应待同步状态消除。
+
 ## 运行
 
 从独立插件仓库根目录执行：

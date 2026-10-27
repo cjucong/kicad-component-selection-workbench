@@ -106,8 +106,8 @@ const rows = [
  {dataset:{refs:'U1',missingRef:'1',reviewStatus:'Rejected'}},
  {dataset:{refs:'U2',syncError:'1',reviewStatus:'Pending'}}
 ];
-assert.deepEqual(workbenchCounts(rows),{groups:4,refs:5,needsSync:3,unconfirmed:3});
-assert.deepEqual(workbenchCounts([]),{groups:0,refs:0,needsSync:0,unconfirmed:0});
+assert.deepEqual(workbenchCounts(rows),{groups:4,refs:5,needsSync:3,needsSyncRefs:4,unconfirmed:3});
+assert.deepEqual(workbenchCounts([]),{groups:0,refs:0,needsSync:0,needsSyncRefs:0,unconfirmed:0});
 '''.replace('FUNCTIONS', functions.group())
         result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)

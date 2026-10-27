@@ -205,6 +205,8 @@ def run(report, *, with_footprints=False):
                                                                       for n in ['1','2']], 'dropped':[]},
                                          alignment_transform={'rotation_deg':17.0,'offset_mm':[.75,-1.25]})
                     app.row_footprint({'footprint_choice':selection})
+                    table = app.rows('R1', '__schematic__', include_stock=False)
+                    assert table[0].get('field_changed_refs') and table[0].get('pcb_changed_refs'), table
                     preview=app.design_sync.preview({'refs':['R1'],'destination':'design'})
                     assert preview['schematic_changes'] and preview['automatic']
                     native_preview=app.pcb_updates.preview
@@ -218,6 +220,8 @@ def run(report, *, with_footprints=False):
                         completed=finished(app.design_sync,app.design_sync.start(preview['preview_id'],{}))
                         if mode=='library':
                             assert completed['stage']=='partial' and completed['phase_results']['schematic']['ok'],completed
+                            table = app.rows('R1', '__schematic__', include_stock=False)
+                            assert not table[0].get('field_changed_refs') and table[0].get('pcb_changed_refs'), table
                             retry=app.design_sync.preview({'refs':['R1'],'destination':'pcb'})
                             assert retry['pcb_automatic'] and not retry['schematic_changes'],retry
                             completed=finished(app.design_sync,app.design_sync.continue_pcb(
@@ -231,6 +235,11 @@ def run(report, *, with_footprints=False):
                         (report/'manual-after-live.kicad_pcb').write_text(session.snapshot(root,['R1'])['text'],encoding='utf-8')
                         shutil.copy2(root/'Probe.kicad_pcb',report/'manual-after-disk.kicad_pcb')
                     assert completed['stage']=='complete',completed
+                    from part_selection_design_status import DesignStatus
+                    app.design_status = DesignStatus(app)
+                    table = app.rows('R1', '__schematic__', include_stock=False)
+                    assert not table[0].get('field_changed_refs') and not table[0].get('pcb_changed_refs') and not table[0].get('pcb_unverified_refs'), table
+                    result['main_table_restart_status_verified'] = True
                     current=session.snapshot(root,['R1'])
                     assert current['parts']['R1']['footprint']==target
                     token=(app.design_sync.previews[retry['preview_id']]['source'] if mode=='library' else

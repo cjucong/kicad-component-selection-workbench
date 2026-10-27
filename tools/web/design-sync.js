@@ -170,6 +170,9 @@
       if (schematicDone && !state.notified.has('schematic')) {
         state.notified.add('schematic'); Promise.resolve(notify()).catch(()=>{});
       }
+      if (value?.pcb && !state.notified.has('pcb:'+JSON.stringify(value.pcb))) {
+        state.notified.add('pcb:'+JSON.stringify(value.pcb)); Promise.resolve(notify()).catch(()=>{});
+      }
     }
     async function preflight() {
       if (state.busy || state.closed) return;
@@ -200,6 +203,7 @@
         if (!value.ok || !value.preview) throw new Error(value.error || '设计预检未完成');
         const result = value.preview;
         state.loading = false;
+        Promise.resolve(notify()).catch(()=>{});
         if (state.continuation) state.continuation = result.preview_id;
         render(result);
         if ((state.payload.destination === 'design' && result.automatic) ||

@@ -103,6 +103,8 @@ def test_ref_search_normalizes_full_group_before_filtering_and_allows_reselectio
     app.stock_cache_path = app.bom_dir / "stock.json"
     app.local_inventory_path = app.bom_dir / "本地库存.json"
     app.config = {"schematic_dir": scratch_project / "DOC"}
+    from part_selection_design_status import DesignStatus
+    app.design_status = DesignStatus(app)
     source = {part.ref: part for part in parts()}
     with patch("part_selection_server.load_schematic_parts", return_value=source), \
          patch.object(app, "reconcile_parts_with_schematic", return_value=({}, {})), \

@@ -30,7 +30,7 @@ class DesignSource:
                       set(root.glob('*.kicad_sch')) | set(directory.glob('*.kicad_sch')) |
                       set(root.glob('*.kicad_pro')))
 
-    def capture(self, refs: list[str] | None = None, *, allow_legacy=False) -> dict:
+    def capture(self, refs: list[str] | None = None, *, allow_legacy=False, include_terminals=True) -> dict:
         from part_selection_pcb import schematic_identity
         if refs is not None and (not refs or len(set(refs)) != len(refs)):
             raise ValueError('请选择不重复的位号')
@@ -54,9 +54,10 @@ class DesignSource:
 
         def visit(ref, symbol, path):
             from part_selection_pad_mapping import symbol_terminals
-            pins = symbol_terminals(symbol, pages[path])
-            previous = terminals.get(ref, [])
-            terminals[ref] = sorted(set(previous) | set(pins)) if previous is not None and pins is not None else None
+            if include_terminals:
+                pins = symbol_terminals(symbol, pages[path])
+                previous = terminals.get(ref, [])
+                terminals[ref] = sorted(set(previous) | set(pins)) if previous is not None and pins is not None else None
             props = {}
             for prop in symbol.children_named('property'):
                 name = prop.arg()

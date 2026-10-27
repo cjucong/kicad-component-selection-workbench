@@ -252,7 +252,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=r
   assert.match(counts,/原理图.*2.*已完成/);
   for(const expected of [/PCB.*113/,/字段更新 66/,/封装仅改名 36/,/更换封装 11/,/无需更新 1133/]) assert.match(counts,expected);
   assert.equal(await page.locator('[data-design-changes] tbody tr').count(),115);
-  assert.equal(await page.evaluate(()=>refreshes),1,'Completed schematic must refresh the main table even after PCB failure');
+  assert.equal(await page.evaluate(()=>refreshes),3,'Preflight, completed schematic, and failed PCB each refresh main-table state');
   assert.equal(await page.locator('[data-design-apply]').isEnabled(),false);
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

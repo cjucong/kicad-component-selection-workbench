@@ -749,7 +749,7 @@ def row_stock_is_normal(row: dict[str, object]) -> bool:
 def row_filter_keys(row: dict[str, object]) -> set[str]:
     keys = {"all"}
     is_nc = row_is_nc(row)
-    if row.get("field_changed_refs"):
+    if row.get("field_changed_refs") or row.get("missing_schematic_refs") or row.get("pcb_changed_refs") or row.get("pcb_unverified_refs"):
         keys.add("needs_sync")
     else:
         keys.add("sync_done")
@@ -1596,6 +1596,8 @@ class PartSelectionApp:
         self.footprint_choices = FootprintChoices(self.project_root, self.config.get("converter_executable"))
         self.selection_save_lock = threading.RLock()
         self.inventory_previews = OrderedDict()
+        from part_selection_design_status import DesignStatus
+        self.design_status = DesignStatus(self)
         from part_selection_pcb import PcbUpdates
         self.pcb_updates = PcbUpdates(self)
         from part_selection_design_sync import DesignSync
@@ -1873,6 +1875,7 @@ class PartSelectionApp:
             for row in rows:
                 row['spec_check'] = row_spec_check(row)
             self.enrich_local_inventory(rows)
+            self.design_status.enrich(rows, selected_bom)
             return sort_bom_rows(rows)
 
         selected_path = self.resolve_bom_path(selected_bom)
@@ -1894,6 +1897,7 @@ class PartSelectionApp:
         for row in rows:
             row['spec_check'] = row_spec_check(row)
         self.enrich_local_inventory(rows)
+        self.design_status.enrich(rows, selected_bom)
         return sort_bom_rows(rows)
 
     def create_stock_refresh(self):
@@ -2222,6 +2226,8 @@ class PartSelectionApp:
                 runtime_directory(self.project_root) / ('pcb-save-' + uuid4().hex), progress=progress)
             result.update(saved=True, save_path=saved['path'],
                           save_reply_timeout_recovered=bool(saved.get('reply_timeout_recovered')))
+            if hasattr(self, 'design_status'):
+                self.design_status.observe(state, saved=True, verified=expected)
             state['result'] = deepcopy(result)
             if keep_open:
                 # save_verified already checks the full live board and saved disk
@@ -3738,7 +3744,7 @@ class PartSelectionApp:
             if export_filter == "pending_review":
                 return row_review_status(row) != "Confirmed"
             if export_filter == "needs_sync":
-                return bool(row.get("field_changed_refs"))
+                return "needs_sync" in row_filter_keys(row)
             if export_filter == "all_non_nc":
                 return True
             return True
@@ -3772,6 +3778,9 @@ class PartSelectionApp:
             "Note",
             "本地库存",
             "本地库存说明",
+            "PcbSyncStatus",
+            "PendingPcbRefs",
+            "UnverifiedPcbRefs",
         ]
         code_counts = {}
         for row in rows:
@@ -3842,7 +3851,12 @@ class PartSelectionApp:
                         f"order={item.get('procurement_choice', {}).get('supplier') or '-'}"
                         for ref, item in (row.get("per_ref_selection") or {}).items()
                     ),
-                    "SchematicSyncStatus": "NeedsSchematicUpdate" if row.get("field_changed_refs") else "SyncedOrNoDiff",
+                    "SchematicSyncStatus": "NeedsSchematicUpdate" if row.get("field_changed_refs") or row.get("missing_schematic_refs") else "SyncedOrNoDiff",
+                    "PcbSyncStatus": "NeedsPcbUpdate" if row.get("pcb_changed_refs") else
+                        "NeedsPcbVerification" if row.get("pcb_unverified_refs") else
+                        "SyncedOrNoDiff" if row.get("pcb_sync_by_ref") else "NotChecked",
+                    "PendingPcbRefs": str(row.get("pcb_changed_refs") or ""),
+                    "UnverifiedPcbRefs": str(row.get("pcb_unverified_refs") or ""),
                     "Note": str(row.get("note") or ""),
                 }
             )
@@ -4733,7 +4747,7 @@ tr.hidden-row {{ display: none; }}
   <option value="low_stock">低库存器件</option>
   <option value="stock_error">库存异常器件</option>
   <option value="pending_review">未确认料</option>
-  <option value="needs_sync">待同步原理图</option>
+  <option value="needs_sync">待同步设计</option>
   <option value="all_non_nc">全部非NC器件</option>
 </select></label>
     <button type="button" id="exportPumpTable">导出 BOM 表</button>
@@ -4778,7 +4792,7 @@ tr.hidden-row {{ display: none; }}
 <main>
 <nav class="filter-tabs" aria-label="筛选视图">
   <button type="button" class="active" data-filter="all">全部</button>
-  <button type="button" data-filter="needs_sync">待同步原理图</button>
+  <button type="button" data-filter="needs_sync">待同步设计</button>
   <button type="button" data-filter="pending_review">未确认料</button>
   <button type="button" data-filter="changed_code">C 编码已改动</button>
   <button type="button" data-filter="stock_issue">库存异常/低库存</button>
@@ -4913,8 +4927,8 @@ const bomSearchCount = document.getElementById("bomSearchCount");
 let currentRows = [];
 const FILTER_CYCLES = {{
   needs_sync: [
-    {{key: "needs_sync", label: "待同步原理图"}},
-    {{key: "sync_done", label: "已同步原理图"}}
+    {{key: "needs_sync", label: "待同步设计"}},
+    {{key: "sync_done", label: "无待同步差异"}}
   ],
   pending_review: [
     {{key: "pending_review", label: "未确认料"}},
@@ -4969,20 +4983,23 @@ function setToolbarLabel(button, text) {{
 }}
 
 function workbenchCounts(rows) {{
-  const refs = new Set();
+  const refs = new Set(), pendingRefs = new Set();
   let needsSync = 0, unconfirmed = 0;
   rows.forEach(tr => {{
     String(tr.dataset.refs || tr.dataset.ref || "").split(",").filter(Boolean).forEach(ref => refs.add(ref.trim()));
-    if ([tr.dataset.syncNeeded, tr.dataset.missingRef, tr.dataset.syncError].includes("1")) needsSync += 1;
+    if ([tr.dataset.syncNeeded, tr.dataset.missingRef, tr.dataset.syncError].includes("1")) {{
+      needsSync += 1;
+      String(tr.dataset.syncRefs || tr.dataset.refs || tr.dataset.ref || "").split(",").filter(Boolean).forEach(ref => pendingRefs.add(ref.trim()));
+    }}
     if (tr.dataset.reviewStatus !== "Confirmed") unconfirmed += 1;
   }});
-  return {{groups: rows.length, refs: refs.size, needsSync, unconfirmed}};
+  return {{groups: rows.length, refs: refs.size, needsSync, needsSyncRefs:pendingRefs.size, unconfirmed}};
 }}
 
 function updateWorkbenchSummary() {{
   const counts = workbenchCounts(Array.from(rowsEl.querySelectorAll("tr[data-ref]")));
   document.getElementById("summaryRows").textContent = `${{counts.groups}} 组 / ${{counts.refs}} 器件`;
-  document.getElementById("summaryPending").textContent = `待同步 ${{counts.needsSync}}`;
+  document.getElementById("summaryPending").textContent = `待同步 ${{counts.needsSync}} 组 / ${{counts.needsSyncRefs}} 器件`;
   document.getElementById("summaryReview").textContent = `未确认 ${{counts.unconfirmed}}`;
 }}
 
@@ -5690,7 +5707,7 @@ function rowForRefs(row, refs) {{
     clone.spec_check = {{...row.spec_check, status: "unknown", issues: [], unknown_fields: ["value", "footprint"], unknown_details: [], error: ""}};
     clone.spec_check_needs_refresh = true;
   }}
-  for (const key of ["per_ref_sync_fields", "schematic_fields_by_ref", "per_ref_selection", "description_by_ref", "notes_by_ref", "field_diffs_by_ref", "external_schematic_updates", "schematic_field_conflicts", "stock_by_ref"]) {{
+  for (const key of ["per_ref_sync_fields", "schematic_fields_by_ref", "per_ref_selection", "description_by_ref", "notes_by_ref", "field_diffs_by_ref", "external_schematic_updates", "schematic_field_conflicts", "stock_by_ref", "pcb_sync_by_ref"]) {{
     if (row[key]) clone[key] = Object.fromEntries(Object.entries(row[key]).filter(([ref]) => selected.has(ref)));
   }}
   if (row.notes_by_ref) {{
@@ -5699,6 +5716,7 @@ function rowForRefs(row, refs) {{
   }}
   clone.missing_schematic_refs = String(row.missing_schematic_refs || "").split(",").filter(ref => selected.has(ref.trim())).join(",");
   clone.field_changed_refs = String(row.field_changed_refs || "").split(",").filter(ref => selected.has(ref.trim())).join(",");
+  for (const key of ["pcb_changed_refs", "pcb_unverified_refs"]) clone[key] = String(row[key] || "").split(",").filter(ref => selected.has(ref.trim())).join(",");
   clone.field_diffs = Object.fromEntries(Object.entries(row.field_diffs || {{}}).flatMap(([key, diff]) => {{
     const affected = String(diff.refs || "").split(",").filter(ref => selected.has(ref.trim()));
     return affected.length ? [[key, {{...diff, refs: affected.join(",")}}]] : [];
@@ -6475,6 +6493,38 @@ function schematicSyncMarker(row, syncNeeded) {{
   return `<div class="schematic-sync-marker" data-sync-marker><strong>有改动，请同步原理图</strong><div class="sync-row-diff">${{details.join("") || "物料信息已更新"}}</div></div>`;
 }}
 
+function designSyncNeeded(row) {{
+  return !!(row?.field_changed_refs || row?.missing_schematic_refs || row?.pcb_changed_refs || row?.pcb_unverified_refs);
+}}
+
+function designSyncRefs(row) {{
+  return [...new Set([row?.field_changed_refs, row?.missing_schematic_refs, row?.pcb_changed_refs, row?.pcb_unverified_refs].flatMap(value => String(value || "").split(",")).map(ref => ref.trim()).filter(Boolean))].join(",");
+}}
+
+function designSyncMarker(row, needed) {{
+  if (!needed) return "";
+  const schematic = !!(row.field_changed_refs || row.missing_schematic_refs);
+  const pcb = !!row.pcb_changed_refs, unknown = !!row.pcb_unverified_refs;
+  const title = schematic ? (pcb || unknown ? "待同步原理图和 PCB" : "待同步原理图") : pcb ? "待同步 PCB" : "PCB 待核验";
+  const schematicMarker = schematicSyncMarker(row, schematic);
+  const grouped = new Map();
+  for (const [ref, state] of Object.entries(row.pcb_sync_by_ref || {{}})) {{
+    if (!["pending", "unverified"].includes(state.status)) continue;
+    const changes = [];
+    if (state.before !== state.after && state.after) changes.push(`封装: ${{state.before || "(空)"}} → ${{state.after}}`);
+    for (const item of state.field_changes || []) {{
+      if (["LCSC_URL", "PROCUREMENT_URL"].includes(item.name)) continue;
+      changes.push(item.name === "Description" ? "物料参数更新" : `${{item.name}}: ${{item.before || "(空)"}} → ${{item.after || "(空)"}}`);
+    }}
+    if (state.reason) changes.push(state.reason);
+    const key = changes.join("；") || "PCB 更新未完成";
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(ref);
+  }}
+  const details = [...grouped].map(([text, refs]) => `<div>${{esc(refs.join(", "))}}：${{esc(text)}}</div>`).join("");
+  return `<div class="schematic-sync-marker" data-sync-marker><strong>${{title}}</strong>${{schematicMarker ? `<details><summary>原理图差异</summary>${{schematicMarker.replace('data-sync-marker', '')}}</details>` : ""}}${{pcb || unknown ? `<details><summary>PCB 差异 / 核验（已保存版本）</summary>${{details}}</details>` : ""}}</div>`;
+}}
+
 function schematicFieldReconcileNotice(row) {{
   const conflicts = row.field_conflicts || {{}};
   const conflictFields = Array.from(new Set(Object.values(conflicts).flatMap(item => Object.keys(item || {{}}))));
@@ -6538,18 +6588,19 @@ function updateSavedFieldDiffs(row, fields) {{
 function markRowNeedsSchematicSync(tr, refsText = "") {{
   if (!tr) return;
   const row = rowDataForElement(tr);
-  const needed = row?.schematic_fields_by_ref ? !!row.field_changed_refs : true;
+  const needed = row?.schematic_fields_by_ref ? designSyncNeeded(row) : true;
   tr.dataset.syncNeeded = needed ? "1" : "0";
+  tr.dataset.syncRefs = designSyncRefs(row);
   refreshRowState(tr);
   const button = tr.querySelector("[data-action='sync-schematic']");
   if (button) {{
     button.classList.remove("action-muted", "action-sync", "action-sync-needed");
     button.classList.add(needed ? "action-sync-needed" : "action-muted");
-    button.title = needed ? "有改动，请同步原理图" : "当前字段和原理图一致";
+    button.title = needed ? "同步设计或核验未完成的 PCB" : "当前无待同步设计差异";
   }}
   tr.querySelector("[data-sync-marker]")?.remove();
   if (needed) {{
-    const marker = schematicSyncMarker(row || {{field_changed_refs: refsText || tr.dataset.refs || tr.dataset.ref}}, true);
+    const marker = designSyncMarker(row || {{field_changed_refs: refsText || tr.dataset.refs || tr.dataset.ref}}, true);
     if (button) tr.querySelector("[data-col='review']")?.insertAdjacentHTML("beforeend", marker);
   }}
   for (const field of ["comment", "value", "footprint"]) {{
@@ -7041,13 +7092,13 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
     const code = stockCode(row);
     const original = originalCode(row);
     const stock = initialStock(row);
-    const syncNeeded = !!row.field_changed_refs;
+    const syncNeeded = designSyncNeeded(row);
     const missingRef = rowHasMissingRef(row);
     const filterKeys = rowFilterKeys(row, selectedStatus, syncNeeded, stock, reviewStatus).join(" ");
     const syncButtonClass = syncNeeded ? "action-sync-needed" : "action-muted";
     const syncButton = `<button type="button" class="small ${{syncButtonClass}}" data-action="sync-schematic" title="同步当前行的设计差异">同步设计</button>`;
     const syncSummary = schematicSyncSummary(row);
-    const syncMarker = schematicSyncMarker(row, syncNeeded);
+    const syncMarker = designSyncMarker(row, syncNeeded);
     const fieldReconcileNotice = schematicFieldReconcileNotice(row);
     const splitMarker = row.temp_split ? `<div class="split-marker">临时拆行；字段不改会自动合回</div>` : "";
     return `<tr class="${{rowVisualClass(row, selectedStatus, syncNeeded, stock, reviewStatus)}}" data-ref="${{esc(row.ref)}}" data-refs="${{esc(row.refs)}}" data-sync-needed="${{syncNeeded ? "1" : "0"}}" data-missing-ref="${{missingRef ? "1" : "0"}}" data-review-status="${{esc(reviewStatus)}}" data-code-status="${{esc(selectedStatus)}}" data-manual-code="${{(row.manual_c_code || row.stock_c_code) ? "1" : "0"}}" data-has-code="${{code ? "1" : "0"}}" data-is-nc="${{rowIsNc(row) ? "1" : "0"}}" data-stock-low="${{stockIsLow(stock) ? "1" : "0"}}" data-stock-issue="${{stockIsIssue(stock) ? "1" : "0"}}" data-filter-key="${{esc(filterKeys)}}" data-stock-code="${{esc(code)}}" data-stock-queried="${{stockAlreadyQueried(stock) ? "1" : "0"}}" data-original-code="${{esc(original)}}" data-engineering="${{esc(row.accepted_c_code)}}" data-lcsc="${{esc(row.lcsc_match_c_code)}}">
@@ -7120,6 +7171,7 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
     rowsEl.innerHTML = markup;
     rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
   }}
+  rowsEl.querySelectorAll("tr[data-ref]").forEach(tr => {{ tr.dataset.syncRefs = designSyncRefs(rowDataForElement(tr)); }});
   refreshFootprintLibraries();
   updateSplitPageChecks();
   applyColumnOrder();
@@ -8275,6 +8327,7 @@ const rowEditQueue = createRowEditQueue({{
   onIdle: regroupRowsAfterAutosave,
   onError: error => setState(`自动保存失败，编辑内容已保留：${{error.message}}`, "error")
 }});
+let rowEditGeneration = 0;
 
 function rowInputKey(input) {{
   return `${{loadedRowsBom}}|${{input.closest("tr")?.dataset.refs}}|${{input.dataset.field}}`;
@@ -8291,6 +8344,7 @@ function queueRowInput(input) {{
   }}
   rowEditQueue.schedule(rowInputKey(input), {{tr, input, refs: tr.dataset.refs, field: input.dataset.field, value: input.value,
     resolvedValue: input.dataset.field === "footprint" ? footprintFieldValue(input) : input.value}});
+  rowEditGeneration += 1;
 }}
 
 async function flushRowEdits() {{
@@ -9096,15 +9150,28 @@ async function openScopedDesignSync(destination, scope = document.getElementById
 document.querySelectorAll("[data-design-destination]").forEach(button => button.addEventListener("click", () => {{
   openScopedDesignSync(button.dataset.designDestination).catch(error => setState(error.message,"error"));
 }}));
+let designStatusRefreshVersion = 0;
 async function refreshDesignSyncRows() {{
+  const refreshVersion = ++designStatusRefreshVersion;
   await flushRowEdits();
-  const response = await fetch("/api/rows?bom="+encodeURIComponent(loadedRowsBom || "__schematic__")+"&stock=0");
+  const version = rowsLoadVersion, bom = loadedRowsBom, edits = rowEditGeneration;
+  const response = await fetch("/api/rows?bom="+encodeURIComponent(bom || "__schematic__")+"&stock=0");
   if (!response.ok) throw new Error("同步已完成，列表状态读取失败，请重新读取");
   const fresh = (await response.json()).rows;
+  if (refreshVersion !== designStatusRefreshVersion || edits !== rowEditGeneration || version !== rowsLoadVersion || bom !== loadedRowsBom || rowEditQueue.pending) return;
+  const byRef = new Map(fresh.flatMap(row => (row.refs_list || String(row.refs).split(",")).map(ref => [ref,row])));
   for (const tr of rowsEl.querySelectorAll("tr[data-ref]")) {{
-    const previous = rowDataForElement(tr), next = fresh.find(row => row.refs === previous?.refs);
-    if (!previous || !next) continue;
-    for (const key of ["schematic_fields_by_ref","schematic_sync_summary","schematic_synced_at","missing_schematic_refs"]) previous[key] = next[key];
+    const previous = rowDataForElement(tr);
+    if (!previous) continue;
+    const refs = previous.refs_list || String(previous.refs).split(",");
+    if (!refs.every(ref => byRef.has(ref))) continue;
+    for (const key of ["schematic_fields_by_ref","pcb_sync_by_ref"]) {{
+      previous[key] = Object.fromEntries(refs.filter(ref => byRef.get(ref)[key]?.[ref]).map(ref => [ref,byRef.get(ref)[key][ref]]));
+    }}
+    for (const key of ["missing_schematic_refs","pcb_changed_refs","pcb_unverified_refs"]) {{
+      previous[key] = refs.filter(ref => String(byRef.get(ref)[key] || "").split(",").includes(ref)).join(",");
+    }}
+    for (const key of ["schematic_sync_summary","schematic_synced_at"]) previous[key] = byRef.get(refs[0])[key];
     updateSavedFieldDiffs(previous,Object.keys(SYNC_FIELD_LABELS));
     markRowNeedsSchematicSync(tr);
     const review = tr.querySelector("[data-col='review']");

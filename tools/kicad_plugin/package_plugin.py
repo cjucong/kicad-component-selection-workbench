@@ -29,7 +29,7 @@ CORE_FILES = (
     "part_selection_stock_refresh.py", "web/stock-refresh.js",
     "part_selection_footprint_unify.py", "unify_footprints.py",
     "web/edit-menu.js", "web/footprint-adjust.js",
-    "part_selection_design_sync.py",
+    "part_selection_design_sync.py", "part_selection_design_status.py",
     "web/design-sync.js", "web/design-sync.css",
     "web/tool-pages.js", "web/tool-pages.css",
     "part_selection_design_source.py",
