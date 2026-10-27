@@ -1,4 +1,5 @@
 """Real Chromium local-stock regression; all workbook/CAD data is disposable."""
+import csv
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ import subprocess
 import sys
 import threading
 from http.server import ThreadingHTTPServer
+from unittest.mock import Mock
 
 import openpyxl
 
@@ -157,10 +159,53 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   await page.reload(); await qty('R2').waitFor();
   assert.equal(await qty('R2').inputValue(),'20');
   assert.equal(await qty('C1').inputValue(),'16');
+  // Real toolbar exports must await unsaved balances, not the debounce timer.
+  await page.locator('#localInventorySetCount').fill('100');
+  let exportRequests=0, releaseExportSave, exportSaveHeld;
+  page.on('request',request=>{if(request.url().endsWith('/api/export_pump_table')) exportRequests++;});
+  const exportSaveStarted=new Promise(resolve=>exportSaveHeld=resolve);
+  await page.route('**/api/local_inventory/update',async route=>{
+    if(route.request().postDataJSON().c_code==='C100') {
+      await new Promise(resolve=>{releaseExportSave=resolve;exportSaveHeld();});
+    }
+    await route.continue();
+  });
+  const exportBom=async()=>{
+    await page.locator('#exportPumpMenu').click();
+    await page.locator('#pumpExportMode').selectOption('all_non_nc');
+    await page.locator('#exportPumpTable').click();
+  };
+  await qty('C1').fill('41');
+  await qty('R2').fill('37');
+  await exportBom();
+  await exportSaveStarted;
+  assert.equal(exportRequests,0);
+  const exported=page.waitForResponse('**/api/export_pump_table');
+  releaseExportSave();
+  assert.equal((await (await exported).json()).count,3);
+  await page.unroute('**/api/local_inventory/update');
+  assert.equal((await inventory()).items.C100.quantity,37);
+  assert.equal((await inventory()).items.C200.quantity,41);
+  assert.equal(await qty('R1').inputValue(),'41');
+  // A real zero must export as zero, not an unknown or demand-derived quantity.
+  await qty('R2').fill('0');
+  const zeroExport=page.waitForResponse('**/api/export_pump_table');
+  await exportBom();
+  assert.equal((await (await zeroExport).json()).ok,true);
+  // Failed inventory saves must prevent stale BOM output from being created.
+  await page.route('**/api/local_inventory/update',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({ok:false,error:'测试导出前保存失败'})}));
+  await qty('R2').fill('99');
+  await exportBom();
+  await page.waitForFunction(()=>document.querySelector('[data-inventory-retry="C100"]').textContent==='未保存');
+  assert.equal(await page.evaluate(()=>flushRowEdits().then(()=>false,()=>true)),true);
+  assert.equal(exportRequests,2);
+  await page.unroute('**/api/local_inventory/update');
+  await qty('R2').press('Escape');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({preview:true,confirm:true,dedupe:true,shared_demand:true,zero_stock:true,nc:true,
     inline_edit:true,inflight_edits:true,save_failure:true,conflict_confirmation:true,focus_preserved:true,
-    immediate_set_count:true,persistence:true,column_settings:true,code_edit:true,manual_supplier_matching:true,mobile_bounds:true,page_errors:errors}));
+    immediate_set_count:true,persistence:true,column_settings:true,code_edit:true,manual_supplier_matching:true,mobile_bounds:true,
+    immediate_bom_export:true,zero_bom_export:true,failed_save_blocks_export:true,page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
@@ -197,6 +242,20 @@ def main():
         workbook.close()
         source_bytes = source.read_bytes()
         app = PartSelectionApp(config)
+        exports = []
+        export_bom = app.export_pump_table
+
+        def capture_export(payload):
+            result = export_bom(payload)
+            with Path(result['path']).open(encoding='utf-8-sig', newline='') as file:
+                reader = csv.DictReader(file)
+                records = list(reader)
+                assert reader.fieldnames[10:12] == ['本地库存', '本地库存说明']
+            exports.append(records)
+            return result
+
+        app.export_pump_table = capture_export
+        app._open_directory = Mock(return_value={'ok': True})
         server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(app))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -210,6 +269,17 @@ def main():
                 raise AssertionError(result.stderr)
             assert (root / 'example.kicad_sch').read_text() == schematic
             assert source.read_bytes() == source_bytes
+            assert len(exports) == 2
+            for records, expected in zip(exports, ({'C100': '37', 'C200': '41'}, {'C100': '0', 'C200': '41'})):
+                assert len(records) == 3
+                assert {row['位号'] for row in records} == {'R1', 'R2', 'C1'}
+                for row in records:
+                    assert row['本地库存'] == expected[row['商品编号']]
+                    assert row['单套用量'] == '1'
+                    assert '未扣减需求' in row['本地库存说明']
+                    if row['商品编号'] == 'C200':
+                        assert '共享' in row['本地库存说明']
+            assert app._open_directory.call_count == 2
         finally:
             server.shutdown()
             server.server_close()

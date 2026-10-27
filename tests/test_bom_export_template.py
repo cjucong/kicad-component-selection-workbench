@@ -60,9 +60,10 @@ def test_template_columns_come_first_and_preserve_engineering_details(scratch_pr
     assert columns[:10] == TEMPLATE_COLUMNS
     assert len(columns) == len(set(columns))
     assert columns[10:] == [
+        "本地库存", "本地库存说明",
         "Comment", "Value", "Footprint", "LCSC_URL", "Stock", "Delivery", "MOQ",
         "MPQ", "Price", "Param", "ReviewStatus", "PerReferenceSelection",
-        "SchematicSyncStatus", "Note", "本地库存", "本地库存说明",
+        "SchematicSyncStatus", "Note",
         "PcbSyncStatus", "PendingPcbRefs", "UnverifiedPcbRefs",
     ]
     row = rows[0]
@@ -174,6 +175,7 @@ def test_export_includes_local_balance_without_allocating_or_subtracting(scratch
         make_row("C3", value="different group", local_inventory=inventory)])
     assert columns[:10] == TEMPLATE_COLUMNS
     assert [row["本地库存"] for row in rows] == ["100", "100"]
+    assert all("实际数量，未扣减需求" in row["本地库存说明"] for row in rows)
     assert all("共享" in row["本地库存说明"] for row in rows)
 
 

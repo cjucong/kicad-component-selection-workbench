@@ -3787,6 +3787,8 @@ class PartSelectionApp:
             "商品编号",
             "物料编码",
             "位号",
+            "本地库存",
+            "本地库存说明",
             "Comment",
             "Value",
             "Footprint",
@@ -3801,8 +3803,6 @@ class PartSelectionApp:
             "PerReferenceSelection",
             "SchematicSyncStatus",
             "Note",
-            "本地库存",
-            "本地库存说明",
             "PcbSyncStatus",
             "PendingPcbRefs",
             "UnverifiedPcbRefs",
@@ -3826,7 +3826,7 @@ class PartSelectionApp:
                 quantity = 0
             if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
                 return "待核实", "本地库存数量无效"
-            note = "无本地记录，按 0 显示" if local.get("status") == "unmatched" else "当前结余"
+            note = "无本地记录，按 0 显示" if local.get("status") == "unmatched" else "实际数量，未扣减需求"
             if code_counts.get(code, 0) > 1:
                 note += "；同 C 编码跨行共享，勿重复累加"
             return str(quantity), note
@@ -4771,7 +4771,7 @@ tr.hidden-row {{ display: none; }}
 <section class="toolbar-section export-section" aria-label="表格导出">
   <span class="section-title">表格导出</span><div class="section-actions">
   <div class="app-menu">
-    <button type="button" id="exportPumpMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="导出 BOM 表" data-tooltip="选择导出范围：当前筛选、低库存等；导出仅包含非 NC 器件。">{toolbar_content('table-2', 'BOM 导出')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
+    <button type="button" id="exportPumpMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="导出 BOM 表" data-tooltip="含本地库存实际数量（导入或手动编辑），不扣减套数需求；导出仅包含非 NC 器件。">{toolbar_content('table-2', 'BOM 导出')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
     <div class="menu-popup export-popup">
     <label>导出范围<select id="pumpExportMode" title="选择导出 BOM 内容">
   <option value="current_filter">当前筛选结果</option>
