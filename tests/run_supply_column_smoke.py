@@ -28,7 +28,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.equal(await row.locator('select[data-field="status"]').count(),0);
   assert.equal(await code.inputValue(),'C100');
   assert.equal(await row.locator('[data-col="local_inventory"]').count(),0);
-  assert.equal(await row.locator('[data-local-inventory]').innerText(),'本地库存 0');
+  assert.equal(await row.locator('[data-inventory-quantity]').inputValue(),'0');
   assert.equal(await row.locator('[data-action="clear-primary"]').count(),0);
   assert.equal(await row.locator('[data-stock-cell] > button').count(),0);
   assert.doesNotMatch(await row.locator('[data-stock-cell]').innerText(),/4小时|本地还需|本地缺口/);

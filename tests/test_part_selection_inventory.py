@@ -33,6 +33,77 @@ def _workbook(path: Path, rows, *, sheet_name="商品明细"):
     workbook.close()
 
 
+def test_manual_inventory_update_is_independent_and_preserves_sources(inventory_app):
+    app = inventory_app
+    original = {'quantity': 12, 'status': 'ready', 'source_orders': ['SO1'], 'model': 'TEST'}
+    save_inventory(app.local_inventory_path, {'schema_version': 1, 'items': {'C100': original,
+        'C200': {'quantity': 8}}, 'unmatched': {'pending': {'quantity': 3}}})
+    before = {path: path.read_bytes() for path in app.project_root.rglob('*') if path.is_file()}
+    result = app.update_local_inventory({'c_code': 'C100', 'quantity': 0, 'expected': original})
+    saved = load_inventory(app.local_inventory_path)
+    assert result['item'] == saved['items']['C100']
+    assert result['item']['quantity'] == 0
+    assert result['item']['source_orders'] == ['SO1']
+    assert result['item']['manual_updated_at']
+    assert saved['items']['C200']['quantity'] == 8
+    assert saved['unmatched']['pending']['quantity'] == 3
+    assert Path(result['backup']).is_file()
+    assert not Path(result['backup']).is_relative_to(app.project_root)
+    assert load_inventory(Path(result['backup']))['items']['C100'] == original
+    for path, content in before.items():
+        if path != app.local_inventory_path:
+            assert path.read_bytes() == content
+
+
+def test_manual_inventory_conflict_does_not_overwrite_other_window(inventory_app):
+    app = inventory_app
+    item = app.update_local_inventory({'c_code': 'C100', 'quantity': 4, 'expected': None})['item']
+    app.update_local_inventory({'c_code': 'C200', 'quantity': 7, 'expected': None})
+    newer = app.update_local_inventory({'c_code': 'C100', 'quantity': 6, 'expected': item})['item']
+    with pytest.raises(ValueError, match='其他窗口'):
+        app.update_local_inventory({'c_code': 'C100', 'quantity': 1, 'expected': item})
+    assert load_inventory(app.local_inventory_path)['items'] == {'C100': newer,
+        'C200': load_inventory(app.local_inventory_path)['items']['C200']}
+
+
+@pytest.mark.parametrize('payload', [
+    {'c_code': 'D100', 'quantity': 1, 'expected': None},
+    {'c_code': 'C100', 'quantity': True, 'expected': None},
+    {'c_code': 'C100', 'quantity': -1, 'expected': None},
+    {'c_code': 'C100', 'quantity': 1.5, 'expected': None},
+    {'c_code': 'C100', 'quantity': '2', 'expected': None},
+    {'c_code': 'C100', 'quantity': 2**53, 'expected': None},
+    {'c_code': 'C100', 'quantity': 2},
+])
+def test_manual_inventory_rejects_invalid_edit(inventory_app, payload):
+    with pytest.raises(ValueError):
+        inventory_app.update_local_inventory(payload)
+    assert not inventory_app.local_inventory_path.exists()
+
+
+def test_manual_inventory_resolves_unknown_but_refuses_unreadable_file(inventory_app):
+    app = inventory_app
+    unknown = {'quantity': None, 'status': 'unresolved', 'issue': 'conflict'}
+    save_inventory(app.local_inventory_path, {'schema_version': 1, 'items': {'C100': unknown}})
+    result = app.update_local_inventory({'c_code': 'C100', 'quantity': 3, 'expected': unknown})
+    assert result['item']['status'] == 'ready'
+    assert result['item']['issue'] == ''
+    app.local_inventory_path.write_text('{broken', encoding='utf-8')
+    with pytest.raises(ValueError):
+        app.update_local_inventory({'c_code': 'C100', 'quantity': 0, 'expected': None})
+    assert app.local_inventory_path.read_text(encoding='utf-8') == '{broken'
+
+
+def test_manual_inventory_atomic_failure_keeps_existing(inventory_app):
+    app = inventory_app
+    original = {'quantity': 12}
+    save_inventory(app.local_inventory_path, {'schema_version': 1, 'items': {'C100': original}})
+    with patch('part_selection_inventory.os.replace', side_effect=OSError('disk full')):
+        with pytest.raises(OSError):
+            app.update_local_inventory({'c_code': 'C100', 'quantity': 3, 'expected': original})
+    assert load_inventory(app.local_inventory_path)['items']['C100'] == original
+
+
 def test_import_uses_current_aggregate_and_deduplicates_equal_order_rows(scratch_project):
     source = scratch_project / "orders.xlsx"
     _workbook(source, [
@@ -329,6 +400,10 @@ def test_inventory_http_preview_confirm_read_and_error(inventory_app):
         assert error.value.code == 400
         assert request('/api/local_inventory/import', {'preview_id': preview['preview_id'], 'confirmed': True})['ok']
         assert request('/api/local_inventory')['items']['C100']['quantity'] == 12
+        item = request('/api/local_inventory')['items']['C100']
+        assert request('/api/local_inventory/update', {'c_code': 'C100', 'quantity': 0, 'expected': item})['item']['quantity'] == 0
+        with pytest.raises(HTTPError):
+            request('/api/local_inventory/update', {'c_code': 'C100', 'quantity': 3, 'expected': item})
         with pytest.raises(HTTPError):
             request('/api/local_inventory/import', {'preview_id': preview['preview_id'], 'confirmed': True})
     finally:

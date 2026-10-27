@@ -1714,6 +1714,31 @@ class PartSelectionApp:
                             "unresolved": preview["summary"]["unresolved"], "invalid": preview["summary"]["invalid"],
                             "unmatched": preview['summary']['unmatched']}}
 
+    def update_local_inventory(self, payload: dict[str, object]) -> dict[str, object]:
+        code = str(payload.get('c_code') or '').strip().upper()
+        quantity = payload.get('quantity')
+        if not re.fullmatch(r'C[0-9]+', code):
+            raise ValueError('请输入有效 C 编码')
+        if type(quantity) is not int or not 0 <= quantity <= 9007199254740991:
+            raise ValueError('本地库存必须为非负整数，且不超过 9,007,199,254,740,991')
+        if 'expected' not in payload or not (payload['expected'] is None or isinstance(payload['expected'], dict)):
+            raise ValueError('缺少库存原值，请重新读取')
+        with self.selection_save_lock:
+            existing = load_inventory(self.local_inventory_path)
+            old = existing['items'].get(code)
+            if old != payload['expected']:
+                raise ValueError(f'{code} 本地库存已被其他窗口修改，请重新读取后再编辑')
+            if old and old.get('quantity') == quantity and old.get('status', 'ready') == 'ready':
+                return {'ok': True, 'c_code': code, 'item': old}
+            backup = runtime_directory(self.project_root) / (
+                f'inventory_edit_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}') / 'inventory_before.json'
+            save_inventory(backup, existing)
+            item = {**(old or {}), 'quantity': quantity, 'status': 'ready', 'issue': '',
+                    'manual_updated_at': inventory_import_time()}
+            existing['items'][code] = item
+            save_inventory(self.local_inventory_path, existing)
+        return {'ok': True, 'c_code': code, 'item': item, 'backup': str(backup)}
+
     def enrich_local_inventory(self, rows):
         try:
             saved = load_inventory(self.local_inventory_path)
@@ -4123,6 +4148,9 @@ def make_handler(app: PartSelectionApp):
                 if parsed.path == "/api/local_inventory/import":
                     json_response(self, app.import_local_inventory(payload))
                     return
+                if parsed.path == "/api/local_inventory/update":
+                    json_response(self, app.update_local_inventory(payload))
+                    return
                 if parsed.path == "/api/spec_check":
                     json_response(self, app.check_specs(payload))
                     return
@@ -4720,11 +4748,15 @@ tr.hidden-row {{ display: none; }}
 <section class="toolbar-section stock-section" aria-label="库存查询">
   <span class="section-title">库存查询</span><div class="section-actions">
   <button type="button" id="queryMissingStock" class="tool-button" disabled aria-label="开始库存查询" data-tooltip="优先查询未查、失败和过期库存；暂停后可继续。">{toolbar_content('package-search', '开始查询')}</button>
-  <select id="stockFreshness" aria-label="库存有效期" title="此时间内成功查询的库存不重复查询">
+  <div class="app-menu">
+  <button type="button" id="stockOptionsMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="库存查询选项" data-tooltip="查询有效期与刷新全部库存"><svg class="toolbar-icon" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
+  <div class="menu-popup export-popup stock-options-popup">
+  <label>库存有效期<select id="stockFreshness" aria-label="库存有效期" title="此时间内成功查询的库存不重复查询">
     <option value="24">超过24小时更新</option><option value="6">超过6小时更新</option><option value="1">超过1小时更新</option>
-  </select>
-  <button type="button" id="pauseStockQuery" class="tool-button" disabled aria-label="暂停库存查询" data-tooltip="暂停并保存进度，下次打开可继续。">{toolbar_content('pause', '暂停')}</button>
+  </select></label>
+  <span hidden><button type="button" id="pauseStockQuery" disabled aria-label="暂停库存查询">{toolbar_content('pause', '暂停')}</button></span>
   <button type="button" id="queryAllStock" class="tool-button" disabled aria-label="刷新全部库存" data-tooltip="重新联网查询全部主料及备选料库存，更新旧缓存。">{toolbar_content('refresh-cw', '刷新全部')}</button>
+  </div></div>
   <button type="button" id="importLocalInventory" class="tool-button" aria-label="导入本地库存" data-tooltip="从 Excel 预览并导入现存物料；同型号已购合计为库存量。">{toolbar_content('folder-open', '本地库存')}</button>
   <label class="inventory-set-count">套数 <input type="number" id="localInventorySetCount" min="1" max="1000000" step="1" value="3" aria-label="装配套数"></label>
   </div>
@@ -6286,7 +6318,19 @@ function setStockCells(tr, stock) {{
   if (editor && normalizeCCode(editor.value) !== normalizeCCode(stock.c_code)) return;
   const currentRow = rowDataForElement(tr);
   if (currentRow && !currentRow.selection_codes_mixed && stockCode(currentRow) === normalizeCCode(stock.c_code)) currentRow.stock = stock;
-  tr.querySelector("[data-stock-cell]").innerHTML = renderStockCell(stock, currentRow);
+  const stockCell = tr.querySelector("[data-stock-cell]");
+  const counts = stockCell.querySelector('.supply-counts');
+  const template = document.createElement('template');
+  template.innerHTML = renderStockCell(stock, currentRow);
+  if (counts?.querySelector('[data-inventory-quantity]')) {{
+    // Keep the live inventory editor mounted while market results arrive.
+    counts.firstElementChild.replaceWith(template.content.querySelector('.supply-counts').firstElementChild);
+    template.content.querySelector('.supply-counts').remove();
+    const expanded = stockCell.querySelector('details')?.open;
+    [...stockCell.children].filter(child => child !== counts).forEach(child => child.remove());
+    stockCell.append(template.content);
+    if (stockCell.querySelector('details')) stockCell.querySelector('details').open = Boolean(expanded);
+  }} else stockCell.replaceChildren(template.content);
   tr.dataset.stockQueried = stockAlreadyQueried(stock) ? "1" : "0";
   tr.dataset.stockLow = stockIsLow(stock) ? "1" : "0";
   tr.dataset.stockIssue = stockIsIssue(stock) ? "1" : "0";
@@ -8350,6 +8394,7 @@ function queueRowInput(input) {{
 async function flushRowEdits() {{
   await rowEditQueue.flush();
   if (rowEditQueue.pending) throw new Error("请先完成输入法编辑，再继续操作");
+  await window.flushLocalInventoryEdits?.();
 }}
 
 async function persistRowInput(entry) {{
@@ -8806,8 +8851,12 @@ async function startStockQuery(mode) {{
   }}
 }}
 
-document.getElementById("queryMissingStock").addEventListener("click", () => startStockQuery("stale"));
-document.getElementById("queryAllStock").addEventListener("click", () => startStockQuery("all"));
+document.getElementById("queryMissingStock").addEventListener("click", () => {{
+  if (window.stockRefreshCanPause?.()) {{
+    window.pauseDurableStockRefresh().catch(error => setState(error.message, "error"));
+  }} else startStockQuery("stale");
+}});
+document.getElementById("queryAllStock").addEventListener("click", () => {{ closeToolbarMenus(); startStockQuery("all"); }});
 syncAllButton.addEventListener("click", async () => {{
   try {{
     await flushRowEdits();

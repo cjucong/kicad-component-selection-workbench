@@ -60,15 +60,28 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.match(await updated.innerText(),/777/,'Starting a new batch replayed older inventory');
   for(const width of [1440,768,390]) {
    await page.setViewportSize({width,height:900});
+   assert(!await page.locator('#stockFreshness').isVisible());
+   assert(!await page.locator('#pauseStockQuery').isVisible());
+   await page.locator('#stockOptionsMenu').click();
    assert(await page.locator('#stockFreshness').isVisible());
+   await page.waitForFunction(()=>{const rect=document.querySelector('.stock-options-popup').getBoundingClientRect();return rect.x>=0 && rect.right<=innerWidth+1;});
+   const popup=await page.locator('.stock-options-popup').boundingBox();
+   assert(popup.x>=0 && popup.x+popup.width<=width+1);
+   await page.keyboard.press('Escape');
+   assert(!await page.locator('#stockFreshness').isVisible());
    const badge=page.locator('[data-stock-freshness]').first();
    await badge.scrollIntoViewIfNeeded();
    assert((await badge.innerText()).includes('近期已查'));
    if(process.env.STOCK_SCREENSHOT_DIR) await page.screenshot({path:process.env.STOCK_SCREENSHOT_DIR+'/'+width+'.png'});
   }
+  await page.locator('#stockOptionsMenu').click();
+  await page.locator('#queryAllStock').click();
+  await page.waitForFunction(()=>document.querySelector('#stockProgressText').innerText.includes('库存已完成 8/8'));
+  const refreshed=await (await page.request.get(process.env.STOCK_TEST_URL+'__test_seen')).json();
+  assert(refreshed.seen.includes('C100'),'Refresh all must query even recent inventory');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({pause:true,reopen:true,resume:true,fresh_skipped:true,unique_completed:true,
-    newer_row_result_preserved:true,viewports:[1440,768,390],page_errors:errors}));
+    newer_row_result_preserved:true,compact_menu:true,refresh_all:true,viewports:[1440,768,390],page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''

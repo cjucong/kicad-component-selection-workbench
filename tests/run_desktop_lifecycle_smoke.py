@@ -125,6 +125,11 @@ def child(root, phase):
                     assert window.evaluate_js("document.querySelector('#pathSourceSchematic').checked && !document.querySelector('#pathAdvanced').open"), 'Unexpected settings defaults'
                     window.evaluate_js("document.querySelector('#pathSettingsDialog [data-close-paths]').click()")
                     window.evaluate_js("const input=document.querySelector('#rows [data-field=value]'); input.value='220nF'; input.dispatchEvent(new Event('input',{bubbles:true}));")
+                    while not window.evaluate_js("!!document.querySelector('#rows [data-inventory-quantity]')"):
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Local inventory editor did not load')
+                        time.sleep(0.1)
+                    window.evaluate_js("const stock=document.querySelector('#rows [data-inventory-quantity]'); stock.value='35'; stock.dispatchEvent(new Event('input',{bubbles:true}));")
                     if phase == 'stock-close':
                         window.evaluate_js("""
                             const savedFetch = window.fetch.bind(window);
@@ -194,7 +199,7 @@ def main():
     with temporary_project(prefix='native-desktop-lifecycle-') as directory:
         root = Path(directory)
         (root / 'sample.kicad_pro').write_text('{}')
-        schematic = '(kicad_sch (symbol (property "Reference" "C1") (property "Comment" "capacitor") (property "Value" "100nF") (property "Footprint" "Library:0603")))'
+        schematic = '(kicad_sch (symbol (property "Reference" "C1") (property "Comment" "capacitor") (property "Value" "100nF") (property "Footprint" "Library:0603") (property "LCSC" "C100")))'
         (root / 'sample.kicad_sch').write_text(schematic)
         (root / 'settings.json').write_text(json.dumps({'schematic_dir':'.','source_bom':'__schematic__',
                                                       'open_lcsc_search_on_replace':False}))
@@ -218,6 +223,9 @@ def main():
             assert (root / 'final.ok').exists(), (root / 'restarted.log').read_text(errors='replace')
             records = json.loads((root / 'BOM/part_selection_overrides.json').read_text(encoding='utf-8'))
             assert records['C1']['field_overrides']['value']=='220nF'
+            from part_selection_inventory import load_inventory
+            from part_selection_overrides import load_config
+            assert load_inventory(load_config(root/'settings.json')['local_inventory'])['items']['C100']['quantity'] == 35
         assert (root / 'sample.kicad_sch').read_text()==schematic
         checks = {'real_webview2':'passed','production_cad_written':False}
         if not args.lifecycle_only:
@@ -226,7 +234,7 @@ def main():
         if not args.only_candidate:
             checks.update(native_close_autosave='passed',port_release_and_reopen='passed',
                           restart_and_exit_menu='passed',uninitialized_window_close='passed',
-                          pending_stock_native_close='passed')
+                          pending_stock_native_close='passed',local_inventory_close_autosave='passed')
         print(json.dumps(checks))
 
 

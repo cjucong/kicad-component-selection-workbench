@@ -44,7 +44,7 @@ class WorkbenchToolbarTest(unittest.TestCase):
         self.assertEqual(len(markup.ids), len(set(markup.ids)))
         expected = {
             "原理图数据": ["bomSelect", "refreshSchematicRows"],
-            "库存查询": ["queryMissingStock", "stockFreshness", "pauseStockQuery", "queryAllStock", "importLocalInventory", "localInventorySetCount"],
+            "库存查询": ["queryMissingStock", "stockOptionsMenu", "stockFreshness", "pauseStockQuery", "queryAllStock", "importLocalInventory", "localInventorySetCount"],
             "同步设计": ["designSyncScope", "designSyncMenu", "syncSelectedSchematic", "syncAllSchematic", "updateSelectedPcb"],
             "表格导出": ["exportPumpMenu", "pumpExportMode", "exportPumpTable", "exportChanges"],
             "列表视图": ["toggleColumns", "columnPanel", "autoSizeColumns", "columnList", "defaultViewMenu", "saveDefaultView", "loadDefaultView"],

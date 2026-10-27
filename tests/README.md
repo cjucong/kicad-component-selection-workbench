@@ -1,5 +1,7 @@
 # 插件回归测试
 
+本地库存手动编辑：`test_part_selection_inventory.py` 覆盖独立 HTTP 更新、非负安全整数、原值冲突、来源保留、工程外备份、失败不覆盖及 CAD/选料不变。`run_local_inventory_smoke.py` 用真实 Chromium 与隔离 HTTP 工程验证 600 ms、Enter、失焦、Esc、同编码跨行/NC 共享、连续在途编辑、失败重试、跨窗口冲突确认、刷新保持焦点和重开持久化。`run_stock_refresh_smoke.py` 验证单按钮开始/暂停/恢复、折叠菜单在 1440/768/390 宽度可用、Esc 收起、刷新全部不跳过近期缓存。上游库存响应为受控合成数据，不冒充真实商城性能测试。
+
 `test_design_sync.py`、`test_design_sync_ui.py` 覆盖保留自动流程意图、重新预检后只续接一次、来源变化拒绝、专项端子风险暂停以及不再重复选择对齐。`run_native_design_keep_open.py --with-footprints --report-dir <工程外目录>` 用真实一次性 KiCad 工程验证字段更新、仅改名、标准库替换、预检故障后续接，以及手动 17° 旋转和平移的实际焊盘坐标；完整核验保存、网络、未选对象与无变化重检，不写生产 CAD。
 
 `test_pcb_library.py` 与 `run_native_library_reader_probe.py --report-dir <工程外目录>` 验证私有 Windows 桌面上的完整原生库读取、当前桌面无读库窗口、复杂焊盘/图形/正背面、256 项 LRU 及哈希失效、失败不回退和本任务进程清理。`test_footprint_change_types.py` 验证可信原始 PCB 的丝印绘图点 1 nm 重载舍入兼容，未知子结构、铜皮、位置、身份和超限仍拒绝，失败缓存不妨碍撤销后重试。

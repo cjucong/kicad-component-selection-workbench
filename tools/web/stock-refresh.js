@@ -14,14 +14,17 @@
 
   function controls(data) {
     const busy = ['running','pausing'].includes(data.state);
-    start.disabled = !available() || busy || changing;
-    all.disabled = start.disabled;
+    start.disabled = !available() || data.state === 'pausing' || changing;
+    all.disabled = !available() || busy || changing;
     pause.disabled = !busy || data.state === 'pausing' || changing;
     freshness.disabled = busy || changing;
     const resume = data.state === 'paused' && data.pending > 0;
-    setToolbarLabel(start, resume ? '继续查询' : '开始查询');
-    start.setAttribute('aria-label', resume ? '继续库存查询' : '开始库存查询');
+    setToolbarLabel(start, busy ? (data.state === 'pausing' ? '正在暂停' : '暂停查询') : resume ? '继续查询' : '开始查询');
+    start.setAttribute('aria-label', busy ? '暂停库存查询' : resume ? '继续库存查询' : '开始库存查询');
+    start.querySelector('use')?.setAttribute('href', `#toolbar-icon-${busy ? 'pause' : 'package-search'}`);
+    start.dataset.tooltip = busy ? '暂停并保存进度，下次打开可继续。' : '优先查询未查、失败和过期库存；暂停后可继续。';
   }
+  window.stockRefreshCanPause = () => ['running','pausing'].includes(snapshot?.state);
   window.syncStockRefreshControls = () => { if (snapshot) controls(snapshot); };
 
   function paint(data) {

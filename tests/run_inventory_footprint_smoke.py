@@ -29,7 +29,7 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
   const row=ref=>page.locator(`#rows tr[data-refs="${ref}"]`);
   const code=ref=>row(ref).locator('[data-field="replacement_c_code"]');
   await row('R1').waitFor();
-  await page.waitForFunction(()=>document.querySelector('[data-local-inventory]').textContent==='本地库存 12');
+  await page.waitForFunction(()=>document.querySelector('[data-inventory-quantity]')?.value==='12');
   // No Enter: a late old code must not overwrite the newer result or editor.
   await code('R1').fill('C201');
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R1').effective_c_code==='C201');
@@ -58,12 +58,13 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R2').review_status==='Confirmed');
   await row('R2').getByRole('button',{name:'预览／管理封装'}).click();
   await page.getByRole('dialog',{name:'封装管理',exact:true}).waitFor();
-  await page.getByText('当前库封装 / 所选库封装 · 同原点、同比例 · mm',{exact:true}).waitFor();
+  await page.waitForFunction(()=>!!document.querySelector('[data-fp-page="library"] [data-fp-layer-image]'));
   if(process.env.WORKFLOW_SCREENSHOT) await page.screenshot({path:process.env.WORKFLOW_SCREENSHOT+'.library.png'});
   await page.getByRole('tab',{name:'替换立创封装',exact:true}).click();
   await page.getByText('没有唯一有效 C 编码',{exact:false}).waitFor();
   await page.getByRole('tab',{name:'库封装改名',exact:true}).click();
   await page.getByLabel('改名后',{exact:true}).fill('Local:Renamed_R2');
+  await page.locator('[data-fp-scope-ack]').check();
   if(process.env.WORKFLOW_SCREENSHOT) await page.screenshot({path:process.env.WORKFLOW_SCREENSHOT+'.rename.png'});
   await page.getByRole('button',{name:'应用改名',exact:true}).click();
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R2').footprint==='Local:Renamed_R2');
@@ -76,7 +77,8 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
   const library=page.locator('[data-fp-page="library"]');
   await library.locator('[data-fp-items] option[value="Local:Renamed_R2"]').waitFor({state:'attached'});
   await library.locator('[data-fp-items]').selectOption('Local:Renamed_R2');
-  await library.getByText('Local:Renamed_R2 · 焊盘 2 个 · 编号 1, 2',{exact:true}).waitFor();
+  await library.getByText('Local:Renamed_R2 · 焊盘 2 个 · 编号 1, 2',{exact:false}).waitFor();
+  await page.locator('[data-fp-scope-ack]').check();
   await library.locator('[data-fp-ack]').check();
   await library.locator('.fp-apply').click();
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R1').footprint==='Local:Renamed_R2');
@@ -100,6 +102,7 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
   await page.getByRole('tab',{name:'替换立创封装',exact:true}).click();
   await converted.locator('[data-fp-alignment][data-ok="true"]').waitFor();
   await converted.locator('[data-fp-name]').fill('Converted_R1');
+  await page.locator('[data-fp-scope-ack]').check();
   await converted.locator('[data-fp-ack]').check();
   await converted.locator('.fp-apply').click();
   await page.waitForFunction(()=>currentRows.find(r=>r.ref==='R1').footprint==='Local:Converted_R1');
@@ -121,11 +124,12 @@ def main():
         pretty = root/'Local.pretty'
         pretty.mkdir()
         (pretty/'Original.kicad_mod').write_text(module('Original'),encoding='utf-8')
+        (pretty/'Original_R2.kicad_mod').write_text(module('Original_R2'),encoding='utf-8')
         (root/'fp-lib-table').write_text('(fp_lib_table (version 7) (lib (name "Local") '
             '(type "KiCad") (uri "${KIPRJMOD}/Local.pretty")))',encoding='utf-8')
         schematic = '(kicad_sch '+''.join('(symbol (property "Reference" "R%d") '
             '(property "Comment" "resistor") (property "Value" "%dk") '
-            '(property "Footprint" "Local:Original") (property "LCSC" "C100"))' % (i,i*100)
+            '(property "Footprint" "Local:%s") (property "LCSC" "C100"))' % (i,i*100,'Original' if i == 1 else 'Original_R2')
             for i in (1,2))+')'
         (root/'test.kicad_sch').write_text(schematic,encoding='utf-8')
         config = root/'settings.json'

@@ -28,7 +28,9 @@ if (typeof document !== 'undefined') (() => {
   if (candidateOnly) return;
   let records = {}, pendingRecords = {}, readIssue = '', initialized = false, busy = false, previewId = '', sequence = 0, pendingMatches = {};
   let dirty = false;
-  window.hasUnsavedInventory = () => dirty;
+  const edits = new Map();
+  let inventoryRevision = 0, loadSequence = 0;
+  window.hasUnsavedInventory = () => dirty || edits.size > 0;
   const count = document.getElementById('localInventorySetCount');
   const savedCount = loadUiSettings().localInventorySetCount;
   count.value = Number.isInteger(savedCount) && savedCount >= 1 && savedCount <= 1000000 ? savedCount : 3;
@@ -49,9 +51,24 @@ if (typeof document !== 'undefined') (() => {
       const result = localInventoryComparison(records[code], quantity, totals.get(code) || quantity, sets,
         {nc: rowIsNc(row), mixed: row.selection_codes_mixed, issue: readIssue});
       const display = localInventoryPresentation(result, row.stock || {}, Boolean(code), code);
-      cell.textContent = display.local;
       cell.className = `local-inventory-${display.tone}`;
       cell.title = result.issue || '';
+      if (!code || row.selection_codes_mixed || readIssue) { cell.textContent = display.local; continue; }
+      let input = cell.querySelector('[data-inventory-quantity]');
+      if (!input || input.dataset.inventoryCode !== code) {
+        cell.innerHTML = `<label class="local-inventory-editor">本地库存 <input type="number" min="0" max="9007199254740991" step="1" inputmode="numeric" data-inventory-quantity data-inventory-code="${esc(code)}" aria-label="${esc(code)} 本地库存" title="同 C 编码共享库存，修改后自动保存"></label><button type="button" class="inventory-edit-status" data-inventory-retry="${esc(code)}" hidden></button>`;
+        input = cell.querySelector('[data-inventory-quantity]');
+      }
+      const edit = edits.get(code);
+      const value = edit ? edit.value : result.quantity === null && result.status === 'unresolved' ? '' : String(result.quantity ?? 0);
+      if (input.value !== value) input.value = value;
+      input.placeholder = result.status === 'unresolved' ? '待核实' : '0';
+      input.setAttribute('aria-invalid', edit?.error ? 'true' : 'false');
+      const state = cell.querySelector('[data-inventory-retry]');
+      state.hidden = !edit?.error && !edit?.saving;
+      state.disabled = !edit?.error;
+      state.textContent = edit?.error ? '未保存' : '保存中';
+      state.title = edit?.error ? `${edit.error}；点击重试` : '正在保存本地库存';
     }
   };
   let refreshFrame;
@@ -68,13 +85,117 @@ if (typeof document !== 'undefined') (() => {
     return result;
   }
 
+  function quantityOf(value) {
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error('请输入非负整数，空白不会保存为零');
+    return Number(value);
+  }
+
+  async function saveEdit(code) {
+    const edit = edits.get(code);
+    if (!edit) return;
+    clearTimeout(edit.timer);
+    if (edit.retryPromise) return edit.retryPromise;
+    if (edit.promise) return edit.promise;
+    edit.promise = (async () => {
+      while (edits.get(code) === edit) {
+        const value = edit.value, version = edit.version;
+        try {
+          const quantity = quantityOf(value);
+          edit.saving = true;
+          edit.error = '';
+          window.refreshLocalInventory();
+          const result = await request('/api/local_inventory/update', {c_code: code, quantity, expected: edit.expected});
+          records[code] = result.item;
+          inventoryRevision++;
+          edit.expected = result.item;
+          if (edit.version === version) {
+            edits.delete(code);
+            setState(`${code} 本地库存已保存：${quantity}`, 'saved');
+            return;
+          }
+        } catch (error) {
+          edit.error = error.message;
+          setState(`${code} 本地库存未保存：${error.message}`, 'error');
+          throw error;
+        } finally {
+          edit.saving = false;
+          window.refreshLocalInventory();
+        }
+      }
+    })();
+    try { await edit.promise; }
+    finally { edit.promise = null; }
+  }
+  window.flushLocalInventoryEdits = async () => {
+    await Promise.all([...edits.keys()].map(saveEdit));
+    if (edits.size) throw new Error('仍有未保存的本地库存，请完成编辑后重试');
+  };
+  window.addEventListener('beforeunload', event => {
+    if (edits.size) { event.preventDefault(); event.returnValue = ''; }
+  });
+  rowsEl.addEventListener('input', event => {
+    const input = event.target.closest('[data-inventory-quantity]');
+    if (!input) return;
+    const code = input.dataset.inventoryCode;
+    let edit = edits.get(code);
+    if (!edit) { edit = {expected: records[code] || null, version: 0}; edits.set(code, edit); }
+    clearTimeout(edit.timer);
+    edit.value = input.value;
+    edit.version++;
+    edit.error = '';
+    try { quantityOf(edit.value); edit.timer = setTimeout(() => saveEdit(code).catch(() => {}), 600); }
+    catch (error) { edit.error = error.message; }
+    window.refreshLocalInventory();
+  });
+  rowsEl.addEventListener('focusout', event => {
+    const input = event.target.closest('[data-inventory-quantity]');
+    if (input && !edits.get(input.dataset.inventoryCode)?.error) saveEdit(input.dataset.inventoryCode).catch(() => {});
+  });
+  rowsEl.addEventListener('keydown', event => {
+    const input = event.target.closest('[data-inventory-quantity]');
+    if (!input || event.isComposing) return;
+    const code = input.dataset.inventoryCode, edit = edits.get(code);
+    if (event.key === 'Enter') { event.preventDefault(); saveEdit(code).catch(() => {}); }
+    if (event.key === 'Escape' && edit && !edit.promise && !edit.retryPromise) {
+      event.preventDefault(); event.stopPropagation(); clearTimeout(edit.timer); edits.delete(code); window.refreshLocalInventory();
+    }
+  });
+  rowsEl.addEventListener('click', async event => {
+    const button = event.target.closest('[data-inventory-retry]');
+    if (!button) return;
+    const code = button.dataset.inventoryRetry, edit = edits.get(code);
+    if (!edit || edit.promise || edit.retryPromise) return;
+    edit.retryPromise = Promise.resolve().then(async () => {
+      quantityOf(edit.value);
+      const result = await request('/api/local_inventory');
+      if (edits.get(code) !== edit || edit.promise) return;
+      const latest = result.items?.[code] || null;
+      if (JSON.stringify(latest) !== JSON.stringify(edit.expected) &&
+          !window.confirm(`${code} 最新本地库存为 ${latest?.quantity ?? '待核实'}，是否仍按输入的 ${edit.value} 保存？`)) return;
+      records[code] = latest;
+      edit.expected = latest;
+      edit.retryPromise = null;
+      await saveEdit(code);
+    });
+    try { await edit.retryPromise; }
+    catch (error) { setState(error.message, 'error'); }
+    finally { edit.retryPromise = null; }
+  });
+
   async function load() {
+    await window.flushLocalInventoryEdits();
+    const sequence = ++loadSequence, revision = inventoryRevision;
     try {
       const result = await request('/api/local_inventory');
+      if (sequence !== loadSequence) return;
+      if (revision !== inventoryRevision) return load();
       records = result.items || {};
       pendingRecords = result.unmatched || {};
       readIssue = '';
-    } catch (error) { records = {}; pendingRecords = {}; readIssue = `库存读取失败：${error.message}`; }
+    } catch (error) {
+      if (sequence !== loadSequence || revision !== inventoryRevision) return;
+      records = {}; pendingRecords = {}; readIssue = `库存读取失败：${error.message}`;
+    }
     initialized = true;
     window.refreshLocalInventory();
   }
@@ -138,6 +259,7 @@ if (typeof document !== 'undefined') (() => {
     setBusy(true);
     status.textContent = '正在读取库存…';
     try {
+      await window.flushLocalInventoryEdits();
       const result = await request('/api/local_inventory/preview', {path: source.value.trim(), sheet: sheet.value, matches: pendingMatches});
       if (expectedSequence !== sequence) return;
       pendingMatches = result.matches || {};

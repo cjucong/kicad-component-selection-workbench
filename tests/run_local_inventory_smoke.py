@@ -24,7 +24,9 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   await page.goto(process.env.INVENTORY_TEST_URL);
   await page.waitForSelector('#rows tr[data-refs="R1"]');
   const cell=ref=>page.locator(`#rows tr[data-refs="${ref}"] [data-local-inventory]`);
-  await page.waitForFunction(()=>document.querySelector('#rows [data-local-inventory]').textContent.includes('本地库存 0'));
+  const qty=ref=>cell(ref).locator('[data-inventory-quantity]');
+  await qty('R1').waitFor();
+  assert.equal(await qty('R1').inputValue(),'0');
   assert.equal(await page.locator('#localInventorySetCount').inputValue(),'3');
   await page.getByRole('button',{name:'数据',exact:true}).click();
   await page.locator('[data-command="importLocalInventory"]').click();
@@ -41,14 +43,14 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   await page.locator('#inventoryConfirm').click();
   await page.waitForFunction(()=>document.querySelector('#inventoryStatus').textContent.includes('库存已导入'));
   await page.locator('#localInventoryDialog [data-inventory-close]').first().click();
-  assert.equal(await cell('R1').innerText(),'本地库存 5');
-  assert.equal(await cell('R3').innerText(),'本地库存 5');
-  assert.equal(await cell('C1').innerText(),'本地库存 0');
+  assert.equal(await qty('R1').inputValue(),'5');
+  assert.equal(await qty('R3').inputValue(),'5');
+  assert.equal(await qty('C1').inputValue(),'0');
   await page.locator('#localInventorySetCount').fill('2');
-  assert.equal(await cell('R1').innerText(),'本地库存 5');
+  assert.equal(await qty('R1').inputValue(),'5');
   await page.locator('#localInventorySetCount').fill('0');
   assert.equal(await page.locator('#localInventorySetCount').getAttribute('aria-invalid'),'true');
-  assert.equal(await cell('R1').innerText(),'本地库存 5');
+  assert.equal(await qty('R1').inputValue(),'5');
   await page.locator('#bomSearch').focus();
   assert.equal(await page.locator('#localInventorySetCount').inputValue(),'2');
   await page.locator('#toggleColumns').click();
@@ -61,8 +63,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   await page.locator('[data-column-toggle="stock"]').check();
   await page.locator('#toggleColumns').click();
   await page.locator('#rows tr[data-refs="R1"] [data-field="replacement_c_code"]').fill('C200');
-  await page.waitForFunction(()=>document.querySelector('#rows tr[data-refs="R1"] [data-local-inventory]').textContent.includes('本地库存 0'));
-  assert.equal(await cell('R2').innerText(),'本地库存 5');
+  await page.waitForFunction(()=>document.querySelector('#rows tr[data-refs="R1"] [data-inventory-code="C200"]')?.value==='0');
+  assert.equal(await qty('R2').inputValue(),'5');
   await page.locator('#importLocalInventory').click();
   await page.locator('#inventorySource').fill(process.env.INVENTORY_TEST_SOURCE);
   await page.locator('#inventoryPreview').click();
@@ -78,15 +80,86 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   if(process.env.LOCAL_INVENTORY_SCREENSHOTS) await page.screenshot({path:path.join(process.env.LOCAL_INVENTORY_SCREENSHOTS,'inventory-preview-mobile.png')});
   await page.locator('#inventoryConfirm').click();
   await page.waitForFunction(()=>document.querySelector('#inventoryStatus').textContent.includes('库存已导入'));
-  const inventory=await page.evaluate(async()=>await (await fetch('/api/local_inventory')).json());
-  assert.equal(inventory.items.C900.quantity,36);
-  assert.equal(Object.keys(inventory.unmatched || {}).length,0);
+  const importedInventory=await page.evaluate(async()=>await (await fetch('/api/local_inventory')).json());
+  assert.equal(importedInventory.items.C900.quantity,36);
+  assert.equal(Object.keys(importedInventory.unmatched || {}).length,0);
   await page.locator('#inventoryPreview').click();
   await page.waitForFunction(()=>!document.querySelector('#inventoryConfirm').disabled);
   assert.equal(await page.locator('[data-inventory-match]').inputValue(),'C900');
   assert.match(await page.locator('#inventoryStatus').innerText(),/待匹配 0/);
+  await page.locator('#localInventoryDialog [data-inventory-close]').first().click();
+  await page.setViewportSize({width:1600,height:1000});
+  const overridesBefore=await page.evaluate(()=>JSON.stringify(currentRows.map(row=>[row.ref,row.review_status,row.status,row.schematic_sync])));
+  const inventory=()=>page.evaluate(async()=>await (await fetch('/api/local_inventory')).json());
+  // A single main code shares one physical balance, even across NC rows.
+  await qty('R2').fill('24');
+  assert.equal(await qty('R3').inputValue(),'24');
+  await page.waitForFunction(async()=>(await (await fetch('/api/local_inventory')).json()).items.C100.quantity===24);
+  await page.evaluate(()=>flushRowEdits());
+  // In-flight edits serialize; the old response must not replace newer input.
+  let release, held, interceptedOnce=false;
+  const intercepted=new Promise(resolve=>held=resolve);
+  await page.route('**/api/local_inventory/update',async route=>{
+    if(!interceptedOnce) {
+      interceptedOnce=true;
+      await new Promise(resolve=>{release=resolve;held();});
+    }
+    await route.continue();
+  });
+  await qty('R2').fill('30');
+  await intercepted;
+  await qty('R2').fill('31');
+  release();
+  await page.evaluate(()=>flushRowEdits());
+  await page.unroute('**/api/local_inventory/update');
+  assert.equal((await inventory()).items.C100.quantity,31);
+  assert.equal(await qty('R3').inputValue(),'31');
+  await qty('R2').fill('');
+  assert.equal(await qty('R2').getAttribute('aria-invalid'),'true');
+  assert.equal((await inventory()).items.C100.quantity,31);
+  await qty('R2').press('Escape');
+  assert.equal(await qty('R2').inputValue(),'31');
+  await qty('R2').fill('0');
+  await qty('R2').press('Enter');
+  await page.evaluate(()=>flushRowEdits());
+  assert.equal((await inventory()).items.C100.quantity,0);
+  // A failed write remains editable and blocks normal exit/export flush.
+  await page.route('**/api/local_inventory/update',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({ok:false,error:'测试保存失败'})}));
+  await qty('R2').fill('9');
+  await qty('R2').press('Enter');
+  await page.waitForFunction(()=>document.querySelector('[data-inventory-retry="C100"]').textContent==='未保存');
+  assert.equal(await qty('R2').inputValue(),'9');
+  assert.equal(await page.evaluate(()=>flushRowEdits().then(()=>false,()=>true)),true);
+  assert.equal((await inventory()).items.C100.quantity,0);
+  await page.unroute('**/api/local_inventory/update');
+  await cell('R2').locator('[data-inventory-retry]').click();
+  await page.evaluate(()=>flushRowEdits());
+  // A remote edit requires explicit acknowledgement before overwriting.
+  let latest=(await inventory()).items.C100;
+  await page.request.post(process.env.INVENTORY_TEST_URL+'/api/local_inventory/update',{data:{c_code:'C100',quantity:18,expected:latest}});
+  await qty('R2').fill('20');
+  await qty('R2').press('Enter');
+  await page.waitForFunction(()=>document.querySelector('[data-inventory-retry="C100"]').title.includes('其他窗口'));
+  assert.equal((await inventory()).items.C100.quantity,18);
+  page.once('dialog',dialog=>dialog.accept());
+  await cell('R2').locator('[data-inventory-retry]').click();
+  await page.waitForFunction(async()=>(await (await fetch('/api/local_inventory')).json()).items.C100.quantity===20);
+  await qty('C1').fill('16');
+  await page.locator('#bomSearch').focus();
+  await page.evaluate(()=>flushRowEdits());
+  assert.equal((await inventory()).items.C200.quantity,16);
+  await qty('R2').focus();
+  await page.evaluate(()=>updateRowsForStock('C100',{ok:true,c_code:'C100',stock:700}));
+  assert.equal(await qty('R2').evaluate(input=>input===document.activeElement),true);
+  assert.equal(await qty('R2').inputValue(),'20');
+  assert.equal(await page.evaluate(()=>JSON.stringify(currentRows.map(row=>[row.ref,row.review_status,row.status,row.schematic_sync]))),overridesBefore);
+  if(process.env.LOCAL_INVENTORY_SCREENSHOTS) await page.screenshot({path:path.join(process.env.LOCAL_INVENTORY_SCREENSHOTS,'inventory-inline-desktop.png')});
+  await page.reload(); await qty('R2').waitFor();
+  assert.equal(await qty('R2').inputValue(),'20');
+  assert.equal(await qty('C1').inputValue(),'16');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({preview:true,confirm:true,dedupe:true,shared_demand:true,zero_stock:true,nc:true,
+    inline_edit:true,inflight_edits:true,save_failure:true,conflict_confirmation:true,focus_preserved:true,
     immediate_set_count:true,persistence:true,column_settings:true,code_edit:true,manual_supplier_matching:true,mobile_bounds:true,page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
