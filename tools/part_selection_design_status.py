@@ -1,6 +1,7 @@
 """Read-only table status; native verification evidence never authorizes writes."""
 import hashlib
 import json
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import threading
 from uuid import uuid4
@@ -29,8 +30,28 @@ def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
 
 
-def _tree(node):
-    return [_tree(child) for child in node.children] if node.children else node.value
+_NUMERIC_NODES = {'at', 'start', 'end', 'mid', 'center', 'xy', 'xyz', 'size',
+                  'width', 'thickness', 'offset', 'rotate', 'scale'}
+
+
+def _tree(node, content):
+    if not node.children:
+        return node.value
+    values = [_tree(child, content) for child in node.children]
+    if node.head in _NUMERIC_NODES:
+        for index, child in enumerate(node.children[1:], 1):
+            if child.children or content[child.start:child.start+1] == '"':
+                continue
+            try:
+                number = Decimal(child.value)
+                if number.is_finite():
+                    exact = format(number, 'f')
+                    values[index] = exact.rstrip('0').rstrip('.') if '.' in exact else exact
+                    if not number:
+                        values[index] = '0'
+            except InvalidOperation:
+                pass
+    return values
 
 
 class DesignStatus:
@@ -72,7 +93,8 @@ class DesignStatus:
         if digest == self.board_hash:
             return digest, self.parts
         parts = {}
-        for fp in parse_sexpr(content.decode('utf-8-sig'), 'kicad_pcb').children_named('footprint'):
+        text = content.decode('utf-8-sig')
+        for fp in parse_sexpr(text, 'kicad_pcb').children_named('footprint'):
             fields = {}
             for prop in fp.children_named('property'):
                 name = prop.arg().casefold()
@@ -90,8 +112,14 @@ class DesignStatus:
             # IPC adds library headers which the saved board omits.
             instance = [child for child in fp.children if not child.children
                         or child.head not in ('version', 'generator', 'generator_version')]
+            # Native reading reorders footprint objects and trims decimal zeroes.
+            # Keep every UUID/property and nested order; accept no coordinate drift.
+            data = [_tree(child, text) for child in instance]
+            atoms = [value for value in data if not isinstance(value, list)]
+            objects = sorted((value for value in data if isinstance(value, list)),
+                             key=lambda value:json.dumps(value, sort_keys=True))
             parts[ref] = {'footprint':fp.arg(), 'fields':fields,
-                         'digest':_digest([_tree(child) for child in instance]),
+                         'digest':_digest([atoms, objects]),
                          'path':fp.child('path').arg() if fp.child('path') else ''}
         if cache:
             self.board_hash, self.parts = digest, parts

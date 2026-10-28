@@ -246,6 +246,9 @@ def geometry_matches(original, proposed):
         if key == 'value_degrees':
             return abs(math.remainder(float(a)-float(b), 360)) <= .0001
         if isinstance(a, dict) and isinstance(b, dict):
+            if key == 'segment' and set(a) == set(b) == {'start', 'end'}:
+                return ((same(a['start'], b['start']) and same(a['end'], b['end']))
+                        or (same(a['start'], b['end']) and same(a['end'], b['start'])))
             keys = set(a) | set(b)
             for k in keys:
                 if k.endswith('_nm') or k == 'value_degrees':

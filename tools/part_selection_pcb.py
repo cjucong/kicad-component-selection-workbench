@@ -271,9 +271,12 @@ class PcbUpdates:
                 expected_target.get('hash') == target['source_hash'] and
                 Path(expected_target['path']).resolve() == Path(target['source_path']).resolve())
             adaptation = evidence.get('adaptation')
+            stale_adaptation = False
             if adaptation:
                 expected = evidence.get('target', {})
-                if expected.get('hash') != target['source_hash'] or Path(expected.get('path', '')).resolve() != Path(target['source_path']).resolve():
+                stale_adaptation = expected.get('hash') != target['source_hash']
+                if (Path(expected.get('path', '')).resolve() != Path(target['source_path']).resolve()
+                        or (stale_adaptation and original['footprint'] != evidence.get('after'))):
                     raise ValueError(ref + ' 适配封装文件已变化，请重新预览')
                 first = original['footprint'] == evidence.get('before')
                 basis = evidence.get('source', {})
@@ -307,6 +310,10 @@ class PcbUpdates:
                 raise ValueError(ref + ' 不能原位替换：' + placement['reason'])
             prototype = self.build(original, target, placement)
             if adaptation:
+                # A changed file may certify an already-applied no-op, never
+                # authorize a new write using stale manual adaptation evidence.
+                if stale_adaptation and not geometry_matches(original, {'proto':prototype}):
+                    raise ValueError(ref + ' 适配封装文件已变化，请重新预览')
                 from part_selection_pcb_session import describe, decode
                 after = describe(decode(prototype))
                 placement.update(mapped_pad_changes(original, after, placement['mapping']))

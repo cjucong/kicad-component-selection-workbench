@@ -91,31 +91,40 @@ with tempfile.TemporaryDirectory() as folder:
     target_description.update(source_path=str(library),source_hash=hashlib.sha256(library.read_bytes()).hexdigest())
     evidence['schema']=1;evidence['operation']='replace'
     evidence['target']={'path':str(library),'hash':target_description['source_hash']}
+    if MODE.startswith('target_changed'):
+        evidence['target']['hash']='previous-target-version'
     records=root/'records.json'
     records.write_text(json.dumps({'U1':{'footprint_change':evidence,'field_overrides':{'footprint':'Local:New'}}}))
     app=SimpleNamespace(project_root=root,config={'schematic_dir':root},overrides_path=records,selection_save_lock=threading.RLock())
     live=decode(encode(updated))
     if MODE=='first':live=old
+    elif MODE=='target_changed_first':live=old
     elif MODE=='geometry':live.definition.pads[0].proto.position.x_nm+=1000000
     elif MODE=='missing':
         next(p for p in live.definition.pads if p.number=='9').number='99'
     elif MODE=='duplicate':
         extra=Pad();extra.number='9';extra.proto.id.value=str(uuid4());live.definition.add_item(extra)
+    if MODE=='target_changed_pad':
+        altered=decode(target_description['proto'])
+        altered.definition.pads[0].proto.position.x_nm+=1000
+        target_description['proto']=encode(altered)
     original=describe(live);original['symbol_path']='/sheet/symbol'
     snapshot={'session_id':'test','revision':'1','parts':{'U1':original},'text':'(kicad_pcb)'}
     session=SimpleNamespace(snapshot=Mock(return_value=snapshot),read_library=Mock(return_value=target_description),apply=Mock())
     service=PcbUpdates(app,session=session)
-    source=service.sources.capture(['U1']);source['terminals']={'U1':None if MODE=='unknown' else [str(n) for n in range(1,11)]}
+    source=service.sources.capture(['U1'])
+    source['terminals']={'U1':None if MODE=='unknown' else [str(n) for n in range(1,9 if MODE=='target_changed_first' else 11)]}
     service._fields=lambda *args: {'Value':'changed'} if MODE=='fields' else {}
     if MODE=='cached':
         bound=service._source(['U1'],source)
         key=service._completion_key('U1',original,source['records']['U1'],bound)
         service.completed_geometry[key]={'geometry':geometry_signature(original),'targets':[{'path':str(library),'hash':target_description['source_hash']}]}
     before=encode(live)
-    if MODE in ('first','missing','geometry','duplicate'):
+    if MODE in ('first','missing','geometry','duplicate','target_changed_first','target_changed_pad'):
         try:service.preview(['U1'],'',source=source,alignment='center')
         except ValueError as exc:
-            expected={'first':'已有端子同号','missing':'已有端子同号','geometry':'后来发生变化','duplicate':'重复端子'}[MODE]
+            expected={'first':'已有端子同号','missing':'已有端子同号','geometry':'后来发生变化','duplicate':'重复端子',
+                      'target_changed_first':'文件已变化','target_changed_pad':'文件已变化'}[MODE]
             assert expected in str(exc),(MODE,str(exc))
             if MODE in ('first','missing'):assert 'U1' in str(exc),str(exc)
         else:raise AssertionError('Unsafe adaptation accepted: '+MODE)
@@ -136,7 +145,8 @@ print('preflight verified',MODE)
 '''
 
 
-@pytest.mark.parametrize('mode', ['restart','cached','fields','unknown','first','missing','geometry','duplicate'])
+@pytest.mark.parametrize('mode', ['restart','cached','fields','unknown','first','missing','geometry','duplicate',
+                                'target_changed_same','target_changed_first','target_changed_pad'])
 def test_native_preflight_distinguishes_existing_wired_extras_from_new_pads(mode):
     python=runtime()
     if python is None:

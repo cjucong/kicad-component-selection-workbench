@@ -186,6 +186,41 @@ def test_unrelated_unsaved_items_do_not_hide_verified_instance(status_app):
     assert not status(app)['pcb_unverified_refs']
 
 
+@pytest.mark.parametrize('change,synced', [
+    ('format_order', True), ('coordinate', False), ('uuid', False),
+    ('field_number', False), ('pad_number', False), ('duplicate', False),
+    ('polygon_order', False), ('unknown_numeric', False),
+])
+def test_saved_live_certificate_ignores_only_exact_serialization_equivalence(status_app, change, synced):
+    app, board = status_app
+    replacement_record(app); current_board(board)
+    objects = '''(fp_line (start 0.838200 -3.200400) (end -0.341026 -3.200400)
+       (stroke (width 0.101600) (type solid)) (layer "F.SilkS") (uuid "line"))
+      (pad "01" smd rect (at 0.000000 1.000000) (size 1.000000 1.000000) (uuid "pad"))
+      (fp_poly (pts (xy 0 0) (xy 1 0) (xy 0 1)) (uuid "polygon"))
+      (property "Number" "001.00") (future_numeric 001.00)'''
+    board.write_text(board.read_text()[:-2] + objects + '))')
+    state = observation(app, board)
+    text = state['snapshot']['text']
+    if change == 'format_order':
+        # KiCad sorts footprint objects on read and trims decimal zeroes.
+        first, second = objects.split('\n      (pad ', 1)
+        text = text.replace(objects, '(pad ' + second + '\n' + first)
+        for old, new in [('0.838200','0.8382'),('-3.200400','-3.2004'),
+                         ('0.101600','0.1016'),('0.000000','0'),('1.000000','1')]:
+            text = text.replace(old, new)
+    elif change == 'coordinate': text = text.replace('0.838200', '0.838201')
+    elif change == 'uuid': text = text.replace('"line"', '"other-line"')
+    elif change == 'field_number': text = text.replace('"001.00"', '"1"')
+    elif change == 'pad_number': text = text.replace('"01"', '"1"')
+    elif change == 'duplicate': text = text.replace(objects, objects + '\n' + objects.split('\n')[0] + ')')
+    elif change == 'polygon_order': text = text.replace('(xy 1 0) (xy 0 1)', '(xy 0 1) (xy 1 0)')
+    elif change == 'unknown_numeric': text = text.replace('(future_numeric 001.00)', '(future_numeric 1)')
+    state['snapshot']['text'] = text
+    assert app.design_status.observe(state)
+    assert (not status(app)['pcb_unverified_refs']) is synced
+
+
 @pytest.mark.parametrize('failure', ['malformed', 'duplicate', 'identity', 'ambiguous', 'missing'])
 def test_unreadable_or_unassociated_pcb_never_looks_synced(status_app, failure):
     app, board = status_app

@@ -129,7 +129,8 @@ def test_replacement_native_proto_boundaries(mode):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize('mode', ['rounding_order','multiplicity','real_move','shape','ambiguous_matching'])
+@pytest.mark.parametrize('mode', ['rounding_order','multiplicity','real_move','shape','ambiguous_matching',
+                                'reverse_segment','reverse_move','reverse_width','reverse_layer'])
 def test_geometry_completion_matches_unordered_items_without_losing_content(mode):
     python=runtime()
     if python is None:
@@ -160,7 +161,14 @@ elif MODE=='ambiguous_matching':
         item.proto.shape.segment.end.y_nm=0
     actual=decode(encode(expected))
     for item,x in zip(actual.definition.items,[4,-5]):item.proto.shape.segment.start.x_nm=x
-assert geometry_matches(describe(expected),describe(actual)) == (MODE in ('rounding_order','ambiguous_matching')),MODE
+elif MODE.startswith('reverse_'):
+    segment=actual.definition.items[0].proto.shape.segment
+    start=type(segment.start)();start.CopyFrom(segment.start)
+    segment.start.CopyFrom(segment.end);segment.end.CopyFrom(start)
+    if MODE=='reverse_move':segment.start.x_nm+=6
+    if MODE=='reverse_width':actual.definition.items[0].proto.shape.attributes.stroke.width.value_nm+=1
+    if MODE=='reverse_layer':actual.definition.items[0].proto.layer+=1
+assert geometry_matches(describe(expected),describe(actual)) == (MODE in ('rounding_order','ambiguous_matching','reverse_segment')),MODE
 print('verified',MODE)
 '''
     result=subprocess.run([str(python),'-B','-c','MODE='+repr(mode)+'\n'+script],

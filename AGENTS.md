@@ -32,6 +32,8 @@
 
 ## 测试与临时产物
 
+- PCB 完成证据的保存/实时比较只消除精确等值数字格式和顶层对象排序，不忽略 UUID、引号字段、焊盘编号、重复对象或真实坐标变化；嵌套轮廓顺序保留。线段反向仅用于几何完成识别，不放宽事务/回读。手动适配目标版本改变只允许实时核验已经应用且与最新目标几何一致的无变化实例，不授权新几何写入；保留 `test_design_status.py`、`test_pcb_native_types.py`、`test_pad_mapping_native_types.py` 和真实保存重启状态回归。
+
 - 同步窗口必须区分核对范围、原理图实际差异和 PCB 实际差异，不能把全范围数量当作写入数量；主表待同步设计统一包含原理图、PCB 及待核验状态，历史同步摘要须明确已完成的阶段。主表按已保存 PCB 只读比较，原生证据须绑定实例、来源与目标库，不能以同名代替几何证明；失败、结果未知、重启及拆行不可丢失未完成项。状态证据仅供显示，不授权写入或绕过实时预检。保留 `test_design_status.py`、`test_design_sync.py`、`test_design_sync_ui.py` 的阶段、筛选、局部刷新与计数回归，以及 `run_native_design_keep_open.py` 的实际保存后状态验证。
 - KiCad 原生闭合多边形可省略与首节点完整相等的重复末点；完整 protobuf 比较仅对已知、无未知节点属性、closed=true 且首节点为 point 的冗余闭合表示规范化，轮廓、孔洞和自定义焊盘同规则。不得排序或翻转轮廓节点，不放宽真实坐标、UUID、网络、焊盘或其他内容。诊断具体位号不能覆盖事务全范围，失败仍核验整批撤回。保留 `test_pcb_native_types.py`、`test_pcb_transaction.py` 和 `run_native_design_keep_open.py` 的真实闭合点往返、保存及无重复更新验证。
 
