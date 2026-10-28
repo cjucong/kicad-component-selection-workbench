@@ -209,10 +209,16 @@ def decode(value):
     return FootprintInstance(proto)
 
 
-def geometry_data(original):
+def _annotation_layers():
+    from kipy.proto.board.board_types_pb2 import BoardLayer
+    return {getattr(BoardLayer, 'BL_'+name) for name in (
+        'F_SilkS','B_SilkS','F_Fab','B_Fab','F_CrtYd','B_CrtYd','Dwgs_User','Cmts_User')}
+
+
+def geometry_data(original, *, pads_only=False):
     """Native geometry for completion recognition; not transaction validation."""
     from google.protobuf.json_format import MessageToDict
-    from kipy.board_types import Field
+    from kipy.board_types import Field, BoardShape, BoardText, BoardTextBox, Footprint3DModel
     fp = decode(original['proto'])
     native = deepcopy(fp.proto)
     if _canonical_closed_polygons(native):
@@ -224,8 +230,17 @@ def geometry_data(original):
         if isinstance(value, list):
             return [clean(item) for item in value]
         return value
+    annotation_layers = _annotation_layers()
+    def included(item):
+        if isinstance(item, Field):
+            return False
+        if pads_only and isinstance(item, Footprint3DModel):
+            return False
+        if pads_only and isinstance(item, (BoardShape, BoardText, BoardTextBox)):
+            return item.layer not in annotation_layers
+        return True
     items = sorted(([type(item).__name__, clean(MessageToDict(item.proto, preserving_proto_field_name=True))]
-                    for item in fp.definition.items if not isinstance(item, Field)), key=lambda item:json.dumps(item, sort_keys=True))
+                    for item in fp.definition.items if included(item)), key=lambda item:json.dumps(item, sort_keys=True))
     definition = deepcopy(fp.proto.definition)
     definition.ClearField('items')
     return [clean(MessageToDict(definition, preserving_proto_field_name=True)), items,
@@ -238,6 +253,35 @@ def geometry_signature(original):
 
 
 def geometry_matches(original, proposed):
+    return _geometry_matches(geometry_data(original), geometry_data(proposed))
+
+
+def pad_geometry_matches(original, proposed):
+    """Completion only: retain board annotations; copper/mask/pads remain strict."""
+    return _geometry_matches(geometry_data(original, pads_only=True),
+                             geometry_data(proposed, pads_only=True))
+
+
+def annotation_completion_matches(original, target, placement):
+    """Prove a no-op with annotation textboxes; never authorize their replacement."""
+    from kipy.board_types import BoardTextBox
+    parts = [decode(value['proto']) for value in (original, target)]
+    stripped = False
+    for part in parts:
+        kept = []
+        for item in part.definition.items:
+            if isinstance(item, BoardTextBox) and item.layer in _annotation_layers():
+                stripped = True
+            else:
+                kept.append(item)
+        part.definition.items = kept
+    if not stripped:
+        return False
+    proposed = replacement(describe(parts[0]), describe(parts[1]), placement)
+    return pad_geometry_matches(original, {'proto':encode(proposed)})
+
+
+def _geometry_matches(before, after):
     # Completion recognition only: native nm/angle round-trips can vary slightly.
     # The transaction's complete staged/readback equality remains exact.
     def same(a, b, key=''):
@@ -264,7 +308,6 @@ def geometry_matches(original, proposed):
         if isinstance(a, list) and isinstance(b, list):
             return len(a) == len(b) and all(same(x,y) for x,y in zip(a,b))
         return type(a) is type(b) and a == b
-    before, after = geometry_data(original), geometry_data(proposed)
     if same(before, after):
         return True
     if not same([before[0], *before[2:]], [after[0], *after[2:]]) or len(before[1]) != len(after[1]):

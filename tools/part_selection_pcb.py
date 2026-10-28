@@ -14,6 +14,7 @@ from part_selection_footprint_changes import classify_footprint_change, board_co
 from part_selection_pcb_geometry import solve_placement, adapted_placement, mapped_pad_changes
 from part_selection_pad_mapping import dropped_terminal_report, verify_extra_terminals
 from part_selection_pcb_session import PcbSession, replacement, encode, metadata_replacement, metadata_values, geometry_signature, geometry_matches
+from part_selection_pcb_session import pad_geometry_matches, annotation_completion_matches
 from part_selection_runtime import runtime_directory
 from part_selection_design_status import pcb_fields
 
@@ -308,22 +309,31 @@ class PcbUpdates:
                 placement = solve_placement(original, target, alignment=alignment)
             if not placement['ok']:
                 raise ValueError(ref + ' 不能原位替换：' + placement['reason'])
-            prototype = self.build(original, target, placement)
+            retained_textboxes = (original['footprint'] == source['targets'][ref]
+                                  and annotation_completion_matches(original, target, placement))
+            prototype = original['proto'] if retained_textboxes else self.build(original, target, placement)
             if adaptation:
                 # A changed file may certify an already-applied no-op, never
                 # authorize a new write using stale manual adaptation evidence.
-                if stale_adaptation and not geometry_matches(original, {'proto':prototype}):
+                if stale_adaptation and not pad_geometry_matches(original, {'proto':prototype}):
                     raise ValueError(ref + ' 适配封装文件已变化，请重新预览')
                 from part_selection_pcb_session import describe, decode
                 after = describe(decode(prototype))
                 placement.update(mapped_pad_changes(original, after, placement['mapping']))
                 if alignment == 'rigid' and placement['max_error_mm'] > .001 + 1e-12:
                     raise ValueError(ref + ' 手动适配焊盘移动超过刚体容差 0.001 mm，请使用中心模式核对并明确接受偏移')
-                if original['footprint'] == source['targets'][ref] and not geometry_matches(original, {'proto':prototype}):
+                if original['footprint'] == source['targets'][ref] and not pad_geometry_matches(original, {'proto':prototype}):
                     raise ValueError(ref + ' 已适配 PCB 几何或位置后来发生变化，请重新预览，不能恢复旧位置')
-            if original['footprint'] == source['targets'][ref] and geometry_matches(original, {'proto':prototype}):
+            complete_geometry = (original['footprint'] == source['targets'][ref]
+                                 and geometry_matches(original, {'proto':prototype}))
+            retained_annotations = retained_textboxes or (
+                not complete_geometry and original['footprint'] == source['targets'][ref]
+                and pad_geometry_matches(original, {'proto':prototype}))
+            if original['footprint'] == source['targets'][ref] and (complete_geometry or retained_annotations):
                 kind = 'none'
                 common.update(kind='fields' if fields else 'none', needs_ack=False, reason='目标封装几何已在当前 PCB 生效')
+                if retained_annotations:
+                    common.update(retained_board_annotations=True, reason='焊盘及电气几何已一致，保留板级丝印/Fab/模型定制')
                 self.completed_geometry[completion_key] = {'geometry':geometry_signature(original),
                     'targets':[{'ref':ref,'path':target['source_path'],'hash':target['source_hash']}]}
                 prototype = metadata_replacement(original, fields=fields) if fields else original['proto']

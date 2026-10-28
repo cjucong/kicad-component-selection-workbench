@@ -100,6 +100,11 @@ with tempfile.TemporaryDirectory() as folder:
     if MODE=='first':live=old
     elif MODE=='target_changed_first':live=old
     elif MODE=='geometry':live.definition.pads[0].proto.position.x_nm+=1000000
+    elif MODE=='annotations':
+        from kipy.board_types import BoardShape
+        from kipy.proto.board.board_types_pb2 import BoardLayer
+        mark=BoardShape();mark.layer=BoardLayer.BL_F_SilkS
+        mark.proto.shape.segment.end.x_nm=1000000;live.definition.add_item(mark)
     elif MODE=='missing':
         next(p for p in live.definition.pads if p.number=='9').number='99'
     elif MODE=='duplicate':
@@ -145,7 +150,7 @@ print('preflight verified',MODE)
 '''
 
 
-@pytest.mark.parametrize('mode', ['restart','cached','fields','unknown','first','missing','geometry','duplicate',
+@pytest.mark.parametrize('mode', ['restart','cached','fields','annotations','unknown','first','missing','geometry','duplicate',
                                 'target_changed_same','target_changed_first','target_changed_pad'])
 def test_native_preflight_distinguishes_existing_wired_extras_from_new_pads(mode):
     python=runtime()

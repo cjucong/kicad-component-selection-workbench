@@ -34,6 +34,15 @@ _NUMERIC_NODES = {'at', 'start', 'end', 'mid', 'center', 'xy', 'xyz', 'size',
                   'width', 'thickness', 'offset', 'rotate', 'scale'}
 
 
+def _pad_relevant(node):
+    if node.head in ('property', 'model'):
+        return False
+    layer = node.child('layer')
+    return not (node.head in ('fp_line','fp_arc','fp_rect','fp_circle','fp_poly','fp_text','fp_text_box')
+                and layer and layer.arg() in {'F.SilkS','B.SilkS','F.Fab','B.Fab',
+                    'F.CrtYd','B.CrtYd','Dwgs.User','Cmts.User'})
+
+
 def _tree(node, content):
     if not node.children:
         return node.value
@@ -120,6 +129,10 @@ class DesignStatus:
                              key=lambda value:json.dumps(value, sort_keys=True))
             parts[ref] = {'footprint':fp.arg(), 'fields':fields,
                          'digest':_digest([atoms, objects]),
+                         'pad_digest':_digest([atoms, sorted(
+                             [_tree(child, text) for child in instance
+                              if child.children and _pad_relevant(child)],
+                             key=lambda value:json.dumps(value, sort_keys=True))]),
                          'path':fp.child('path').arg() if fp.child('path') else ''}
         if cache:
             self.board_hash, self.parts = digest, parts
@@ -162,7 +175,10 @@ class DesignStatus:
                     or parts[ref]['digest'] != expected_parts[ref]['digest']):
                 continue
             item = items[ref]
-            evidence = {'instance':parts[ref]['digest'], 'source':self._key(source, ref)}
+            evidence = {'instance':parts[ref]['digest'], 'pad_instance':parts[ref]['pad_digest'],
+                        'source':self._key(source, ref)}
+            if item.get('retained_board_annotations'):
+                evidence['retained_board_annotations'] = True
             if not saved and item['kind'] not in ('none', 'fields'):
                 evidence.update(pending_kind=item['kind'], reason=item.get('blocked_reason') or item.get('reason', ''))
             else:
@@ -222,7 +238,8 @@ class DesignStatus:
                         status = {'status':'synced', 'field_changes':changes,
                                   'before':part['footprint'], 'after':target}
                         evidence = self.evidence.get(ref, {})
-                        same_instance = (evidence.get('instance') == part['digest']
+                        same_instance = ((evidence.get('instance') == part['digest']
+                                          or evidence.get('pad_instance') == part['pad_digest'])
                                          and evidence.get('source') == self._key(source, ref))
                         certified = (same_instance and not evidence.get('pending_kind')
                             and all(Path(item['path']).is_file() and hashlib.sha256(Path(item['path']).read_bytes()).hexdigest()
@@ -236,6 +253,8 @@ class DesignStatus:
                                           reason=evidence.get('reason') or 'PCB 预检差异尚未完成')
                         if evidence.get('uncertain') and evidence.get('source') == self._key(source, ref):
                             status.update(status='unverified', reason='上次 PCB 结果待核验：' + evidence['uncertain'])
+                        if status['status'] == 'synced' and certified and evidence.get('retained_board_annotations'):
+                            status.update(retained_board_annotations=True, reason='焊盘已核验，保留板级定制')
                         states[ref] = status
                     row['pcb_sync_by_ref'] = states
                     self._summarize(row)

@@ -1,5 +1,9 @@
 # 插件回归测试
 
+`test_pad_sync_verdict.py` 使用原生kipy protobuf验证丝印/Fab/模型差异不触发重复替换，焊盘移动、尺寸、钻孔、编号、层、姿态、铜层及阻焊图形变化仍不匹配；主表仅注释调整保留核验、焊盘修改失效。`test_pcb_update.py`另确认此路径不产生替换/写入，`test_pad_mapping_native_types.py`覆盖手动适配后的板级注释保留。完整事务比较和保存回读仍使用原有严格内容校验，不以这些完成判定测试替代真实事务验证。
+
+`run_native_pad_sync_verdict_probe.py --report-dir <工程外绝对目录>` 在自动清理的合成工程中实际选择封装、同步原理图、更新PCB、保存重开，再给实例添加板级丝印，核验重复预检为无需替换、应用不产生事务、实时完整内容与磁盘字节不变；不接受生产工程参数，不联网查询商城。
+
 `test_selected_bom_export.py` 使用合成工程覆盖勾选行 BOM 导出的分组数量、部分分组、空/过期勾选、NC 排除、HTTP 与前端选择范围；不读写生产 CAD 或联网查料。`run_selected_bom_export_smoke.py` 使用隔离 HTTP 工程和真实 Chromium 验证可见勾选、隐藏行排除、清空选择和恢复选择。
 
 PCB 重复待核验：`test_design_status.py` 覆盖精确等值数字及顶层排序、真实坐标/UUID/字段/编号/重复对象/轮廓顺序反例；`test_pcb_native_types.py` 覆盖直线反向与位置/宽度/层变化；`test_pad_mapping_native_types.py` 覆盖已应用适配目标变更的无变化核验、首次写入及真实焊盘变化拒绝。完整事务不采用完成状态的几何容差；真实 `run_native_design_keep_open.py --with-footprints` 另验保存、重开工作台及状态证据持久化。

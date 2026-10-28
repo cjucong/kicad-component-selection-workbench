@@ -10,7 +10,9 @@ from part_selection_pcb import PcbUpdates
 
 
 @pytest.fixture
-def updates(scratch_project):
+def updates(scratch_project, monkeypatch):
+    monkeypatch.setattr('part_selection_pcb.pad_geometry_matches', lambda *args:False)
+    monkeypatch.setattr('part_selection_pcb.annotation_completion_matches', lambda *args:False)
     root = scratch_project
     (root / 'test.kicad_pro').write_text('{}')
     (root / 'test.kicad_sch').write_text('(kicad_sch (uuid "sheet") (symbol (uuid "symbol") '
@@ -39,6 +41,20 @@ def updates(scratch_project):
         apply=Mock(return_value={'ok': True, 'saved': False, 'refs': ['R1'], 'snapshot': snapshot}))
     service = PcbUpdates(app, session=session, build=lambda source, selected, placement: 'new')
     return service, app, session, library
+
+
+def test_matching_pads_preserve_board_annotations_without_replacement(updates, monkeypatch):
+    service, _, session, _ = updates
+    session.snapshot.return_value['parts']['R1']['footprint'] = 'Local:New'
+    monkeypatch.setattr('part_selection_pcb.geometry_matches', lambda *args:False)
+    monkeypatch.setattr('part_selection_pcb.pad_geometry_matches', lambda *args:True)
+    monkeypatch.setattr('part_selection_pcb.geometry_signature', lambda *args:'same-pads')
+    preview = service.preview(['R1'], '__schematic__')
+    assert preview['items'][0]['kind'] == 'none'
+    assert preview['items'][0]['retained_board_annotations'] is True
+    assert service.previews[preview['preview_id']]['replacements'] == []
+    assert service.apply(preview['preview_id'], True)['no_changes']
+    session.apply.assert_not_called()
 
 
 def test_preview_and_apply_do_not_touch_choice_or_confirmation(updates):
