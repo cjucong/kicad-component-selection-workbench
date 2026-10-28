@@ -3747,12 +3747,32 @@ class PartSelectionApp:
         selected_bom = str(payload.get("bom", "") or "")
         query_refs = str(payload.get("refs", "") or "")
         export_filter = str(payload.get("export_filter", "current_filter") or "current_filter")
+        selected_refs = None
+        if export_filter == "selected":
+            requested = payload.get("selected_refs")
+            if not isinstance(requested, list) or not requested or any(
+                not isinstance(ref, str) or not ref.strip() or len(split_refs(ref)) != 1
+                for ref in requested
+            ):
+                raise ValueError("请先勾选要导出的行")
+            selected_refs = {split_refs(ref)[0] for ref in requested}
+            if not selected_refs.issubset(self.refs("", selected_bom)):
+                raise ValueError("勾选的位号已变化，请重新读取并勾选后导出")
+            query_refs = ",".join(sorted(selected_refs))
         active_filters = {
             str(item)
             for item in payload.get("active_filters", [])
             if str(item) and str(item) != "all"
         }
         rows = self.rows(query_refs, selected_bom, include_stock=False)
+
+        if selected_refs is not None:
+            available = {
+                str(ref).upper() for row in rows
+                for ref in (row.get("refs_list") or split_refs(row.get("refs") or row.get("ref", "")))
+            }
+            if selected_refs != available:
+                raise ValueError("勾选的位号已变化，请重新读取并勾选后导出")
 
         def include_row(row: dict[str, object]) -> bool:
             if not row_is_pump_exportable(row):
@@ -4771,10 +4791,11 @@ tr.hidden-row {{ display: none; }}
 <section class="toolbar-section export-section" aria-label="表格导出">
   <span class="section-title">表格导出</span><div class="section-actions">
   <div class="app-menu">
-    <button type="button" id="exportPumpMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="导出 BOM 表" data-tooltip="含本地库存实际数量（导入或手动编辑），不扣减套数需求；导出仅包含非 NC 器件。">{toolbar_content('table-2', 'BOM 导出')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
+    <button type="button" id="exportPumpMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="导出 BOM 表" data-tooltip="支持导出勾选行；含本地库存实际数量，不扣减套数需求；导出仅包含非 NC 器件。">{toolbar_content('table-2', 'BOM 导出')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
     <div class="menu-popup export-popup">
     <label>导出范围<select id="pumpExportMode" title="选择导出 BOM 内容">
   <option value="current_filter">当前筛选结果</option>
+  <option value="selected">勾选行（当前可见）</option>
   <option value="stock_issue">库存异常/低库存</option>
   <option value="low_stock">低库存器件</option>
   <option value="stock_error">库存异常器件</option>
@@ -6974,14 +6995,24 @@ async function exportChanges() {{
 }}
 
 async function exportPumpTable() {{
+  const exportFilter = document.getElementById("pumpExportMode").value || "current_filter";
+  const selection = {{}};
+  if (exportFilter === "selected") {{
+    if (rowsLoading || loadedRowsBom === null || loadedRowsBom !== (bomSelect.value || "")) {{
+      throw new Error("请等待当前数据源加载完成后再导出");
+    }}
+    selection.selected_refs = selectedSyncRefs();
+    if (!selection.selected_refs.length) throw new Error("请先勾选要导出的行");
+  }}
   const res = await fetch("/api/export_pump_table", {{
     method: "POST",
     headers: {{"Content-Type": "application/json"}},
     body: JSON.stringify({{
       refs: refsInput.value.trim(),
       bom: bomSelect.value || "",
-      export_filter: document.getElementById("pumpExportMode").value || "current_filter",
-      active_filters: Array.from(activeFilters.values())
+      export_filter: exportFilter,
+      active_filters: Array.from(activeFilters.values()),
+      ...selection
     }})
   }});
   const data = await res.json();

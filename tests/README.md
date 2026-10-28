@@ -1,5 +1,7 @@
 # 插件回归测试
 
+`test_selected_bom_export.py` 使用合成工程覆盖勾选行 BOM 导出的分组数量、部分分组、空/过期勾选、NC 排除、HTTP 与前端选择范围；不读写生产 CAD 或联网查料。`run_selected_bom_export_smoke.py` 使用隔离 HTTP 工程和真实 Chromium 验证可见勾选、隐藏行排除、清空选择和恢复选择。
+
 PCB 重复待核验：`test_design_status.py` 覆盖精确等值数字及顶层排序、真实坐标/UUID/字段/编号/重复对象/轮廓顺序反例；`test_pcb_native_types.py` 覆盖直线反向与位置/宽度/层变化；`test_pad_mapping_native_types.py` 覆盖已应用适配目标变更的无变化核验、首次写入及真实焊盘变化拒绝。完整事务不采用完成状态的几何容差；真实 `run_native_design_keep_open.py --with-footprints` 另验保存、重开工作台及状态证据持久化。
 
 本地库存手动编辑：`test_part_selection_inventory.py` 覆盖独立 HTTP 更新、非负安全整数、原值冲突、来源保留、工程外备份、失败不覆盖及 CAD/选料不变。`run_local_inventory_smoke.py` 用真实 Chromium 与隔离 HTTP 工程验证 600 ms、Enter、失焦、Esc、同编码跨行/NC 共享、连续在途编辑、失败重试、跨窗口冲突确认、刷新保持焦点和重开持久化。`run_stock_refresh_smoke.py` 验证单按钮开始/暂停/恢复、折叠菜单在 1440/768/390 宽度可用、Esc 收起、刷新全部不跳过近期缓存。上游库存响应为受控合成数据，不冒充真实商城性能测试。

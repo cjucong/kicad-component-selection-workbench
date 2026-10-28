@@ -29,13 +29,13 @@ def export_app(scratch_project):
     app.selection_jobs.close()
 
 
-def post_export(app, endpoint):
+def post_export(app, endpoint, payload=None):
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         request = Request(f"http://127.0.0.1:{server.server_port}{endpoint}",
-                          data=b'{"export_filter":"all_non_nc"}',
+                          data=json.dumps(payload or {"export_filter": "all_non_nc"}).encode("utf-8"),
                           headers={"Content-Type": "application/json"})
         try:
             response = urlopen(request, timeout=10)
