@@ -294,6 +294,12 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   const initial=await page.request.get(process.env.STATUS_URL+'api/rows?bom=__schematic__&stock=0');
   const data=await initial.json();
   const item=data.rows[0];
+  // A display summary is not an explicit per-reference write target.
+  item.schematic_fields_by_ref.U1.description='legacy per-reference description';
+  await page.evaluate(()=>{
+    currentRows[0].description='legacy group summary';
+    delete currentRows[0].per_ref_sync_fields.U1.description;
+  });
   item.pcb_changed_refs='';item.pcb_unverified_refs='U1';
   item.pcb_sync_by_ref={U1:{status:'unverified',reason:'上次 PCB 结果待核验：Timed out'}};
   await page.route('**/api/rows?*',route=>route.fulfill({json:data}));

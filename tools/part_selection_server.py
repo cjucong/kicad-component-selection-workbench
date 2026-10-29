@@ -6664,6 +6664,11 @@ function updateSavedFieldDiffs(row, fields) {{
     for (const ref of row.refs_list || String(row.refs).split(",")) {{
       const baseline = row.schematic_fields_by_ref?.[ref];
       if (!baseline) continue;
+      const target = row.per_ref_sync_fields?.[ref];
+      if (target && !Object.prototype.hasOwnProperty.call(target, field)) {{
+        if (byRef[ref]) delete byRef[ref][field];
+        continue;
+      }}
       const oldValue = String(baseline[field] || "").trim();
       const newValue = String(row.per_ref_sync_fields?.[ref]?.[field] ?? row[field] ?? "").trim();
       if (oldValue === newValue) {{

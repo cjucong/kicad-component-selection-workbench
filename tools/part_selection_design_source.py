@@ -1,7 +1,9 @@
 """One immutable hierarchy snapshot for fields, instance identity and byte validation."""
 from copy import deepcopy
+from collections import OrderedDict
 import hashlib
 from pathlib import Path
+import threading
 
 from kicad_sexpr import parse_sexpr
 from part_selection_fields import normalize_field_mapping, resolve_properties
@@ -16,6 +18,8 @@ def content_hash(path):
 class DesignSource:
     def __init__(self, app):
         self.app = app
+        self._pages = OrderedDict()
+        self._pages_lock = threading.RLock()
 
     def _configuration(self):
         return {'root':str(Path(self.app.project_root).resolve()),
@@ -49,7 +53,16 @@ class DesignSource:
             previous = hashes.setdefault(str(path), digest)
             if previous != digest:
                 raise ValueError('读取期间原理图已改变，请重新预检')
-            pages[path] = parse_sexpr(content.decode('utf-8-sig'), 'kicad_sch')
+            # Cache syntax only, keyed by verified bytes; every capture still
+            # rebuilds selected fields/identity and validates all source hashes.
+            key = (str(path.resolve()), digest)
+            with self._pages_lock:
+                if key not in self._pages:
+                    self._pages[key] = parse_sexpr(content.decode('utf-8-sig'), 'kicad_sch')
+                self._pages.move_to_end(key)
+                pages[path] = self._pages[key]
+                while len(self._pages) > 32:
+                    self._pages.popitem(last=False)
             return pages[path], digest
 
         def visit(ref, symbol, path):
