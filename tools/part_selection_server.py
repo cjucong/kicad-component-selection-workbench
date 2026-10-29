@@ -749,9 +749,11 @@ def row_stock_is_normal(row: dict[str, object]) -> bool:
 def row_filter_keys(row: dict[str, object]) -> set[str]:
     keys = {"all"}
     is_nc = row_is_nc(row)
-    if row.get("field_changed_refs") or row.get("missing_schematic_refs") or row.get("pcb_changed_refs") or row.get("pcb_unverified_refs"):
+    if row.get("field_changed_refs") or row.get("missing_schematic_refs") or row.get("pcb_changed_refs"):
         keys.add("needs_sync")
-    else:
+    if row.get("pcb_unverified_refs"):
+        keys.add("needs_verification")
+    if not keys.intersection({"needs_sync", "needs_verification"}):
         keys.add("sync_done")
     if row_review_status(row) != "Confirmed":
         keys.add("pending_review")
@@ -1623,6 +1625,7 @@ class PartSelectionApp:
             self.stock_cache_path = updated['stock_cache']
             self.stock_refresh = self.create_stock_refresh()
             self.local_inventory_path = updated['local_inventory']
+            self.design_status.settings_changed()
             self.inventory_previews.clear()
             self.footprint_choices = FootprintChoices(self.project_root, updated.get('converter_executable'))
             result['settings'] = settings_snapshot(self.config)
@@ -3788,8 +3791,8 @@ class PartSelectionApp:
                 return row_stock_is_error(row)
             if export_filter == "pending_review":
                 return row_review_status(row) != "Confirmed"
-            if export_filter == "needs_sync":
-                return "needs_sync" in row_filter_keys(row)
+            if export_filter in {"needs_sync", "needs_verification"}:
+                return export_filter in row_filter_keys(row)
             if export_filter == "all_non_nc":
                 return True
             return True
@@ -4437,6 +4440,7 @@ body {{ --sticky-toolbar-height: 0px; --sticky-filter-height: 0px; --statusbar-h
 .status-line > #state.error {{ white-space: normal; max-height: 100px; overflow: auto; overflow-wrap: anywhere; }}
 #workbenchSummary {{ display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 12px; color: #687681; }}
 #summaryPending {{ color: #a54239; }}
+#summaryVerify {{ color: #8b640f; }}
 .workbench-statusbar .sync-progress, .workbench-statusbar .stock-progress {{ flex: 0 0 auto; min-width: 0; font-size: 11px; }}
 .workbench-statusbar .sync-progress-text, .workbench-statusbar .stock-progress-text {{ min-width: 0; overflow-wrap: anywhere; }}
 .workbench-statusbar .sync-progress-track, .workbench-statusbar .stock-progress-track {{ min-width: 60px; max-width: 260px; }}
@@ -4801,6 +4805,7 @@ tr.hidden-row {{ display: none; }}
   <option value="stock_error">库存异常器件</option>
   <option value="pending_review">未确认料</option>
   <option value="needs_sync">待同步设计</option>
+  <option value="needs_verification">PCB 待核验</option>
   <option value="all_non_nc">全部非NC器件</option>
 </select></label>
     <button type="button" id="exportPumpTable">导出 BOM 表</button>
@@ -4831,7 +4836,7 @@ tr.hidden-row {{ display: none; }}
 <footer class="workbench-statusbar">
 <div class="status-line">
 <span id="state" class="status" role="status">正在读取数据源…</span>
-<output id="workbenchSummary" aria-label="器件状态统计"><span id="summaryRows">0 组 / 0 器件</span><span id="summaryPending">待同步 0</span><span id="summaryReview">未确认 0</span></output>
+<output id="workbenchSummary" aria-label="器件状态统计"><span id="summaryRows">0 组 / 0 器件</span><span id="summaryPending">待同步 0</span><span id="summaryVerify">待核验 0</span><span id="summaryReview">未确认 0</span></output>
 </div>
 <div id="syncProgress" class="sync-progress" aria-live="polite">
   <div class="sync-progress-track"><div id="syncProgressFill" class="sync-progress-fill"></div></div>
@@ -4846,6 +4851,7 @@ tr.hidden-row {{ display: none; }}
 <nav class="filter-tabs" aria-label="筛选视图">
   <button type="button" class="active" data-filter="all">全部</button>
   <button type="button" data-filter="needs_sync">待同步设计</button>
+  <button type="button" data-filter="needs_verification">PCB 待核验</button>
   <button type="button" data-filter="pending_review">未确认料</button>
   <button type="button" data-filter="changed_code">C 编码已改动</button>
   <button type="button" data-filter="stock_issue">库存异常/低库存</button>
@@ -4981,7 +4987,11 @@ let currentRows = [];
 const FILTER_CYCLES = {{
   needs_sync: [
     {{key: "needs_sync", label: "待同步设计"}},
-    {{key: "sync_done", label: "无待同步差异"}}
+    {{key: "sync_done", label: "已核验无差异"}}
+  ],
+  needs_verification: [
+    {{key: "needs_verification", label: "PCB 待核验"}},
+    {{key: "sync_done", label: "已核验无差异"}}
   ],
   pending_review: [
     {{key: "pending_review", label: "未确认料"}},
@@ -5036,23 +5046,29 @@ function setToolbarLabel(button, text) {{
 }}
 
 function workbenchCounts(rows) {{
-  const refs = new Set(), pendingRefs = new Set();
-  let needsSync = 0, unconfirmed = 0;
+  const refs = new Set(), pendingRefs = new Set(), verificationRefs = new Set();
+  let needsSync = 0, needsVerification = 0, unconfirmed = 0;
   rows.forEach(tr => {{
     String(tr.dataset.refs || tr.dataset.ref || "").split(",").filter(Boolean).forEach(ref => refs.add(ref.trim()));
-    if ([tr.dataset.syncNeeded, tr.dataset.missingRef, tr.dataset.syncError].includes("1")) {{
+    if ([tr.dataset.syncPending ?? tr.dataset.syncNeeded, tr.dataset.missingRef, tr.dataset.syncError].includes("1")) {{
       needsSync += 1;
-      String(tr.dataset.syncRefs || tr.dataset.refs || tr.dataset.ref || "").split(",").filter(Boolean).forEach(ref => pendingRefs.add(ref.trim()));
+      String(tr.dataset.syncPendingRefs || tr.dataset.syncRefs || tr.dataset.refs || tr.dataset.ref || "").split(",").filter(Boolean).forEach(ref => pendingRefs.add(ref.trim()));
+    }}
+    if (tr.dataset.verificationNeeded === "1") {{
+      needsVerification += 1;
+      String(tr.dataset.verificationRefs || "").split(",").filter(Boolean).forEach(ref => verificationRefs.add(ref.trim()));
     }}
     if (tr.dataset.reviewStatus !== "Confirmed") unconfirmed += 1;
   }});
-  return {{groups: rows.length, refs: refs.size, needsSync, needsSyncRefs:pendingRefs.size, unconfirmed}};
+  return {{groups: rows.length, refs: refs.size, needsSync, needsSyncRefs:pendingRefs.size,
+    needsVerification, needsVerificationRefs:verificationRefs.size, unconfirmed}};
 }}
 
 function updateWorkbenchSummary() {{
   const counts = workbenchCounts(Array.from(rowsEl.querySelectorAll("tr[data-ref]")));
   document.getElementById("summaryRows").textContent = `${{counts.groups}} 组 / ${{counts.refs}} 器件`;
   document.getElementById("summaryPending").textContent = `待同步 ${{counts.needsSync}} 组 / ${{counts.needsSyncRefs}} 器件`;
+  document.getElementById("summaryVerify").textContent = `待核验 ${{counts.needsVerification}} 组 / ${{counts.needsVerificationRefs}} 器件`;
   document.getElementById("summaryReview").textContent = `未确认 ${{counts.unconfirmed}}`;
 }}
 
@@ -5978,7 +5994,9 @@ function rowVisualClass(row, selectedStatus, syncNeeded, stock, reviewStatus) {{
 function rowFilterKeys(row, selectedStatus, syncNeeded, stock, reviewStatus) {{
   const keys = ["all"];
   const isNc = rowIsNc(row);
-  keys.push(syncNeeded ? "needs_sync" : "sync_done");
+  if (designSyncPending(row)) keys.push("needs_sync");
+  if (row?.pcb_unverified_refs) keys.push("needs_verification");
+  if (!syncNeeded) keys.push("sync_done");
   keys.push(reviewStatus !== "Confirmed" ? "pending_review" : "review_confirmed");
   const codeChanged = selectedStatus === "ChangedToNewCode" || row?.status === "ChangedToNewCode" || row?.manual_c_code || row?.stock_c_code || Object.values(row?.per_ref_selection || {{}}).some(item => item.decision === "AcceptManual");
   keys.push(codeChanged ? "changed_code" : "code_unchanged");
@@ -6187,7 +6205,9 @@ function rowClassFromDataset(tr) {{
 function filterKeysFromDataset(tr) {{
   const keys = ["all"];
   const isNc = tr.dataset.isNc === "1";
-  keys.push(tr.dataset.syncNeeded === "1" ? "needs_sync" : "sync_done");
+  if ((tr.dataset.syncPending ?? tr.dataset.syncNeeded) === "1") keys.push("needs_sync");
+  if (tr.dataset.verificationNeeded === "1") keys.push("needs_verification");
+  if (tr.dataset.syncNeeded !== "1") keys.push("sync_done");
   keys.push(tr.dataset.reviewStatus !== "Confirmed" ? "pending_review" : "review_confirmed");
   keys.push(tr.dataset.codeStatus === "ChangedToNewCode" || tr.dataset.manualCode === "1" ? "changed_code" : "code_unchanged");
   if (!isNc) {{
@@ -6558,12 +6578,24 @@ function schematicSyncMarker(row, syncNeeded) {{
   return `<div class="schematic-sync-marker" data-sync-marker><strong>有改动，请同步原理图</strong><div class="sync-row-diff">${{details.join("") || "物料信息已更新"}}</div></div>`;
 }}
 
-function designSyncNeeded(row) {{
-  return !!(row?.field_changed_refs || row?.missing_schematic_refs || row?.pcb_changed_refs || row?.pcb_unverified_refs);
+function designSyncPending(row) {{
+  return !!(row?.field_changed_refs || row?.missing_schematic_refs || row?.pcb_changed_refs);
 }}
 
-function designSyncRefs(row) {{
-  return [...new Set([row?.field_changed_refs, row?.missing_schematic_refs, row?.pcb_changed_refs, row?.pcb_unverified_refs].flatMap(value => String(value || "").split(",")).map(ref => ref.trim()).filter(Boolean))].join(",");
+function designSyncNeeded(row) {{
+  return designSyncPending(row) || !!row?.pcb_unverified_refs;
+}}
+
+function designSyncRefs(row, includeUnverified = true) {{
+  return [...new Set([row?.field_changed_refs, row?.missing_schematic_refs, row?.pcb_changed_refs, includeUnverified ? row?.pcb_unverified_refs : ""].flatMap(value => String(value || "").split(",")).map(ref => ref.trim()).filter(Boolean))].join(",");
+}}
+
+function setDesignStatusDataset(tr, row) {{
+  tr.dataset.syncRefs = designSyncRefs(row);
+  tr.dataset.syncPending = designSyncPending(row) ? "1" : "0";
+  tr.dataset.syncPendingRefs = designSyncRefs(row, false);
+  tr.dataset.verificationNeeded = row?.pcb_unverified_refs ? "1" : "0";
+  tr.dataset.verificationRefs = row?.pcb_unverified_refs || "";
 }}
 
 function designSyncMarker(row, needed) {{
@@ -6655,7 +6687,7 @@ function markRowNeedsSchematicSync(tr, refsText = "") {{
   const row = rowDataForElement(tr);
   const needed = row?.schematic_fields_by_ref ? designSyncNeeded(row) : true;
   tr.dataset.syncNeeded = needed ? "1" : "0";
-  tr.dataset.syncRefs = designSyncRefs(row);
+  setDesignStatusDataset(tr, row);
   refreshRowState(tr);
   const button = tr.querySelector("[data-action='sync-schematic']");
   if (button) {{
@@ -7246,7 +7278,10 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
     rowsEl.innerHTML = markup;
     rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
   }}
-  rowsEl.querySelectorAll("tr[data-ref]").forEach(tr => {{ tr.dataset.syncRefs = designSyncRefs(rowDataForElement(tr)); }});
+  rowsEl.querySelectorAll("tr[data-ref]").forEach(tr => {{
+    setDesignStatusDataset(tr, rowDataForElement(tr));
+    tr.dataset.filterKey = filterKeysFromDataset(tr);
+  }});
   refreshFootprintLibraries();
   updateSplitPageChecks();
   applyColumnOrder();
@@ -8859,6 +8894,8 @@ filterTabs.addEventListener("click", event => {{
     const cycle = FILTER_CYCLES[group];
     if (!cycle) return;
     const current = activeFilters.get(group) || "";
+    if (group === "needs_sync") activeFilters.delete("needs_verification");
+    if (group === "needs_verification") activeFilters.delete("needs_sync");
     if (!current) activeFilters.set(group, cycle[0].key);
     else if (current === cycle[0].key) activeFilters.set(group, cycle[1].key);
     else activeFilters.delete(group);

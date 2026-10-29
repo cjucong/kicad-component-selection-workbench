@@ -135,6 +135,16 @@ def payload(app, **values):
     return {'revision': settings_snapshot(app.config)['revision'], 'values': values, 'copy_existing': True}
 
 
+def test_receipt_follows_confirmed_data_directory_migration(app):
+    from part_selection_overrides import PCB_SYNC_EVIDENCE_NAME
+    receipt = app.config['bom_dir'] / PCB_SYNC_EVIDENCE_NAME
+    receipt.write_text('{"schema":1,"records":{}}', encoding='utf-8')
+    app.save_path_settings(payload(app, bom_dir='shared-data'))
+    copied = app.project_root / 'shared-data' / PCB_SYNC_EVIDENCE_NAME
+    assert copied.read_bytes() == receipt.read_bytes()
+    assert app.design_status.evidence_path == copied
+
+
 def record(app):
     data = {'R1': {'note': 'retain', 'alternate_parts': [{'c_code': 'C123', 'model': 'sample'}]}}
     app.overrides_path.write_text(json.dumps(data))

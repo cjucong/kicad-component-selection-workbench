@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-from part_selection_overrides import (DATA_FILE_NAMES, DATA_DIRECTORY, SYNC_LOG_NAME,
+from part_selection_overrides import (DATA_FILE_NAMES, DATA_DIRECTORY, SYNC_LOG_NAME, PCB_SYNC_EVIDENCE_NAME,
                                       EXPORT_PREFIXES, configuration_defaults, load_config)
 from part_selection_runtime import runtime_directory
 from part_selection_library import find_converter
@@ -309,7 +309,7 @@ def save_settings(config, payload):
             copies.append((old, new))
     old_bom, new_bom = Path(config['bom_dir']).resolve(), targets['bom_dir']
     if old_bom != new_bom:
-        for name in LOG_NAMES:
+        for name in (*LOG_NAMES, PCB_SYNC_EVIDENCE_NAME):
             if (old_bom / name).is_file():
                 copies.append((old_bom / name, new_bom / name))
         for pattern in EXPORT_PATTERNS:

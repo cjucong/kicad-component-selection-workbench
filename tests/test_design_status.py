@@ -98,8 +98,11 @@ def test_changed_library_invalidates_geometry_certificate(status_app):
     import hashlib
     app, board = status_app
     replacement_record(app); current_board(board)
-    target = board.parent / 'target.kicad_mod'
+    target = board.parent / 'Local.pretty' / 'New.kicad_mod'
+    target.parent.mkdir()
     target.write_text('(footprint "New")')
+    (board.parent / 'fp-lib-table').write_text('(fp_lib_table (lib (name "Local") '
+        '(type "KiCad") (uri "${KIPRJMOD}/Local.pretty")))')
     state = observation(app, board, targets=[{'ref':'U1','path':str(target),
                                            'hash':hashlib.sha256(target.read_bytes()).hexdigest()}])
     app.design_status.observe(state)
@@ -235,7 +238,8 @@ def test_unreadable_or_unassociated_pcb_never_looks_synced(status_app, failure):
     else:
         board.write_text('(kicad_pcb)')
     row = status(app)
-    assert 'needs_sync' in row_filter_keys(row)
+    assert {'needs_sync', 'needs_verification'} & row_filter_keys(row)
+    assert 'sync_done' not in row_filter_keys(row)
     assert row['pcb_changed_refs'] or row['pcb_unverified_refs']
 
 
@@ -295,12 +299,19 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.route('**/api/rows?*',route=>route.fulfill({json:data}));
   await page.evaluate(()=>refreshDesignSyncRows());
   assert.match(await row.locator('[data-sync-marker] strong').innerText(),/PCB 待核验/);
+  assert.match(await page.locator('#summaryPending').textContent(),/待同步 0 组 \/ 0 器件/);
+  assert.match(await page.locator('#summaryVerify').textContent(),/待核验 1 组 \/ 1 器件/);
+  assert(!(await row.isVisible()),'Unverified is not an actual pending difference');
+  await page.locator('[data-filter="needs_verification"]').click();
+  assert(await row.isVisible());
   assert(await page.evaluate(()=>originalStatusRow===document.querySelector('#rows tr[data-ref="U1"]')));
-  assert.equal(await page.locator(':focus').getAttribute('data-field'),'value');
+  await row.locator('[data-field="value"]').focus();
   item.pcb_unverified_refs='';item.pcb_sync_by_ref={U1:{status:'synced'}};
   await page.evaluate(()=>refreshDesignSyncRows());
   assert.equal(await row.locator('[data-sync-marker]').count(),0);
   assert.match(await page.locator('#summaryPending').textContent(),/待同步 0 组 \/ 0 器件/);
+  assert.match(await page.locator('#summaryVerify').textContent(),/待核验 0 组 \/ 0 器件/);
+  assert.equal(await page.locator(':focus').getAttribute('data-field'),'value');
   assert(!(await row.isVisible()),'Completed row must leave the pending filter');
   const split=await page.evaluate(()=>rowForRefs({refs:'U1,U2',refs_list:['U1','U2'],
    pcb_changed_refs:'U2',pcb_unverified_refs:'U1',pcb_sync_by_ref:{U1:{status:'unverified'},U2:{status:'pending'}}},['U2']));
@@ -328,6 +339,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
    refs:'U1,U2',refs_list:['U1','U2'],pcb_changed_refs:'U1',
    pcb_sync_by_ref:{U1:{status:'pending',before:'Local:Old',after:'Local:New'},U2:{status:'synced'}}}]}}));
   await page.evaluate(()=>refreshDesignSyncRows());
+  await page.locator('[data-filter="needs_sync"]').click();
   assert.match(await row.locator('[data-sync-marker] strong').innerText(),/待同步 PCB/);
   assert.equal(await row.getAttribute('data-refs'),'U1');
   assert.match(await page.locator('#summaryPending').textContent(),/待同步 1 组 \/ 1 器件/);

@@ -240,6 +240,24 @@ def run(report, *, with_footprints=False):
                     table = app.rows('R1', '__schematic__', include_stock=False)
                     assert not table[0].get('field_changed_refs') and not table[0].get('pcb_changed_refs') and not table[0].get('pcb_unverified_refs'), table
                     result['main_table_restart_status_verified'] = True
+                    # A second checkout receives project data, never this host's cache.
+                    with temporary_project(prefix='portable-native-') as directory:
+                        copied_root = Path(directory)
+                        shutil.copytree(root, copied_root, dirs_exist_ok=True)
+                        from part_selection_runtime import runtime_directory
+                        assert not (runtime_directory(copied_root) / 'design-status.json').exists()
+                        copied_app = PartSelectionApp(resolve_config(copied_root))
+                        try:
+                            before_copy = (copied_root / 'Probe.kicad_pcb').read_bytes()
+                            copied_table = copied_app.rows('R1', '__schematic__', include_stock=False)
+                            assert copied_table and not any(row.get(key) for row in copied_table
+                                for key in ('field_changed_refs', 'pcb_changed_refs', 'pcb_unverified_refs')), copied_table
+                            assert (copied_root / 'Probe.kicad_pcb').read_bytes() == before_copy
+                            result.setdefault('project_only_copy_verified', []).append(mode)
+                        finally:
+                            copied_app.design_sync.close()
+                            copied_app.search_jobs.close()
+                            copied_app.selection_jobs.close()
                     current=session.snapshot(root,['R1'])
                     assert current['parts']['R1']['footprint']==target
                     token=(app.design_sync.previews[retry['preview_id']]['source'] if mode=='library' else

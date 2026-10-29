@@ -8,7 +8,26 @@ from uuid import uuid4
 
 from kicad_sexpr import parse_sexpr
 from part_selection_design_source import DesignSource
+from part_selection_overrides import PCB_SYNC_EVIDENCE_NAME
 from part_selection_runtime import runtime_directory
+
+_EVIDENCE_LOCK = threading.RLock()
+
+
+def _load_evidence(path, *, legacy=False):
+    try:
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError('PCB 核验记录格式错误')
+    if not legacy:
+        if data.get('schema') != 1 or not isinstance(data.get('records'), dict):
+            raise ValueError('PCB 核验记录版本或内容不支持')
+        data = data['records']
+    if not all(isinstance(ref, str) and isinstance(item, dict) for ref, item in data.items()):
+        raise ValueError('PCB 核验记录条目格式错误')
+    return data
 
 
 def pcb_fields(values, properties):
@@ -71,14 +90,20 @@ class DesignStatus:
         self.source = None
         self.board_hash = None
         self.parts = {}
-        self.evidence_path = runtime_directory(app.project_root) / 'design-status.json'
+        self.evidence_path = Path(app.config['bom_dir']) / PCB_SYNC_EVIDENCE_NAME
+        self.legacy_evidence_path = runtime_directory(app.project_root) / 'design-status.json'
+        self._migration_checked = False
+        self._volatile = {}
+        self.evidence = {}
         try:
-            self.evidence = json.loads(self.evidence_path.read_text(encoding='utf-8'))
-            if not isinstance(self.evidence, dict):
-                self.evidence = {}
-            self.evidence = {ref:item for ref, item in self.evidence.items() if isinstance(item, dict)}
+            self.evidence = _load_evidence(self.evidence_path)
         except (OSError, ValueError):
-            self.evidence = {}
+            pass
+
+    def settings_changed(self):
+        with self.lock:
+            self.evidence_path = Path(self.app.config['bom_dir']) / PCB_SYNC_EVIDENCE_NAME
+            self.source = None
 
     def _board(self):
         root = Path(self.app.project_root)
@@ -138,13 +163,88 @@ class DesignStatus:
             self.board_hash, self.parts = digest, parts
         return digest, parts
 
-    def _store(self):
-        temporary = self.evidence_path.with_suffix('.' + uuid4().hex + '.tmp')
+    def _portable_targets(self, targets):
+        root = Path(self.app.project_root).resolve()
+        result = []
+        for item in targets:
+            path = Path(item['path']).resolve()
+            local = path.is_relative_to(root)
+            result.append({**item, 'path':path.relative_to(root).as_posix() if local else str(path),
+                           'scope':'project' if local else 'external'})
+        return result
+
+    def _valid_targets(self, evidence, *, legacy=False, footprint=None):
         try:
-            temporary.write_text(json.dumps(self.evidence, ensure_ascii=False), encoding='utf-8')
-            temporary.replace(self.evidence_path)
-        finally:
-            temporary.unlink(missing_ok=True)
+            root = Path(self.app.project_root).resolve()
+            targets = evidence.get('targets', [])
+            if not isinstance(targets, list):
+                return False
+            for item in targets:
+                path = Path(item['path'])
+                if not legacy and item.get('scope') == 'project':
+                    if path.is_absolute():
+                        return False
+                    path = (root / path).resolve()
+                    if not path.is_relative_to(root):
+                        return False
+                elif not path.is_absolute() or (not legacy and item.get('scope') != 'external'):
+                    return False
+                if footprint:
+                    from part_selection_footprints import FootprintChoices, item_name
+                    nickname, name = (item_name(value) for value in footprint.split(':'))
+                    library = FootprintChoices(root).libraries().get(nickname)
+                    if library is None or (library / (name + '.kicad_mod')).resolve() != path.resolve():
+                        return False
+                if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != item['hash']:
+                    return False
+            return True
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    def _store(self, updates):
+        # Merge only this operation's refs; another window may have newer receipts.
+        # A conflicted/unsupported shared file must never be silently overwritten.
+        with _EVIDENCE_LOCK:
+            self._volatile.update(updates)
+            evidence = {**_load_evidence(self.evidence_path), **updates}
+            self.evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.evidence_path.with_suffix('.' + uuid4().hex + '.tmp')
+            try:
+                temporary.write_text(json.dumps({'schema':1, 'records':evidence},
+                    sort_keys=True, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+                temporary.replace(self.evidence_path)
+                for ref in updates:
+                    self._volatile.pop(ref, None)
+                self.evidence = {**evidence, **self._volatile}
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def _refresh_evidence(self, source, parts):
+        with _EVIDENCE_LOCK:
+            if self.evidence_path.exists():
+                self._migration_checked = True
+            self.evidence = _load_evidence(self.evidence_path)
+            self.evidence.update(self._volatile)
+            if self.evidence_path.exists() or self._migration_checked:
+                return
+            self._migration_checked = True
+            legacy = _load_evidence(self.legacy_evidence_path, legacy=True)
+            migrated = {}
+            for ref, item in legacy.items():
+                if (ref in self._volatile or ref not in source['fields'] or ref not in parts
+                        or item.get('source') != self._key(source, ref)
+                        or not self._valid_targets(item, legacy=True,
+                            footprint=source['fields'][ref].get('footprint'))):
+                    continue
+                same = (item.get('instance') == parts[ref]['digest']
+                        or item.get('pad_instance') == parts[ref]['pad_digest'])
+                if not same and not item.get('uncertain'):
+                    continue
+                migrated[ref] = {**item, 'targets':self._portable_targets(item.get('targets', []))}
+            if migrated and self.sources.validate(source):
+                path = self._board()
+                if path and hashlib.sha256(path.read_bytes()).hexdigest() == self.board_hash:
+                    self._store(migrated)
 
     def observe(self, state, *, saved=False, verified=None):
         """Certify geometry only for the exact saved board and validated libraries."""
@@ -170,6 +270,7 @@ class DesignStatus:
         refs = state['refs'] if saved else state['requested_refs']
         items = {item['ref']:item for item in state['items']}
         _, parts = self._read(content)
+        updates = {}
         for ref in refs:
             if (ref not in parts or ref not in expected_parts
                     or parts[ref]['digest'] != expected_parts[ref]['digest']):
@@ -182,19 +283,25 @@ class DesignStatus:
             if not saved and item['kind'] not in ('none', 'fields'):
                 evidence.update(pending_kind=item['kind'], reason=item.get('blocked_reason') or item.get('reason', ''))
             else:
-                evidence['targets'] = [target for target in state['targets'] if target['ref'] == ref]
-            self.evidence[ref] = evidence
-        self._store()
+                evidence['targets'] = self._portable_targets(
+                    [target for target in state['targets'] if target['ref'] == ref])
+                if not self._valid_targets(evidence):
+                    continue
+            updates[ref] = evidence
+        if updates and self.sources.validate(source):
+            self._store(updates)
 
     def uncertain(self, state, reason):
         with self.lock:
             try:
                 source = state['source']['design']
+                updates = {}
                 for item in state['items']:
                     if item['kind'] != 'none':
                         ref = item['ref']
-                        self.evidence[ref] = {'source':self._key(source, ref), 'uncertain':reason}
-                self._store()
+                        updates[ref] = {'source':self._key(source, ref), 'uncertain':reason}
+                if updates:
+                    self._store(updates)
             except (OSError, ValueError, KeyError, TypeError):
                 return False
         return True
@@ -209,6 +316,12 @@ class DesignStatus:
                 if self.source is None or not self.sources.validate(self.source):
                     self.source = self.sources.capture(allow_legacy=True, include_terminals=False)
                 source = self.source
+                evidence_error = ''
+                try:
+                    self._refresh_evidence(source, parts)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    self.evidence = dict(self._volatile)
+                    evidence_error = 'PCB 核验记录不可用：' + str(exc)
                 desired = self.app.design_sync_fields(source, '__schematic__')
                 for row in rows:
                     states = {}
@@ -242,12 +355,13 @@ class DesignStatus:
                                           or evidence.get('pad_instance') == part['pad_digest'])
                                          and evidence.get('source') == self._key(source, ref))
                         certified = (same_instance and not evidence.get('pending_kind')
-                            and all(Path(item['path']).is_file() and hashlib.sha256(Path(item['path']).read_bytes()).hexdigest()
-                                    == item['hash'] for item in evidence.get('targets', [])))
+                                     and self._valid_targets(evidence, footprint=target))
                         if part['footprint'] != target or changes:
                             status['status'] = 'pending'
                         elif intent.get('operation') == 'replace' and not certified:
                             status.update(status='unverified', reason='封装名称已一致，几何仍需 PCB 实时核验')
+                        if evidence_error and status['status'] == 'synced':
+                            status.update(status='unverified', reason=evidence_error)
                         if same_instance and evidence.get('pending_kind'):
                             status.update(status='unverified' if evidence['pending_kind'] == 'unknown' else 'pending',
                                           reason=evidence.get('reason') or 'PCB 预检差异尚未完成')

@@ -26,6 +26,7 @@ DATA_FILE_NAMES = {
     "input_refs": "位号清单.txt",
 }
 SYNC_LOG_NAME = "原理图同步记录.csv"
+PCB_SYNC_EVIDENCE_NAME = "PCB同步核验记录.json"
 RUNTIME_LOG_NAME = "原理图同步运行日志.jsonl"
 EXPORT_PREFIXES = ("采购BOM表_", "选料变更记录_")
 LEGACY_PATHS = {
