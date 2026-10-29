@@ -185,6 +185,7 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
   await page.getByRole('button',{name:'重新预检 PCB',exact:true}).waitFor();
   await page.getByRole('button',{name:'重新预检 PCB',exact:true}).click();
   await page.waitForFunction(()=>calls.some(c=>c.path==='/api/continue_design_sync'),{},{timeout:3000});
+  assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/start_design_sync_preview').at(-1).body.destination),'design');
   await page.waitForFunction(()=>!document.querySelector('[data-design-panel]'));
   assert.equal(await page.locator('[data-design-alignment]').isVisible(),false);
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/start_design_sync').length),1);
@@ -205,6 +206,44 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
 '''
     result = subprocess.run(['node', '-e', script], env={**os.environ, 'DESIGN_SYNC_JS': str(source)},
                             capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_parameter_only_success_closes_without_pcb_save_or_user_action():
+    source = Path(__file__).resolve().parents[1] / 'tools/web/design-sync.js'
+    script = r'''
+const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=require('node:fs');
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.route('http://workbench.test/',r=>r.fulfill({body:'<html><body></body></html>'}));
+  await page.goto('http://workbench.test/');
+  await page.evaluate(()=>{
+   window.calls=[];window.flushRowEdits=async()=>{};window.setState=()=>{};
+   window.fetch=async(path,options)=>{
+    calls.push(path);
+    let value;
+    if(path==='/api/start_design_sync_preview') value={ok:true,job_id:'preflight',done:true,preview:{
+     ok:true,preview_id:'preview',refs:['U29'],destination:'design',automatic:true,pcb_refs:[],
+     schematic_changes:[{ref:'U29',name:'value',before:'NC/IC',after:'IC'}],pcb_preview:null}};
+    else if(path==='/api/start_design_sync') value={ok:true,job_id:'sync'};
+    else if(path.startsWith('/api/design_sync_job')) value={ok:true,job_id:'sync',done:true,stage:'complete',
+     phase_results:{schematic:{ok:true},pcb:{ok:true,skipped:true}},message:'原理图同步完成'};
+    else throw Error('Unexpected '+path);
+    return {ok:true,json:async()=>value};
+   };
+  });
+  await page.addScriptTag({content:fs.readFileSync(process.env.DESIGN_SYNC_JS,'utf8')});
+  await page.evaluate(()=>window.openDesignSync({refs:['U29'],destination:'design'}));
+  await page.waitForFunction(()=>!document.querySelector('[data-design-panel]'));
+  assert.equal(await page.evaluate(()=>calls.filter(p=>p==='/api/start_design_sync').length),1);
+  assert.equal(await page.evaluate(()=>calls.filter(p=>p==='/api/continue_design_sync').length),0);
+ } finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+    result = subprocess.run(['node', '-e', script], env={**os.environ, 'DESIGN_SYNC_JS':str(source)},
+                            capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

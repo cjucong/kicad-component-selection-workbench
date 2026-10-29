@@ -82,6 +82,9 @@ def test_uncertainty_is_separate_from_actual_sync_differences(status_app):
     assert 'sync_done' not in row_filter_keys(row)
     board.write_text(board.read_text().replace('"NEW"', '"OLD"'))
     row = status(app)
+    assert 'needs_sync' not in row_filter_keys(row)
+    board.write_text(board.read_text().replace('Local:New', 'Local:Old'))
+    row = status(app)
     assert 'needs_sync' in row_filter_keys(row)
 
 
@@ -241,11 +244,11 @@ def test_migrating_other_refs_preserves_remaining_volatile_overlay(status_app):
     assert app.design_status.evidence['U1']['uncertain'] == 'save reply unknown'
 
 
-def test_corrupt_receipt_cannot_hide_known_field_and_name_differences(status_app):
+def test_corrupt_receipt_cannot_hide_known_footprint_name_difference(status_app):
     app, board = status_app
     certify(app, board)
     app.design_status.evidence_path.write_text('<<<<<<< conflict', encoding='utf-8')
-    board.write_text(board.read_text().replace('"NEW"', '"OLD"'))
+    board.write_text(board.read_text().replace('Local:New', 'Local:Old'))
     row = status(app)
     assert row['pcb_changed_refs'] == 'U1'
     assert 'needs_sync' in row_filter_keys(row)

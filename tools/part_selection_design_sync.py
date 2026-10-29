@@ -57,15 +57,20 @@ class DesignSync:
                                   change['after']), requires_pcb_verification=True)
         result = {'ok':True,'preview_id':uuid4().hex, **payload, 'schematic_changes':changes,
                   'blocked':False,'pcb_preview':None,'saved':False}
+        if payload['destination'] == 'design':
+            result['pcb_refs'] = self.app.design_status.pending_refs(source, desired)
         if payload['destination'] == 'pcb' or (payload['destination'] == 'design' and not changes):
             if changes:
                 result.update(blocked=True,suggested_destination='both',
                               reason='所选器件尚有原理图字段未同步，请改为全部同步或先同步原理图')
-            else:
+            elif result.get('pcb_refs', payload['refs']):
                 notify('pcb', '正在准备 PCB 实时预检')
                 options = {'progress':progress} if progress else {}
-                result['pcb_preview'] = self.app.pcb_updates.preview(payload['refs'],payload['bom'],
-                    alignment=payload['alignment'],source=source, **options)
+                if payload['destination'] == 'design':
+                    options['sync_fields'] = False
+                pcb_refs = result.get('pcb_refs', payload['refs'])
+                result['pcb_preview'] = self.app.pcb_updates.preview(pcb_refs,payload['bom'],
+                    alignment=payload['alignment'],source={**source, 'refs':pcb_refs}, **options)
                 result['blocked'] = bool(result['pcb_preview'].get('blocked'))
         # A PCB-only recheck can belong to an already-authorized automatic design
         # job. Return the same risk decision used by that job's continuation.
@@ -256,8 +261,9 @@ class DesignSync:
         state = self.previews[preview_id]
         result = state['result']
         automatic = result['destination'] == 'design'
+        pcb_required = bool(result.get('pcb_refs', result['refs']))
         phase = 'pcb' if pcb_only or result['destination'] == 'pcb' or (
-            automatic and not result['schematic_changes']) else 'schematic'
+            automatic and not result['schematic_changes'] and pcb_required) else 'schematic'
         try:
             if not self.sources.validate(state['source']):
                 raise ValueError('排队期间数据已改变，请重新预检')
@@ -270,7 +276,7 @@ class DesignSync:
                 self._update(key,stage='schematic',message='正在同步原理图')
                 def progress(stage, message):
                     self._update(key,stage='schematic:'+stage,message=message)
-                options = {'notify':False} if automatic else {}
+                options = {'notify':False} if automatic and pcb_required else {}
                 schematic = self.app.bulk_sync_bom_state_to_schematic(result['bom'],
                     selected_refs=result['refs'], prepared_fields=state['desired'],progress=progress,
                     validate_source=lambda:self.sources.refresh_after_save(state['source']), **options)
@@ -279,7 +285,10 @@ class DesignSync:
                     raise ValueError('原理图写入或回读未通过，未继续 PCB')
                 with self.lock:
                     self.jobs[key]['phase_results']['schematic'] = deepcopy(schematic)
-                if result['destination'] == 'schematic':
+                if result['destination'] == 'schematic' or (automatic and not pcb_required):
+                    if automatic:
+                        self.jobs[key]['phase_results']['pcb'] = {'ok':True, 'skipped':True,
+                            'reason':'无封装变更，本次不处理 PCB'}
                     if schematic.get('already_synced'):
                         self._update(key, stage='navigation_skipped', step_status='skipped',
                             message='原理图已是最新，跳过保存、关闭和定位')
@@ -294,7 +303,10 @@ class DesignSync:
                           else self.sources.capture(result['refs']))
                 with self.lock:
                     self.jobs[key]['_pcb_source'] = deepcopy(source)
-                pcb = self.app.pcb_updates.preview(result['refs'],result['bom'],alignment=result['alignment'],source=source,
+                pcb_refs = result.get('pcb_refs', result['refs'])
+                pcb = self.app.pcb_updates.preview(pcb_refs,result['bom'],alignment=result['alignment'],
+                    source={**source, 'refs':pcb_refs},
+                    **({'sync_fields':False} if automatic else {}),
                     progress=lambda stage,message:self._update(key,stage='pcb_preview:'+stage,message=message))
                 next_result = {**result, 'pcb_preview':pcb, 'blocked':bool(pcb.get('blocked'))}
                 with self.lock:
@@ -425,7 +437,7 @@ class DesignSync:
             else:
                 token = preview_id
                 state = self._preview(token)
-                allowed = ('pcb','design') if job['destination'] == 'design' else ('pcb',)
+                allowed = ('design',) if job['destination'] == 'design' else ('pcb',)
                 if (state['result']['destination'] not in allowed or state['result']['refs'] != job['refs']
                         or state.get('job_id') or state['result']['schematic_changes']
                         or not state['result']['pcb_preview']):

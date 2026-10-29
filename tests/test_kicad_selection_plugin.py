@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from _scratch import temporary_project
 import unittest
 import zipfile
@@ -152,6 +153,14 @@ class SelectionPluginTests(unittest.TestCase):
         import desktop
         from part_selection_lifecycle import DesktopLifecycle
         view = MagicMock()
+        loaded = view.create_window.return_value.events.loaded
+        loaded.__iadd__.return_value = loaded
+        def gui_loop(**kwargs):
+            loaded.__iadd__.call_args.args[0]()
+            for thread in threading.enumerate():
+                if thread.name == 'desktop-startup':
+                    thread.join(3)
+        view.start.side_effect = gui_loop
         root = self.project()
         client = SimpleNamespace(
             get_board=lambda: SimpleNamespace(get_project=lambda: SimpleNamespace(path="")),
@@ -174,7 +183,8 @@ class SelectionPluginTests(unittest.TestCase):
             self.assertEqual(desktop.main([]), 0)
             picker.assert_not_called()
             self.assertEqual(backend.call_args.args[0], root)
-            self.assertEqual(view.create_window.call_args.args[1],"http://127.0.0.1:1234/")
+            self.assertIn('html', view.create_window.call_args.kwargs)
+            view.create_window.return_value.load_url.assert_called_once_with("http://127.0.0.1:1234/")
             self.assertIn('js_api',view.create_window.call_args.kwargs)
 
     def test_entrypoint_records_startup_before_argument_parser_exits(self):
@@ -237,7 +247,7 @@ class SelectionPluginTests(unittest.TestCase):
         self.assertEqual([item.Name for item in items], ['copy', 'cut', 'paste', 'selectAll', 'undo'])
 
     def test_native_window_explicitly_allows_text_selection(self):
-        tree = ast.parse((PLUGIN / 'desktop.py').read_text(encoding='utf-8'))
+        tree = ast.parse((PLUGIN / 'startup_progress.py').read_text(encoding='utf-8'))
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Attribute) and node.func.attr == 'create_window']
         self.assertTrue(calls)

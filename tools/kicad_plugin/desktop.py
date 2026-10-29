@@ -564,25 +564,19 @@ def main(argv=None) -> int:
         from part_selection_lifecycle import DesktopLifecycle, DesktopBridge
         from part_selection_tool_windows import ToolWindows
         token = secrets.token_urlsafe(32)
-        progress.stage('正在启动工程后台…')
-        url = ensure_backend(root, config, logs, owner_token=token)
-        lifecycle = DesktopLifecycle(url, token)
+        # The bridge is inactive until the exact owned workbench URL is known.
+        lifecycle = DesktopLifecycle('http://127.0.0.1:0/', token)
         lifecycle.project_id = str(root.resolve())
         lifecycle.updater = updater
-        logging.info("Opening project=%s url=%s", root, url)
+        logging.info("Opening loading window project=%s", root)
         progress.stage('正在加载工作台窗口…')
-        window = webview.create_window(title, url, width=1380, height=900, min_size=(800, 500),
-                                       text_select=True, js_api=DesktopBridge(lifecycle))
-        lifecycle.window = window
+        window = progress.open(webview, title, lifecycle,
+            lambda:ensure_backend(root, config, logs, owner_token=token), DesktopBridge(lifecycle),
+            lambda:enable_browser_shortcuts(lifecycle.window))
         lifecycle.tools = ToolWindows(lifecycle, webview.create_window, enable_browser_shortcuts)
-        def loaded():
-            progress.stage('工作台页面已加载')
-            progress.close()
-            enable_browser_shortcuts(window)
-        window.events.loaded += loaded
-        window.events.closing += lifecycle.on_closing
         webview.start(gui="edgechromium", private_mode=False,
                       storage_path=str(logs / "webview"))
+        progress.close()
         if lifecycle.install_update:
             try:
                 updater.apply()
@@ -593,7 +587,7 @@ def main(argv=None) -> int:
             release_window(handle)
             handle = None
             relaunch_desktop(root, config, logs)
-        return 0
+        return 1 if progress.error else 0
     except Exception as exc:
         logging.exception("Desktop launch failed")
         progress.close()
@@ -603,7 +597,7 @@ def main(argv=None) -> int:
         progress.close()
         if updater:
             updater.unregister()
-        if lifecycle and not lifecycle.allow_close:
+        if lifecycle and lifecycle.url != 'http://127.0.0.1:0/' and (not lifecycle.allow_close or progress.cancelled):
             try:
                 lifecycle._stop_backend()
             except Exception:

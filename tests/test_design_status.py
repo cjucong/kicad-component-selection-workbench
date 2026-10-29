@@ -49,6 +49,62 @@ def current_board(board):
     board.write_text(board.read_text().replace('Local:Old', 'Local:New').replace('"OLD"', '"NEW"'))
 
 
+def test_value_only_difference_is_not_pcb_pending(status_app):
+    app, board = status_app
+    current_board(board)
+    board.write_text(board.read_text().replace('"NEW"', '"OLD"'))
+    row = status(app)
+    assert not row['pcb_changed_refs'] and not row['pcb_unverified_refs']
+
+
+def test_parameter_edit_does_not_invalidate_verified_footprint(status_app):
+    app, board = status_app
+    replacement_record(app)
+    current_board(board)
+    assert app.design_status.observe(observation(app, board))
+    schematic = board.with_suffix('.kicad_sch')
+    schematic.write_text(schematic.read_text().replace('"NEW"', '"UPDATED VALUE"'))
+    app.design_status = DesignStatus(app)
+    row = status(app)
+    assert not row['pcb_changed_refs'] and not row['pcb_unverified_refs']
+
+
+def test_missing_board_cannot_hide_same_name_replacement_intent(status_app):
+    app, board = status_app
+    replacement_record(app)
+    board.unlink()
+    source = app.design_sync.sources.capture(['U1'])
+    desired = app.design_sync_fields(source, '__schematic__')
+    assert app.design_status.pending_refs(source, desired) == ['U1']
+
+
+@pytest.mark.parametrize('fields', [{'value':'UPDATED'}, {'lcsc_c_code':'C12345'},
+    {'comment':'updated model'}, {'description':'updated parameters'}])
+def test_real_field_write_skips_locked_pcb_and_preserves_board(status_app, fields):
+    from test_design_sync import await_job
+    app, board = status_app
+    current_board(board)
+    before = board.read_bytes()
+    record = {'field_overrides':fields}
+    if 'lcsc_c_code' in fields or 'description' in fields:
+        record.update(manual_c_code='C12345', accepted_c_code='C12345', decision='AcceptManual')
+        if 'description' in fields:
+            fields['description_c_code'] = 'C12345'
+    save_overrides(app.overrides_path, {'U1':record})
+    app.prepare_kicad_for_external_schematic_write = Mock(return_value={'ok':True})
+    app.notify_kicad_schematic_changed = Mock(return_value={'ok':True})
+    app.reopen_and_locate_design = Mock(return_value={'ok':True})
+    preview = app.design_sync.preview({'refs':['U1'], 'destination':'design'})
+    assert preview['pcb_refs'] == [] and preview['schematic_changes']
+    state = await_job(app.design_sync, app.design_sync.start(preview['preview_id'], {})['job_id'])
+    assert state['stage'] == 'complete', state
+    assert state['phase_results']['pcb']['skipped']
+    assert board.read_bytes() == before
+    app.pcb_updates.session.snapshot.assert_not_called()
+    row = status(app)
+    assert not row.get('field_changed_refs') and not row['pcb_changed_refs']
+
+
 def replacement_record(app):
     save_overrides(app.overrides_path, {'U1':{'review_status':'Confirmed',
         'footprint_change':{'operation':'replace','before':'Local:Old','after':'Local:New'}}})
@@ -260,7 +316,7 @@ def test_custom_mapped_fields_match_native_sync_field_names(status_app):
     app.config['field_mapping'] = {'value':'值'}
     current_board(board)
     row = status(app)
-    assert row['pcb_changed_refs'] == 'U1'
+    assert not row['pcb_changed_refs']
     assert {'name':'值','before':'','after':'NEW'} in row['pcb_sync_by_ref']['U1']['field_changes']
     board.write_text(board.read_text().replace('(property "Value" "NEW")',
                                               '(property "Value" "NEW") (property "值" "NEW")'))

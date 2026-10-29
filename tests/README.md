@@ -227,7 +227,9 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `test_compact_design_sync.py` 覆盖当前事项/无百分比进度、成功自动关闭、失败/缺少保存证据/关闭失败保留，以及断线后查询状态入口可见、禁止重复写入。`run_native_compact_sync_probe.py --report-dir <工程外绝对目录>` 在一次性工程与真实 WebView2 中验证受限桥接自动关闭、失败保留及主窗正常退出清理；同步响应为合成数据，不执行 CAD 同步，也不代表真实生产写入验证。
 
-`test_desktop_startup_progress.py` 验证启动等待窗口先于工程发现、加载/错误/取消/复用/运行环境重启均清理，以及后台未监听时不做 HTTP 探测、就绪后不重复探测。设置 `KPS_NATIVE_STARTUP_SMOKE=1` 可运行真实 Win32 进度窗口的消息泵、阶段刷新与退出测试；只测启动提示，不代表原理图入口全流程耗时。
+`test_desktop_startup_progress.py` 验证同窗加载/交接、失败保留、加载中关闭、运行环境重启和后台探测。`python -B tests/run_native_startup_probe.py` 使用真实 WebView2 和隔离 HTTP 页面，核验主窗 HWND 不变、进度刷新、失败同窗及关闭后不再加载；可用工程外 `KPS_STARTUP_REPORT` 目录保存 JSON/截图，不操作 CAD 或生产后台。首次依赖安装仍在隐藏启动器内，不代表这一阶段已有可见进度。
+
+参数分流回归：`test_design_sync.py` 覆盖参数-only 不碰锁定 PCB、混合范围缩小、重试保持封装-only 策略及失败/不确定不可重放；`test_design_status.py` 使用合成原理图实际写回 Value/Comment/C 编码/描述，验证 PCB 字节不变，另验证参数改动不破坏几何证据及重启状态。测试原生保存/关闭边界为替身，不能宣称已验证该场景的完整 KiCad 原生交互。`test_design_sync_ui.py` 验证跳过 PCB 后自动关闭。真实 `run_native_design_keep_open.py --with-footprints` 另验已有 PCB 参数差异不触发默认更新，然后用旧显式接口验证字段事务，继续验证三类封装和故障后自动续接。
 
 `run_native_design_sync_probe.py --report-dir <工程外目录>` 是上述全工程闭环探测的兼容入口。原来的不保存/单步撤销与“弹窗后继续 PCB”假设不适用于新自动保存关闭流程，不再沿用旧成功文案或旧进程连接验证新流程。`run_native_pcb_in_place_probe.py` 保留底层事务检查：Chromium 实际选库，随后测试显式安全暂关原理图、同步字段及调用不保存适配器；不宣称这覆盖完整同步菜单编排或真实联网转换。
 

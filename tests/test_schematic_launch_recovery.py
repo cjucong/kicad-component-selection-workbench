@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace as Obj
 import os
 import sys
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,13 +38,22 @@ def dead():
 
 def launch(root, factory, candidates, *, verified=False):
     with ExitStack() as stack:
+        view = MagicMock()
+        loaded = view.create_window.return_value.events.loaded
+        loaded.__iadd__.return_value = loaded
+        def gui_loop(**kwargs):
+            loaded.__iadd__.call_args.args[0]()
+            for thread in threading.enumerate():
+                if thread.name == 'desktop-startup':
+                    thread.join(3)
+        view.start.side_effect = gui_loop
         lifecycle = MagicMock(restart=False, install_update=False, allow_close=True)
         stack.enter_context(patch.dict(os.environ, {"KICAD_API_SOCKET": "ipc://expired",
             "KICAD_API_TOKEN": "expired-token", "KIPRJMOD": str(root)}))
         stack.enter_context(patch.dict(sys.modules, {
             "kipy": Obj(KiCad=factory),
             "kipy.proto.common.types.base_types_pb2": Obj(DocumentType=Obj(DOCTYPE_SCHEMATIC=1)),
-            "webview": MagicMock(), "updater": Obj(PluginUpdater=MagicMock()),
+            "webview": view, "updater": Obj(PluginUpdater=MagicMock()),
         }))
         stack.enter_context(patch("part_selection_pcb_session.pcb_socket_candidates", return_value=candidates))
         stack.enter_context(patch.object(desktop, 'verify_launching_schematic', return_value=verified))

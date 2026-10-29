@@ -122,6 +122,19 @@ class DesignStatus:
                         source['records'].get(ref, {}).get('footprint_change'),
                         source['identity']['paths'][ref], versions['hashes'].get(table)])
 
+    @staticmethod
+    def _geometry_key(source, ref):
+        versions = source['versions']
+        table = str(Path(versions['configuration']['root']) / 'fp-lib-table')
+        return _digest([source['fields'][ref].get('footprint', ''),
+                        source['records'].get(ref, {}).get('footprint_change'),
+                        source['identity']['paths'][ref], versions['hashes'].get(table)])
+
+    def _source_matches(self, evidence, source, ref):
+        if 'geometry_source' in evidence:
+            return evidence['geometry_source'] == self._geometry_key(source, ref)
+        return evidence.get('source') == self._key(source, ref)
+
     def _read(self, content, *, cache=True):
         digest = hashlib.sha256(content).hexdigest()
         if digest == self.board_hash:
@@ -232,7 +245,7 @@ class DesignStatus:
             migrated = {}
             for ref, item in legacy.items():
                 if (ref in self._volatile or ref not in source['fields'] or ref not in parts
-                        or item.get('source') != self._key(source, ref)
+                        or not self._source_matches(item, source, ref)
                         or not self._valid_targets(item, legacy=True,
                             footprint=source['fields'][ref].get('footprint'))):
                     continue
@@ -277,7 +290,7 @@ class DesignStatus:
                 continue
             item = items[ref]
             evidence = {'instance':parts[ref]['digest'], 'pad_instance':parts[ref]['pad_digest'],
-                        'source':self._key(source, ref)}
+                        'source':self._key(source, ref), 'geometry_source':self._geometry_key(source, ref)}
             if item.get('retained_board_annotations'):
                 evidence['retained_board_annotations'] = True
             if not saved and item['kind'] not in ('none', 'fields'):
@@ -299,30 +312,43 @@ class DesignStatus:
                 for item in state['items']:
                     if item['kind'] != 'none':
                         ref = item['ref']
-                        updates[ref] = {'source':self._key(source, ref), 'uncertain':reason}
+                        updates[ref] = {'source':self._key(source, ref),
+                                        'geometry_source':self._geometry_key(source, ref), 'uncertain':reason}
                 if updates:
                     self._store(updates)
             except (OSError, ValueError, KeyError, TypeError):
                 return False
         return True
 
-    def enrich(self, rows, selected_bom):
+    def pending_refs(self, source, desired):
+        rows = [{'refs_list':source['refs']}]
+        self.enrich(rows, '__schematic__', source=source, desired=desired)
+        states = rows[0].get('pcb_sync_by_ref', {})
+        return [ref for ref in source['refs'] if states.get(ref, {}).get('status') in ('pending', 'unverified')
+                or (ref not in states and (source['records'].get(ref, {}).get('footprint_change') or {}
+                                          ).get('operation') == 'replace')
+                or source['fields'][ref].get('footprint', '') != desired[ref].get(
+                    'footprint', source['fields'][ref].get('footprint', ''))]
+
+    def enrich(self, rows, selected_bom, *, source=None, desired=None):
         with self.lock:
             try:
                 path = self._board()
                 if path is None:
                     return rows
                 _, parts = self._read(path.read_bytes())
-                if self.source is None or not self.sources.validate(self.source):
-                    self.source = self.sources.capture(allow_legacy=True, include_terminals=False)
-                source = self.source
+                if source is None:
+                    if self.source is None or not self.sources.validate(self.source):
+                        self.source = self.sources.capture(allow_legacy=True, include_terminals=False)
+                    source = self.source
                 evidence_error = ''
                 try:
                     self._refresh_evidence(source, parts)
                 except (OSError, ValueError, KeyError, TypeError) as exc:
                     self.evidence = dict(self._volatile)
                     evidence_error = 'PCB 核验记录不可用：' + str(exc)
-                desired = self.app.design_sync_fields(source, '__schematic__')
+                if desired is None:
+                    desired = self.app.design_sync_fields(source, '__schematic__')
                 for row in rows:
                     states = {}
                     for ref in row.get('refs_list', []):
@@ -353,10 +379,10 @@ class DesignStatus:
                         evidence = self.evidence.get(ref, {})
                         same_instance = ((evidence.get('instance') == part['digest']
                                           or evidence.get('pad_instance') == part['pad_digest'])
-                                         and evidence.get('source') == self._key(source, ref))
+                                         and self._source_matches(evidence, source, ref))
                         certified = (same_instance and not evidence.get('pending_kind')
                                      and self._valid_targets(evidence, footprint=target))
-                        if part['footprint'] != target or changes:
+                        if part['footprint'] != target:
                             status['status'] = 'pending'
                         elif intent.get('operation') == 'replace' and not certified:
                             status.update(status='unverified', reason='封装名称已一致，几何仍需 PCB 实时核验')
@@ -365,7 +391,7 @@ class DesignStatus:
                         if same_instance and evidence.get('pending_kind'):
                             status.update(status='unverified' if evidence['pending_kind'] == 'unknown' else 'pending',
                                           reason=evidence.get('reason') or 'PCB 预检差异尚未完成')
-                        if evidence.get('uncertain') and evidence.get('source') == self._key(source, ref):
+                        if evidence.get('uncertain') and self._source_matches(evidence, source, ref):
                             status.update(status='unverified', reason='上次 PCB 结果待核验：' + evidence['uncertain'])
                         if status['status'] == 'synced' and certified and evidence.get('retained_board_annotations'):
                             status.update(retained_board_annotations=True, reason='焊盘已核验，保留板级定制')

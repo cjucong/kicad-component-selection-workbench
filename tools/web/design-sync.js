@@ -114,7 +114,8 @@
       const details = Object.entries(kinds).filter(([kind])=>kind!=='none').map(([kind,label])=>
         [label,changed.filter(item=>item.kind===kind).length]).filter(([,n])=>n).map(([label,n])=>`${label} ${n}`);
       const unchanged = (pcb?.items || []).filter(item=>item.kind==='none').length;
-      q('[data-design-counts]').textContent = `${schematic} · ${pcb ? `PCB 预检差异：${changed.length} 个器件${details.length?' · '+details.join(' · '):''} · 无需更新 ${unchanged}` : state.payload.destination==='schematic'?'PCB：本次不处理':'PCB：尚未核验'}`;
+      const skipPcb = state.payload.destination==='schematic' || state.preview?.pcb_refs?.length===0 || state.phaseResults?.pcb?.skipped;
+      q('[data-design-counts]').textContent = `${schematic} · ${pcb ? `PCB 预检差异：${changed.length} 个器件${details.length?' · '+details.join(' · '):''} · 无需更新 ${unchanged}` : skipPcb?'PCB：无封装变更，本次不处理':'PCB：尚未核验'}`;
     }
     function render(preview) {
       state.preview = preview;
@@ -157,7 +158,7 @@
       state.phaseResults = value || {};
       counts();
       q('[data-design-phases]').textContent = Object.entries(value || {}).map(([name,result]) =>
-        `${name==='schematic'?'原理图':'PCB'}：${result.save_uncertain?'已更新，保存待核验':result.ok?'已完成':result.uncertain?'结果待核验':'未完成'}`).join('   ·   ');
+        `${name==='schematic'?'原理图':'PCB'}：${result.skipped?'本次不处理':result.save_uncertain?'已更新，保存待核验':result.ok?'已完成':result.uncertain?'结果待核验':'未完成'}`).join('   ·   ');
       const schematicDone = value?.schematic?.ok;
       if (schematicDone && !state.notified.has('schematic')) {
         state.notified.add('schematic'); Promise.resolve(notify()).catch(()=>{});
@@ -244,7 +245,8 @@
             } else {
               state.preview = null;
               if (value.stage === 'partial') {
-                state.payload.destination = 'pcb'; state.continuation = 'needs-preview';
+                state.payload.destination = state.automaticWorkflow ? 'design' : 'pcb';
+                state.continuation = 'needs-preview';
                 q('[data-design-refresh]').textContent = '重新预检 PCB';
               }
               q('[data-design-refresh]').hidden = !['partial','failed'].includes(value.stage);
@@ -257,7 +259,8 @@
                 const pcb = phases.pcb;
                 const verified = value.ok === true && !value.error && !value.needs_confirmation &&
                   Object.values(phases).every(phase => phase.ok === true && !phase.navigation_error) &&
-                  (pcb ? pcb.saved === true || pcb.no_changes === true || pcb.already_synced === true : phases.schematic?.ok === true);
+                  (pcb ? pcb.saved === true || pcb.no_changes === true || pcb.already_synced === true ||
+                    (pcb.skipped === true && phases.schematic?.ok === true) : phases.schematic?.ok === true);
                 if (verified) {
                   if (child && window.closeNativeTool) {
                     Promise.resolve(window.closeNativeTool()).then(result => {

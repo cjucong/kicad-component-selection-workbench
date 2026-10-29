@@ -108,10 +108,11 @@ def coordinator():
                 'records':{'R1':{}}, 'identity':{}, 'mapping':{}, 'versions':{}}
     sources = SimpleNamespace(capture=Mock(side_effect=lambda refs:deepcopy(snapshot)),validate=Mock(return_value=True),
         refresh_after_save=Mock(return_value=True),after_write=Mock(side_effect=lambda *_:deepcopy(snapshot)))
-    pcb = SimpleNamespace(preview=Mock(return_value={'ok':True,'preview_id':'pcb-one',
+    pcb = SimpleNamespace(previews={}, preview=Mock(return_value={'ok':True,'preview_id':'pcb-one',
         'blocked':False,'items':[{'ref':'R1','kind':'fields','needs_ack':False,'field_changes':[]}]}),
         apply=Mock(return_value={'ok':True,'saved':False}))
     app = SimpleNamespace(project_root='synthetic',selection_save_lock=threading.RLock(),
+        design_status=SimpleNamespace(pending_refs=Mock(return_value=['R1']), uncertain=Mock()),
         design_sync_fields=Mock(return_value={'R1':{'value':'22k','footprint':'Local:New'}}),
         bulk_sync_bom_state_to_schematic=Mock(return_value={'ok':True,'schematic_verify':{'ok':True}}),
         pcb_updates=pcb, reopen_and_locate_design=Mock(return_value={'ok':True}))
@@ -127,6 +128,47 @@ def await_job(service, job_id):
             return state
         time.sleep(.005)
     raise AssertionError('Synthetic sync task did not finish')
+
+
+def test_parameter_only_design_never_connects_to_locked_pcb():
+    service, app, sources = coordinator()
+    app.design_status = SimpleNamespace(pending_refs=Mock(return_value=[]))
+    app.pcb_updates.preview.side_effect = AssertionError('PCB document is locked')
+    app.sync_design_pcb = Mock(side_effect=AssertionError('Do not apply PCB fields'))
+    try:
+        preview = service.preview({'refs':['R1'], 'destination':'design'})
+        state = await_job(service, service.start(preview['preview_id'], {})['job_id'])
+        assert state['stage'] == 'complete'
+        assert state['phase_results']['pcb']['skipped']
+        app.pcb_updates.preview.assert_not_called()
+        app.sync_design_pcb.assert_not_called()
+        assert app.bulk_sync_bom_state_to_schematic.call_args.kwargs.get('notify', True)
+    finally:
+        service.close()
+
+
+def test_mixed_scope_only_preflights_footprint_refs():
+    service, app, sources = coordinator()
+    original = sources.capture(['R1'])
+    original['refs'].append('R2')
+    original['fields']['R2'] = {'value':'old', 'footprint':'Local:New'}
+    original['records']['R2'] = {}
+    sources.capture.side_effect = lambda refs:deepcopy(original)
+    sources.after_write.side_effect = lambda *_:deepcopy(original)
+    app.design_sync_fields.return_value['R2'] = {'value':'new', 'footprint':'Local:New'}
+    app.sync_design_pcb = Mock(return_value={'ok':True, 'saved':True})
+    app.notify_kicad_schematic_changed = Mock(return_value={'ok':True})
+    try:
+        preview = service.preview({'refs':['R1','R2'], 'destination':'design'})
+        state = await_job(service, service.start(preview['preview_id'], {})['job_id'])
+        assert state['stage'] == 'complete', state
+        call = app.pcb_updates.preview.call_args
+        assert call.args[0] == ['R1']
+        assert call.kwargs['source']['refs'] == ['R1']
+        assert call.kwargs['sync_fields'] is False
+        assert app.bulk_sync_bom_state_to_schematic.call_args.kwargs['selected_refs'] == ['R1','R2']
+    finally:
+        service.close()
 
 
 def test_design_automatically_continues_pcb_without_replaying_current_schematic():
@@ -181,7 +223,7 @@ def test_rechecked_pcb_continuation_reports_the_new_diff_not_the_old_one(retry_f
         app.design_sync_fields.return_value=deepcopy(sources.capture(['R1'])['fields'])
         app.pcb_updates.preview.return_value={'ok':True,'preview_id':'pcb-two','blocked':False,
             'items':[{'ref':'R1','kind':'rename','field_changes':[]}]}
-        retry=service.preview({'refs':['R1'],'destination':'pcb'})
+        retry=service.preview({'refs':['R1'],'destination':'design'})
         app.sync_design_pcb.side_effect=ValueError('second rejection') if retry_fails else None
         app.sync_design_pcb.return_value={'ok':True,'saved':True,'editors_preserved':True}
         continued=service.continue_pcb(state['job_id'],retry['preview_id'],{})
@@ -190,6 +232,7 @@ def test_rechecked_pcb_continuation_reports_the_new_diff_not_the_old_one(retry_f
         assert state['pcb_preview']==retry['pcb_preview']
         assert state['schematic_changes']==original_changes
         assert app.sync_design_pcb.call_args.args[0]=='pcb-two'
+        assert app.pcb_updates.preview.call_args.kwargs['sync_fields'] is False
     finally:
         service.close()
 
@@ -247,6 +290,22 @@ def test_automatic_design_recheck_with_new_schematic_edits_cannot_resume_pcb():
             service.continue_pcb(waiting['job_id'], retry['preview_id'], {})
         app.bulk_sync_bom_state_to_schematic.assert_called_once()
         app.sync_design_pcb.assert_not_called()
+    finally:
+        service.close()
+
+
+def test_design_continuation_rejects_legacy_parameter_sync_preview():
+    service, app, sources = coordinator()
+    app.sync_design_pcb = Mock(side_effect=ValueError('first rejection'))
+    try:
+        first = service.preview({'refs':['R1'], 'destination':'design'})
+        waiting = await_job(service, service.start(first['preview_id'], {})['job_id'])
+        assert waiting['stage'] == 'partial'
+        app.design_sync_fields.return_value = deepcopy(sources.capture(['R1'])['fields'])
+        legacy = service.preview({'refs':['R1'], 'destination':'pcb'})
+        with pytest.raises(ValueError, match='重试预检'):
+            service.continue_pcb(waiting['job_id'], legacy['preview_id'], {})
+        assert app.sync_design_pcb.call_count == 1
     finally:
         service.close()
 

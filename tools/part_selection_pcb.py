@@ -155,7 +155,8 @@ class PcbUpdates:
         table_hash = source['design']['versions']['hashes'].get(str(Path(self.app.project_root)/'fp-lib-table'))
         return (ref, original['uuid'], table_hash, json.dumps(record.get('footprint_change'), sort_keys=True))
 
-    def preview(self, refs: list[str], bom: str, *, alignment='rigid', source=None, progress=None) -> dict:
+    def preview(self, refs: list[str], bom: str, *, alignment='rigid', source=None, progress=None,
+                sync_fields=True) -> dict:
         notify = progress or (lambda *args: None)
         options = {'progress':progress} if progress else {}
         if alignment not in ('rigid', 'center'):
@@ -199,7 +200,7 @@ class PcbUpdates:
             original = snapshot['parts'][ref]
             if original.get('symbol_path') not in source['identity']['paths'][ref]:
                 raise ValueError(ref + ' 原理图实例与 PCB 关联不一致，请先核对 UUID / 重新关联，不能只凭同位号替换')
-            desired = self._fields(source, ref)
+            desired = self._fields(source, ref) if sync_fields else {}
             current_fields = metadata_values(original) if desired else {}
             folded = {name.casefold():name for name in current_fields}
             field_changes = [{'name':folded.get(name.casefold(), name),

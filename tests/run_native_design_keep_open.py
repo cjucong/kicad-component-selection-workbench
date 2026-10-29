@@ -133,9 +133,9 @@ def run(report, *, with_footprints=False):
                 line=drawing.proto.shape.polygon.polygons[0].outline
                 if line.nodes[-1]!=line.nodes[0]:line.nodes.add().CopyFrom(line.nodes[0])
                 return encode(wrapped)
-            with patch.object(updates,'metadata_replacement',redundant_closure):
-                preview=app.design_sync.preview({'refs':refs,'destination':'design'})
+            preview=app.design_sync.preview({'refs':refs,'destination':'design'})
             assert not preview['schematic_changes'],preview['schematic_changes']
+            assert preview['pcb_refs']==[] and preview['pcb_preview'] is None,preview
             assert preview['automatic'] and not preview['blocked'],preview
             job=app.design_sync.start(preview['preview_id'],{})
             deadline=time.monotonic()+180
@@ -149,12 +149,19 @@ def run(report, *, with_footprints=False):
                 time.sleep(.2)
             result['job']=state
             assert state['stage']=='complete',state
-            pcb=state['phase_results']['pcb']
+            assert state['phase_results']['pcb']['skipped'],state
+            untouched=session.snapshot(root,refs)
+            assert untouched['parts']==live_before['parts']
+            result['default_parameter_differences_skipped']=True
+            # The explicit legacy API still verifies metadata transactions.
+            with patch.object(updates,'metadata_replacement',redundant_closure):
+                legacy=app.pcb_updates.preview(refs,'__schematic__')
+            pcb=app.sync_design_pcb(legacy['preview_id'],keep_open=True)
             assert pcb['saved'] and pcb['editors_preserved'] and not pcb['reopened'],pcb
             after=session.snapshot(root,refs)
             assert after['session_id']==live_before['session_id']
             assert owned_managers(root)==pids
-            changed=app.pcb_updates.previews[preview['pcb_preview']['preview_id']]
+            changed=app.pcb_updates.previews[legacy['preview_id']]
             assert changed['refs']==['R1'],changed['refs']
             prepared=decode(changed['replacements'][0]['proto'])
             staged=decode(after['parts']['R1']['proto'])
@@ -222,7 +229,7 @@ def run(report, *, with_footprints=False):
                             assert completed['stage']=='partial' and completed['phase_results']['schematic']['ok'],completed
                             table = app.rows('R1', '__schematic__', include_stock=False)
                             assert not table[0].get('field_changed_refs') and table[0].get('pcb_changed_refs'), table
-                            retry=app.design_sync.preview({'refs':['R1'],'destination':'pcb'})
+                            retry=app.design_sync.preview({'refs':['R1'],'destination':'design'})
                             assert retry['pcb_automatic'] and not retry['schematic_changes'],retry
                             completed=finished(app.design_sync,app.design_sync.continue_pcb(
                                 completed['job_id'],retry['preview_id'],{}))
@@ -311,7 +318,7 @@ def run(report, *, with_footprints=False):
                     assert outside_before==outside_after
                     repeated=app.design_sync.preview({'refs':refs,'destination':'design'})
                     assert not repeated['schematic_changes']
-                    assert all(item['kind']=='none' for item in repeated['pcb_preview']['items'])
+                    assert repeated['pcb_refs']==[] and repeated['pcb_preview'] is None,repeated
                 result['footprint_workflows_passed']=len(saves)==3
         except BaseException:
             result['error']=traceback.format_exc()
