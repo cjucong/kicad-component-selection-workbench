@@ -63,7 +63,7 @@ const rows = [group('R1','10pF','capacitor',['/Power','/Logic']),
   assert.equal(await page.locator('#rows tr[data-ref]').count(),4);
   assert.equal(await page.locator('.row-filter-trigger').count(),4);
   assert.equal(await page.locator('#bomSearchCount').textContent(),'4 / 4 行');
-  assert.equal(await page.evaluate(()=>document.getElementById('bomSearch').closest('.bom-search').nextElementSibling.id),'rowFilters');
+  assert.equal(await page.evaluate(()=>document.querySelector('.filter-tabs').nextElementSibling.id),'rowFilters');
   const initial = await page.evaluate(()=>JSON.stringify(currentRows));
   const visible = ()=>page.locator('#rows tr[data-ref]:visible').count();
   const choose = async field=>page.locator('#rowFilterField').selectOption(field);
@@ -140,6 +140,7 @@ const rows = [group('R1','10pF','capacitor',['/Power','/Logic']),
   assert.equal(await visible(),0);
   await choose('value');
   assert.equal(await page.getByRole('checkbox',{name:'stale-value',exact:true}).isChecked(),true);
+  await page.keyboard.press('Escape');
   await page.locator('#resetRowFilters').click();
   assert.equal(await visible(),4);
   assert.deepEqual(await page.evaluate(()=>loadUiSettings().rowFiltersByProject.other),{comment:['untouched']});
@@ -154,7 +155,10 @@ const rows = [group('R1','10pF','capacitor',['/Power','/Logic']),
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     const searchBounds=await page.locator('.bom-search').boundingBox();
     const filterBounds=await page.locator('#rowFilters').boundingBox();
-    assert.ok(filterBounds.y>=searchBounds.y+searchBounds.height-1,'Column filters must be below BOM search');
+    const chooser=await page.locator('#rowFilterField').boundingBox();
+    const tabs=await page.locator('.filter-tabs').boundingBox();
+    assert.ok(await page.locator('#rowFilters').evaluate(el=>Boolean(el.closest('.filter-bar'))),'Column filters must be in the upper filter bar');
+    if(width>=1200) assert.ok(Math.abs(chooser.y-tabs.y)<8,'Column filter chooser belongs beside the quick filters');
     for (const selector of ['#rowFilterField','#rowFilterPanel','#rowFilterOptionSearch','#rowFilterTags']) {
       const box=await page.locator(selector).boundingBox();
       assert.ok(box && box.width>0 && box.x>=0 && box.x+box.width<=width+1,`${selector} overflows at ${width}: ${JSON.stringify(box)} scrollX=${await page.evaluate(()=>scrollX)}`);

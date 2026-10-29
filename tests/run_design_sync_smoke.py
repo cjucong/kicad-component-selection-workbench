@@ -52,8 +52,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.deepEqual(requests.at(-1).refs,['R1']);
   assert.equal(await page.locator('[data-design-compare]').count(),0);
   assert.equal(await page.locator('[data-design-bar]').getAttribute('value'),'1');
-  await page.locator('[data-design-timing] summary').click();
-  await page.getByText('Read design data',{exact:false}).waitFor();
+  assert.equal(await page.locator('[data-design-timing], [data-design-steps]').count(),0);
   for(const width of [1440,768,390]) {
    await page.setViewportSize({width,height:920});
    const bounds=await page.locator('[data-design-panel]').boundingBox();

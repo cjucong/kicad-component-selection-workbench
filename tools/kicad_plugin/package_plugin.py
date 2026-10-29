@@ -154,7 +154,7 @@ def converter_bundle(runtime, source, notices):
 
 def package_files(*, converter_runtime=None, converter_source=None, converter_notices=None) -> dict[str, bytes]:
     files = {"plugins/" + name: (HERE / name).read_bytes()
-             for name in ("__init__.py", "desktop.py", "updater.py", "plugin.json", "requirements.txt", "desktop-requirements.txt")}
+             for name in ("__init__.py", "desktop.py", "startup_progress.py", "startup_progress.manifest", "updater.py", "plugin.json", "requirements.txt", "desktop-requirements.txt")}
     files["plugins/build-info.json"] = (json.dumps({"version": VERSION}) + "\n").encode()
     files.update({"plugins/app/" + name: (TOOLS / name).read_bytes() for name in CORE_FILES})
     files["plugins/icon.png"] = icon_png()

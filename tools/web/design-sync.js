@@ -42,8 +42,6 @@
       <p data-design-status role="status">正在读取设计数据…</p>
       <div class="design-progress" data-design-progress hidden><progress aria-label="同步进度" data-design-bar></progress>
       <span data-design-elapsed></span></div>
-      <ol data-design-steps class="design-sync-steps" aria-label="同步阶段" aria-live="polite"></ol>
-      <details data-design-timing hidden><summary>阶段耗时</summary><div data-design-timing-items></div></details>
       <div class="design-sync-options"><label data-design-alignment-label hidden>封装对齐 <select data-design-alignment aria-label="封装对齐"><option value="center">中心对齐</option><option value="rigid">焊盘原位</option></select></label></div>
       <div data-design-changes></div>
       <div class="design-sync-confirmations"><label hidden><input type="checkbox" data-design-geometry>已核对目标封装、焊盘编号及引脚功能</label>
@@ -75,13 +73,6 @@
       const bar = q('[data-design-bar]');
       if (active) bar.removeAttribute('value');
       else {bar.max=1;bar.value=value.ok===false?0:1;}
-      const timings = value.timings || [];
-      const statuses = {running:'进行中',waiting:'等待',succeeded:'已完成',failed:'失败',blocked:'受阻',skipped:'已跳过'};
-      q('[data-design-steps]').innerHTML = (value.steps || []).map(step =>
-        `<li data-step-status="${escape(step.status)}"><span>${escape(statuses[step.status] || step.status)}</span><span>${escape(step.message)}</span><time>${Number(step.seconds || 0).toFixed(1)} s</time></li>`).join('');
-      q('[data-design-timing]').hidden = !timings.length;
-      q('[data-design-timing-items]').innerHTML = timings.map(item=>
-        `<div>${escape(item.message)} <span>${Number(item.seconds).toFixed(1)} s</span></div>`).join('');
       tick();
     }
     function tick() {
@@ -92,6 +83,7 @@
     state.timer = setInterval(tick,200);
     function busy(value) {
       state.busy = value;
+      panel.classList.toggle('design-sync-running', Boolean(value || state.loading));
       window.designSyncBusy = value;
       q('[data-design-close]').disabled = value;
       q('[data-design-alignment]').disabled = value;
@@ -179,6 +171,7 @@
       const generation = ++state.sequence;
       const previous = state.preflightJob; state.preflightJob = null;
       state.loading = true; state.preview = null;
+      panel.classList.add('design-sync-running');
       state.countedPcb = null; counts();
       q('[data-design-apply]').disabled = true; q('[data-design-query]').hidden = true;
       q('[data-design-navigation]').hidden = true;
@@ -203,6 +196,7 @@
         if (!value.ok || !value.preview) throw new Error(value.error || '设计预检未完成');
         const result = value.preview;
         state.loading = false;
+        panel.classList.remove('design-sync-running');
         Promise.resolve(notify()).catch(()=>{});
         if (state.continuation) state.continuation = result.preview_id;
         render(result);
@@ -211,6 +205,7 @@
       } catch (error) {
         if (!state.closed && generation === state.sequence) {
           state.loading = false; status(error.message,true); q('[data-design-refresh]').hidden = false;
+          panel.classList.remove('design-sync-running');
           progress({...state.progress?.value,ok:false},false);
         }
       }
@@ -218,6 +213,7 @@
     async function poll() {
       if (state.polling || state.closed) return;
       state.polling = true; q('[data-design-query]').hidden = true;
+      panel.classList.toggle('design-sync-running', Boolean(state.busy));
       try {
         for (;;) {
           const query = state.job ? 'id='+encodeURIComponent(state.job) : 'preview_id='+encodeURIComponent(state.preview.preview_id);
@@ -257,6 +253,19 @@
               status(value.message || value.error || '同步结束', !value.ok);
               if (value.stage === 'complete' && !state.notified.has('complete')) {
                 state.notified.add('complete'); Promise.resolve(notify()).catch(()=>{});
+                const phases = value.phase_results || {};
+                const pcb = phases.pcb;
+                const verified = value.ok === true && !value.error && !value.needs_confirmation &&
+                  Object.values(phases).every(phase => phase.ok === true && !phase.navigation_error) &&
+                  (pcb ? pcb.saved === true || pcb.no_changes === true || pcb.already_synced === true : phases.schematic?.ok === true);
+                if (verified) {
+                  if (child && window.closeNativeTool) {
+                    Promise.resolve(window.closeNativeTool()).then(result => {
+                      if (result?.ok === false) status('同步已完成；窗口关闭未完成：'+(result.error || ''),true);
+                      else state.dispose();
+                    }).catch(error => status('同步已完成；窗口关闭未完成：'+error.message,true));
+                  } else state.dispose();
+                }
               }
             }
             return;
@@ -264,6 +273,7 @@
           await new Promise(resolve => setTimeout(resolve,500));
         }
       } catch (error) {
+        panel.classList.remove('design-sync-running');
         progress({...state.progress?.value,ok:false},false);
         status('连接中断，结果尚未确认，请勿重复同步。'+(state.job?' 任务：'+state.job:''),true);
         q('[data-design-query]').hidden = false;

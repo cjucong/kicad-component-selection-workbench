@@ -141,8 +141,14 @@
     count.id = 'rowFilterOptionCount';
     count.setAttribute('aria-live', 'polite');
     panel.append(heading, options, count);
-    container.append(tools, panel);
-    search.closest('.bom-search').after(container);
+    container.append(tools);
+    // The sticky toolbar is transformed during horizontal scrolling.
+    // Keep the fixed popup outside that containing block.
+    document.body.append(panel);
+    const bar = document.querySelector('.filter-bar');
+    const quickFilters = bar?.querySelector('.filter-tabs');
+    if (quickFilters) quickFilters.after(container);
+    else search.closest('.bom-search').after(container);
 
     function renderOptions() {
       if (!activeField) return;
@@ -203,6 +209,7 @@
       }
       clear.hidden = !selected.size;
       renderOptions();
+      if (!panel.hidden) positionPanel();
     }
 
     function changed() {
@@ -228,8 +235,21 @@
       panel.hidden = false;
       render();
       optionSearch.focus({preventScroll: true});
-      panel.scrollIntoView({block: 'nearest'});
+      positionPanel();
     }
+    function positionPanel() {
+      if (panel.hidden) return;
+      const owner = container.getBoundingClientRect(), viewport = document.documentElement.clientWidth;
+      const width = Math.min(640, viewport - 24);
+      const left = Math.max(12, Math.min(owner.left, viewport - width - 12));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${Math.max(12, Math.min(owner.bottom + 5, innerHeight - panel.offsetHeight - 12))}px`;
+    }
+    root.addEventListener?.('resize', positionPanel);
+    root.addEventListener?.('scroll', positionPanel, true);
+    document.addEventListener('pointerdown', event => {
+      if (!panel.hidden && !container.contains(event.target) && !panel.contains(event.target) && !event.target.closest?.('.row-filter-trigger')) hide();
+    });
     function reset(notify = false) {
       selected.clear();
       hide();
@@ -243,12 +263,14 @@
       if (chooser.value) show(chooser.value, chooser);
     });
     optionSearch.addEventListener('input', renderOptions);
-    container.addEventListener('keydown', event => {
+    const escapePanel = event => {
       if (event.key !== 'Escape' || !activeField) return;
       event.preventDefault();
       event.stopPropagation();
       hide(true);
-    });
+    };
+    container.addEventListener('keydown', escapePanel);
+    panel.addEventListener('keydown', escapePanel);
     for (const [field, label] of Object.entries(FIELDS)) {
       const header = document.querySelector(`main thead th[data-col="${field}"]`);
       if (!header) continue;

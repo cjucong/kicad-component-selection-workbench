@@ -41,6 +41,10 @@
 .design-sync-panel [data-design-apply] { background:#216f5c; border-color:#216f5c; color:#fff; }
 .design-sync-panel button:disabled { opacity:.45; cursor:default; }
 .design-sync-panel [hidden] { display:none !important; }
+.design-sync-running [data-design-phases], .design-sync-running [data-design-counts],
+.design-sync-running [data-design-changes], .design-sync-running .design-sync-options,
+.design-sync-running .design-sync-confirmations, .design-sync-running .design-sync-safety,
+.design-sync-running > footer { display:none !important; }
 .design-sync-comparison { min-height:400px; }
 .design-sync-scope { display:flex; align-items:center; gap:5px; padding:0 4px; font-size:12px; }
 .design-sync-scope select { max-width:115px; min-height:29px; }

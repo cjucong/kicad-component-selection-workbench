@@ -15,6 +15,11 @@ import time
 from pathlib import Path
 from urllib.request import urlopen
 
+if __package__:
+    from .startup_progress import StartupProgress
+else:
+    from startup_progress import StartupProgress
+
 TITLE = "器件选料助手"
 HERE = Path(__file__).resolve().parent
 CORE = HERE / "app" if (HERE / "app").is_dir() else HERE.parent
@@ -405,18 +410,20 @@ def ensure_backend(root: Path, config: Path, logs: Path, *, owner_token: str) ->
                 cwd=root, stdin=subprocess.DEVNULL, stdout=output, stderr=output, **options,
                 env={**os.environ, 'KICAD_PART_SELECTION_DESKTOP_TOKEN':owner_token},
             )
+        ready = False
         try:
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     break
-                if matches_service(service_info(port), root, config, owner_token):
+                if not port_available(port) and matches_service(service_info(port), root, config, owner_token):
+                    ready = True
                     logging.info("Started matching service on %s pid=%s elapsed_ms=%.1f",
                                  port, process.pid, (time.perf_counter() - startup_started) * 1000)
                     return f"http://127.0.0.1:{port}/"
                 time.sleep(0.15)
         finally:
-            if process.poll() is None and not matches_service(service_info(port), root, config, owner_token):
+            if not ready and process.poll() is None and not matches_service(service_info(port), root, config, owner_token):
                 process.terminate()
                 process.wait(timeout=5)
     raise RuntimeError(f"Could not start a matching service. See {logs / 'server.log'}")
@@ -494,7 +501,10 @@ def main(argv=None) -> int:
     handle = None
     lifecycle = None
     updater = None
+    progress = StartupProgress(TITLE)
     try:
+        progress.start()
+        progress.stage('正在核验启动工程…')
         if args.config:
             args.config = Path(os.path.expandvars(str(args.config))).expanduser().resolve()
         if args.project:
@@ -512,6 +522,7 @@ def main(argv=None) -> int:
             if path is None:
                 return 0
             root = validate_project(path)
+        progress.stage('正在读取工程配置…')
         config = ensure_config(root, args.config) if args.config else ensure_config(root)
         sys.path.insert(0, str(CORE))
         from part_selection_overrides import load_config
@@ -522,6 +533,7 @@ def main(argv=None) -> int:
             raise ValueError("Desktop runtime must be outside the KiCad project")
         logs = log_base / project_key(root)
         logs.mkdir(exist_ok=True)
+        progress.stage('正在加载桌面运行环境…')
         try:
             import webview
         except ImportError:
@@ -529,6 +541,7 @@ def main(argv=None) -> int:
             try:
                 if not installing:
                     raise RuntimeError(f"Desktop dependencies are installing. See {logs / 'runtime-install.log'}")
+                progress.stage('正在准备独立桌面运行环境…')
                 python = ensure_desktop_runtime(logs)
                 with (logs / "window.log").open("ab") as output:
                     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
@@ -541,6 +554,7 @@ def main(argv=None) -> int:
         title = f"{TITLE} | {root.name} [{project_key(root)[:6]}]"
         handle, acquired = acquire_window(root)
         if not acquired:
+            progress.stage('正在切换到已打开的工作台…')
             if not activate_window(title):
                 raise RuntimeError("Workbench is starting. Retry shortly; see desktop.log if it does not appear.")
             return 0
@@ -550,16 +564,22 @@ def main(argv=None) -> int:
         from part_selection_lifecycle import DesktopLifecycle, DesktopBridge
         from part_selection_tool_windows import ToolWindows
         token = secrets.token_urlsafe(32)
+        progress.stage('正在启动工程后台…')
         url = ensure_backend(root, config, logs, owner_token=token)
         lifecycle = DesktopLifecycle(url, token)
         lifecycle.project_id = str(root.resolve())
         lifecycle.updater = updater
         logging.info("Opening project=%s url=%s", root, url)
+        progress.stage('正在加载工作台窗口…')
         window = webview.create_window(title, url, width=1380, height=900, min_size=(800, 500),
                                        text_select=True, js_api=DesktopBridge(lifecycle))
         lifecycle.window = window
         lifecycle.tools = ToolWindows(lifecycle, webview.create_window, enable_browser_shortcuts)
-        window.events.loaded += lambda: enable_browser_shortcuts(window)
+        def loaded():
+            progress.stage('工作台页面已加载')
+            progress.close()
+            enable_browser_shortcuts(window)
+        window.events.loaded += loaded
         window.events.closing += lifecycle.on_closing
         webview.start(gui="edgechromium", private_mode=False,
                       storage_path=str(logs / "webview"))
@@ -576,9 +596,11 @@ def main(argv=None) -> int:
         return 0
     except Exception as exc:
         logging.exception("Desktop launch failed")
+        progress.close()
         show_error(f"{exc}\n\n{log_base / 'desktop.log'}")
         return 1
     finally:
+        progress.close()
         if updater:
             updater.unregister()
         if lifecycle and not lifecycle.allow_close:

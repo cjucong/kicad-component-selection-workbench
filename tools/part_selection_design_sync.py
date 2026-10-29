@@ -286,7 +286,7 @@ class DesignSync:
                     else:
                         phase = 'navigation'
                         self._navigate(key)
-                    self._update(key,done=True,stage='complete',message='原理图同步完成',result={'ok':True})
+                    self._update(key,done=True,stage='complete',error='',message='原理图同步完成',result={'ok':True})
                     return
                 phase = 'pcb_preview'
                 self._update(key,stage=phase,message='原理图已完成，正在核验当前 PCB')
@@ -330,7 +330,7 @@ class DesignSync:
             if pcb.get('navigation_error'):
                 phase = 'navigation'
                 raise ValueError(pcb['navigation_error'])
-            self._update(key,done=True,stage='complete',needs_confirmation=False,
+            self._update(key,done=True,stage='complete',error='',needs_confirmation=False,
                 message='PCB 已是最新，无需保存或重开' if pcb.get('no_changes') else
                     '设计同步完成，PCB 已保存核验，保留当前窗口' if automatic else '设计同步完成，PCB 已保存并重新打开',
                 result={'ok':True,'saved':bool(pcb.get('saved'))})
@@ -394,7 +394,7 @@ class DesignSync:
                 if pcb and pcb.get('ok'):
                     pcb.pop('navigation_error', None)
                     pcb['located_ref'] = self.jobs[key]['refs'][0]
-            self._update(key,done=True,ok=True,stage='complete',message='设计已同步，重新打开及定位完成',result={'ok':True})
+            self._update(key,done=True,ok=True,stage='complete',error='',message='设计已同步，重新打开及定位完成',result={'ok':True})
         except Exception as exc:
             self._update(key,done=True,ok=False,stage='navigation_failed',message='设计已同步；定位未完成：'+str(exc),
                 error=str(exc),result={'ok':False,'retry_stage':'navigation'})

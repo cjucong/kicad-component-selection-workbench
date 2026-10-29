@@ -46,7 +46,7 @@ PCB 保存超时：`test_pcb_session.py` 覆盖保存独立限时、禁止 Req0 
 
 同名封装批量管理：`test_footprint_batch.py` 验证完整库 ID、跨行范围及过期成员检测、各位号独立选料/撤回记录和合行不继承其他物料。Chromium `batch` 场景验证范围确认及共享库铜皮差异确认；`test_footprint_choices.py` 保证风险确认不能绕过编号/局部中心安全检查。`run_native_grouped_footprint_probe.py` 从 R1 单行打开，验证实际扩展至同封装 R1/R2 后分别更新正背面 PCB 实例，保留各自网络、位置、走线及撤销。
 
-同步阶段与恢复：`test_design_sync.py`、`test_design_cycle.py`、`test_design_sync_ui.py` 验证常驻真实状态/耗时、无变化跳过关窗、保存成功但导航失败时不重放写入，以及单独重试打开/定位。`test_pcb_native_types.py` 对保存重开角度兼容 KiCad 七/八位小数格式化；仍拒绝非格式化角度、超过 1 nm 的坐标变化、未知字段及网络/几何变化。真实完整闭环由 `run_native_project_cycle_probe.py` 单独验证，不把模拟测试视作原生通过。
+同步阶段与恢复：`test_design_sync.py`、`test_design_cycle.py`、`test_design_sync_ui.py` 验证当前真实状态/耗时、无变化跳过关窗、保存成功但导航失败时不重放写入，以及单独重试打开/定位。`test_compact_design_sync.py` 用 Chromium 验证不渲染历史列表、活动进度、核验成功自动关闭、失败或缺少保存证据不关闭，以及原生关闭失败时保留内容。`test_pcb_native_types.py` 对保存重开角度兼容 KiCad 七/八位小数格式化；仍拒绝非格式化角度、超过 1 nm 的坐标变化、未知字段及网络/几何变化。真实完整闭环由 `run_native_project_cycle_probe.py` 单独验证，不把模拟测试视作原生通过。
 
 `test_export_folder.py` 用一次性工程通过两个真实导出 HTTP 入口检查写入并关闭文件后才打开实际目录（含中文、空格和自定义路径），以及导出失败不打开、目录打开失败不影响已导出文件。shell 调用在测试中替换，不打开用户的资源管理器，不读写生产数据。
 
@@ -225,6 +225,10 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `test_design_sync.py`、`test_design_source.py`、`test_footprint_change_types.py` 覆盖分阶段目标/范围、源版本、仅改名证据、字段更新、失败及 PCB 单独重试；`run_design_sync_smoke.py` 检查 B 菜单及确认流程。`run_tool_windows_smoke.py` 检查固定工具页、草稿保护及父表局部刷新；`run_native_tool_windows_probe.py --report-dir <工程外目录>` 用真实 WebView2 检查工具窗口和受限桥接，不是 KiCad 写入测试。
 
+`test_compact_design_sync.py` 覆盖当前事项/无百分比进度、成功自动关闭、失败/缺少保存证据/关闭失败保留，以及断线后查询状态入口可见、禁止重复写入。`run_native_compact_sync_probe.py --report-dir <工程外绝对目录>` 在一次性工程与真实 WebView2 中验证受限桥接自动关闭、失败保留及主窗正常退出清理；同步响应为合成数据，不执行 CAD 同步，也不代表真实生产写入验证。
+
+`test_desktop_startup_progress.py` 验证启动等待窗口先于工程发现、加载/错误/取消/复用/运行环境重启均清理，以及后台未监听时不做 HTTP 探测、就绪后不重复探测。设置 `KPS_NATIVE_STARTUP_SMOKE=1` 可运行真实 Win32 进度窗口的消息泵、阶段刷新与退出测试；只测启动提示，不代表原理图入口全流程耗时。
+
 `run_native_design_sync_probe.py --report-dir <工程外目录>` 是上述全工程闭环探测的兼容入口。原来的不保存/单步撤销与“弹窗后继续 PCB”假设不适用于新自动保存关闭流程，不再沿用旧成功文案或旧进程连接验证新流程。`run_native_pcb_in_place_probe.py` 保留底层事务检查：Chromium 实际选库，随后测试显式安全暂关原理图、同步字段及调用不保存适配器；不宣称这覆盖完整同步菜单编排或真实联网转换。
 
 2026-10-23 验证记录：1,169 项 pytest 通过；B 菜单 Chromium 检查覆盖 1440/768/390 像素，工具窗口检查覆盖草稿保护及未改行 DOM/焦点保持。真实 WebView2 覆盖 10 类窗口、移出主窗口及受限桥接。真实 KiCad `10.0.0-19-g65df3ab11c` 完整探测通过字段、仅改名、原生弹窗受阻后的 PCB 单独重试、正背面严格/中心对齐、重复预检不重复换封装、网络/走线、单步撤销、自动打开、保存重开，以及进程和目录清理。该记录不代表真实联网转换、生产工程更新或其他 KiCad 版本验证。
@@ -239,7 +243,7 @@ python -B tests/run_native_footprint_workflow.py --verify-session C:/external/fo
 
 `test_pcb_session.py` 另覆盖从原理图入口按需连接 PCB、PCB 晚于工作台打开、多工程/同工程重复编辑器、独立服务端令牌及本机接口发现。真实探测脚本的工作台阶段不传入 PCB 启动接口，由正式连接逻辑发现并核验一次性工程的实时 PCB。
 
-`test_pcb_connection.py` 另覆盖经工程管理器启动、启动等待不重复 CIM 扫描、正常关闭后再开与连接超时后的防重复启动。`test_design_sync.py` 验证原生连接等待期间异步预检可轮询及阶段计时；两个 Chromium 同步测试覆盖动态进度、耗时展开和迟到预检响应。真实探测使用正式管理器入口打开 PCB，保存后只关闭 PCB，再由正式连接逻辑复用同一管理器重开，核验编辑器归属及进度事件；不会以测试脚本直接启动 pcbnew.exe 代替此项验收。
+`test_pcb_connection.py` 另覆盖经工程管理器启动、启动等待不重复 CIM 扫描、正常关闭后再开与连接超时后的防重复启动。`test_design_sync.py` 验证原生连接等待期间异步预检可轮询及阶段计时；Chromium 同步测试覆盖紧凑动态进度、失败保留和迟到预检响应。真实探测使用正式管理器入口打开 PCB，保存后只关闭 PCB，再由正式连接逻辑复用同一管理器重开，核验编辑器归属及进度事件；不会以测试脚本直接启动 pcbnew.exe 代替此项验收。
 
 管理器专项回归还覆盖身份不明和同工程多管理器拒绝自动打开；超时后仅在重新完整核实目标已关闭时允许重试。只读预检支持取消排队和合作式停止，不允许用预检取消接口中断写入事务；浏览器关闭/切换对齐方式/迟到启动响应都需取消旧任务。统一同步每 25 件更新同一计数阶段，不为无变化器件堆叠进度。最近已核验连接的短暂繁忙仅限时只读重连，预算传至各地址；超时或忙碌会话不能被漏算为唯一连接。
 

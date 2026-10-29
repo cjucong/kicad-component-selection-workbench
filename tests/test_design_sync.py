@@ -396,6 +396,8 @@ def test_locate_failure_preserves_verified_schematic_and_only_retries_navigation
         result = service.retry_navigation(state['job_id'])
         final = await_job(service, result['job_id'])
         assert final['stage'] == 'complete'
+        assert not final.get('error'), 'Successful navigation must not expose the previous failure as current'
+        assert any(step['status'] == 'failed' for step in final['steps'])
         app.bulk_sync_bom_state_to_schematic.assert_called_once()
     finally:
         service.close()
@@ -425,6 +427,7 @@ def test_pcb_navigation_failure_is_retryable_without_replaying_apply():
         assert state['phase_results']['pcb']['saved']
         final = await_job(service, service.retry_navigation(state['job_id'])['job_id'])
         assert final['stage'] == 'complete'
+        assert not final.get('error')
         assert 'navigation_error' not in final['phase_results']['pcb']
         app.pcb_updates.apply.assert_called_once()
         app.bulk_sync_bom_state_to_schematic.assert_not_called()
@@ -508,7 +511,10 @@ def test_pcb_disconnect_keeps_successful_stage_and_requires_fresh_preview():
         app.design_sync_fields.return_value={'R1':{'value':'100k','footprint':'Local:New'}}
         retry=service.preview({'refs':['R1'],'destination':'pcb'})
         resumed=service.continue_pcb(job['job_id'],retry['preview_id'],{})
-        assert await_job(service,resumed['job_id'])['stage']=='complete'
+        final = await_job(service,resumed['job_id'])
+        assert final['stage']=='complete'
+        assert not final.get('error'), 'Successful continuation must clear its earlier error'
+        assert any(step['status'] == 'failed' for step in final['steps'])
         app.bulk_sync_bom_state_to_schematic.assert_called_once()
     finally:service.close()
 

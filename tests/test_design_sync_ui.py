@@ -116,17 +116,16 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
   await page.getByRole('button',{name:'查询任务状态',exact:true}).click();
   await page.locator('[data-design-navigation]').waitFor();
   assert.match(await page.locator('[data-design-phases]').innerText(),/PCB.*完成/);
-  assert.equal(await page.locator('[data-design-steps] [data-step-status=failed]').count(),1);
+  assert.equal(await page.locator('[data-design-steps]').count(),0);
   if(process.env.DESIGN_SYNC_SCREENSHOTS) {
    await page.addStyleTag({path:require('node:path').join(require('node:path').dirname(process.env.DESIGN_SYNC_JS),'design-sync.css')});
    await page.screenshot({path:require('node:path').join(process.env.DESIGN_SYNC_SCREENSHOTS,'navigation-retry.png')});
   }
   await page.locator('[data-design-navigation]').click();
-  await page.waitForFunction(()=>document.querySelector('[data-design-status]').textContent==='重新打开及定位完成');
+  await page.waitForFunction(()=>!document.querySelector('[data-design-panel]'));
   assert.equal(await page.locator('[data-design-steps] [data-step-status=failed]').count(),0);
   assert.equal(await page.evaluate(()=>calls.filter(x=>x.path==='/api/start_design_sync').length),3);
   assert.equal(await page.evaluate(()=>calls.filter(x=>x.path==='/api/retry_design_navigation').length),1);
-  await page.locator('[data-design-close]').click();
   await page.evaluate(()=>{mode='auto';return window.openDesignSync({refs:['R1'],destination:'design'});});
   await page.waitForFunction(()=>calls.filter(x=>x.path==='/api/start_design_sync').length===4);
   await page.waitForFunction(()=>document.querySelector('[data-design-close]').disabled===false);
@@ -186,11 +185,10 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict'), fs
   await page.getByRole('button',{name:'重新预检 PCB',exact:true}).waitFor();
   await page.getByRole('button',{name:'重新预检 PCB',exact:true}).click();
   await page.waitForFunction(()=>calls.some(c=>c.path==='/api/continue_design_sync'),{},{timeout:3000});
-  await page.waitForFunction(()=>document.querySelector('[data-design-status]').textContent==='同步完成');
+  await page.waitForFunction(()=>!document.querySelector('[data-design-panel]'));
   assert.equal(await page.locator('[data-design-alignment]').isVisible(),false);
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/start_design_sync').length),1);
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.path==='/api/continue_design_sync').length),1);
-  await page.locator('[data-design-close]').click();
   await page.evaluate(()=>{continued=false;preflights=0;risk=true;return window.openDesignSync({refs:['R1'],destination:'design'});});
   await page.getByRole('button',{name:'重新预检 PCB',exact:true}).click();
   await page.locator('[data-design-drops]').waitFor();

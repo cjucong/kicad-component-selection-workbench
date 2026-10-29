@@ -1,4 +1,4 @@
-.row-filters { flex: 0 0 100%; width: 100%; min-width: 0; box-sizing: border-box; padding: 0 0 4px; background: #fff; font-size: 12px; }
+.row-filters { flex: 0 1 auto; min-width: 0; max-width:100%; box-sizing: border-box; background: transparent; font-size: 12px; position:relative; }
 .row-filter-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 28px; }
 .row-filter-chooser { max-width: 100%; padding: 3px 6px; font-size: 12px; }
 .row-filter-tags { display: flex; flex: 1 1 0; flex-wrap: wrap; gap: 4px; min-width: 0; }
@@ -9,8 +9,8 @@ button.row-filter-icon { display: inline-flex; flex: 0 0 24px; align-items: cent
 button.row-filter-trigger { margin-left: 3px; color: #596973; }
 button.row-filter-trigger.active { color: #266136; background: #e0efdd; border-color: #a9c6a2; }
 button.row-filter-icon:hover { background: #e7edf1; box-shadow: none; }
-.row-filter-panel { margin-top: 5px; padding: 6px 0; border-top: 1px solid #ccd4da; border-bottom: 1px solid #ccd4da; }
-.row-filters [hidden] { display: none !important; }
+.row-filter-panel { position:fixed; z-index:20; width:min(640px,calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow:auto; box-sizing:border-box; padding:10px; border:1px solid #ccd4da; background:#fff; box-shadow:0 3px 10px #0002; }
+.row-filters [hidden], .row-filter-panel[hidden] { display: none !important; }
 .row-filter-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .row-filter-heading strong { font-size: 12px; overflow-wrap: anywhere; }
 .row-filter-search { flex: 1 1 160px; min-width: 80px; max-width: 360px; padding: 4px 6px; font-size: 12px; }
@@ -22,4 +22,4 @@ button.row-filter-icon:hover { background: #e7edf1; box-shadow: none; }
 .row-filter-option-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .row-filter-option-total { flex: 0 0 auto; color: #697780; font-variant-numeric: tabular-nums; }
 .row-filter-option-count, .row-filter-no-options { display: block; margin-top: 4px; color: #697780; }
-.row-filters :focus-visible, .row-filter-trigger:focus-visible { outline: 2px solid #3276a8; outline-offset: 1px; }
+.row-filters :focus-visible, .row-filter-panel :focus-visible, .row-filter-trigger:focus-visible { outline: 2px solid #3276a8; outline-offset: 1px; }
