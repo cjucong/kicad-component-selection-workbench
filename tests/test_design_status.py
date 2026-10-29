@@ -305,6 +305,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   await page.locator('[data-filter="needs_verification"]').click();
   assert(await row.isVisible());
   assert(await page.evaluate(()=>originalStatusRow===document.querySelector('#rows tr[data-ref="U1"]')));
+  // Focus preservation applies to visible rows, not rows hidden by the active filter.
+  await page.locator('[data-filter="all"]').click();
   await row.locator('[data-field="value"]').focus();
   item.pcb_unverified_refs='';item.pcb_sync_by_ref={U1:{status:'synced'}};
   await page.evaluate(()=>refreshDesignSyncRows());
@@ -312,6 +314,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   assert.match(await page.locator('#summaryPending').textContent(),/待同步 0 组 \/ 0 器件/);
   assert.match(await page.locator('#summaryVerify').textContent(),/待核验 0 组 \/ 0 器件/);
   assert.equal(await page.locator(':focus').getAttribute('data-field'),'value');
+  await page.locator('[data-filter="needs_verification"]').click();
   assert(!(await row.isVisible()),'Completed row must leave the pending filter');
   const split=await page.evaluate(()=>rowForRefs({refs:'U1,U2',refs_list:['U1','U2'],
    pcb_changed_refs:'U2',pcb_unverified_refs:'U1',pcb_sync_by_ref:{U1:{status:'unverified'},U2:{status:'pending'}}},['U2']));
