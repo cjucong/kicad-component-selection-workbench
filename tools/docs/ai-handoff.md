@@ -1,5 +1,13 @@
 # 开发接手说明
 
+## 原理图只读定位
+
+`kicad_schematic_search.ps1` 的 SearchPanel 路径只枚举已核实工程窗口的原生子控件。结果列表可能只有 28 像素高，不以旧的 80 像素门槛判断关闭；菜单勾选状态在 wx 中可能未刷新，以实际可见的 searchCtrl 为准，缺失时只向该窗口发送一次原生命令。此路径不再依赖旧 MCP 虚拟环境、UIAutomation、全局 Ctrl+G、坐标点击或 Enter。
+
+`NativeSearchList.SelectMatch` 核对列表 PID、所属窗口、控件类型，限量读取第一列，精确匹配完整位号再选中；原生选择通知触发跨页定位。超时或不匹配不宣称成功，也不重试写 CAD。跨进程列表消息的缓冲区只在消息完成后释放；接收超时保留那一页到进程退出，避免接收者引用已释放内存。保持同步结果与导航结果分开。回归包含 `test_kicad_search_text.py` 的原生矮列表/前缀位号/身份反例，以及 `run_native_schematic_navigation.py --report-dir <工程外目录>` 的隐藏面板、跨页、连续跳转、无属性弹窗、CAD 哈希及正常退出后清理；退出未完成必须保留测试目录。
+
+`part_selection_navigation.py` 根据已保存层级实例和工程单元后缀设置解析 U1A 等实际搜索名及完整页面标题；`DesignSource.navigation_target` 复用语法缓存，按文件内容变化失效，重复实例不猜选。Search 总是切至 Symbols 页签，显式执行 Zoom to Selection，兼容用户关闭自动缩放；不修改用户设置。`test_schematic_navigation_identity.py` 验证后缀、重复层级、缓存和服务端参数；原生探测另验证根页、非 Top 中间层、其他搜索类别和多单元器件。
+
 ## 导出后打开目标文件夹
 
 两个导出 HTTP 入口统一以 `open_export_folder` 包装已完成的导出结果，使用服务端实际输出路径的父目录，不接受客户端指定待打开路径。写文件并关闭后才打开目录；失败响应或导出异常不打开，shell 失败仅附加 `folder_opened=false` / `folder_error`，保留成功结果与路径。直接调用底层导出方法仍只生成文件，便于隔离测试及复用。目录打开复用 `_open_directory`，前端共用 `showExportResult` 提示成功或附带警告；新增用户导出入口应沿用此流程，不为内部缓存、日志、预览渲染和自动备份打开目录。

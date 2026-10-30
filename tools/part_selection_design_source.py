@@ -20,6 +20,34 @@ class DesignSource:
         self.app = app
         self._pages = OrderedDict()
         self._pages_lock = threading.RLock()
+        self._navigation = OrderedDict()
+
+    def navigation_target(self, ref):
+        """Resolve a saved exact display reference without reparsing known pages."""
+        from part_selection_navigation import load_navigation_identity
+        with self._pages_lock:
+            index = self._navigation.get(ref)
+            if index is None or not index.is_current():
+                def read(path):
+                    content = path.read_bytes()
+                    digest = hashlib.sha256(content).hexdigest()
+                    key = (str(path.resolve()), digest)
+                    if key not in self._pages:
+                        self._pages[key] = parse_sexpr(content.decode('utf-8-sig'), 'kicad_sch')
+                    self._pages.move_to_end(key)
+                    while len(self._pages) > 32:
+                        self._pages.popitem(last=False)
+                    return self._pages[key], digest
+                index = load_navigation_identity(self.app.project_root, [ref], read_page=read)
+                self._navigation[ref] = index
+                self._navigation.move_to_end(ref)
+                while len(self._navigation) > 16:
+                    self._navigation.popitem(last=False)
+            targets = index.lookup(ref)
+            target = min(targets, key=lambda item: (item.unit, item.page_path, item.symbol_uuid))
+            if len(index.matches(ref, target.search_name)) != 1:
+                raise ValueError('位号存在重复实例，无法唯一定位：' + ref)
+            return target
 
     def _configuration(self):
         return {'root':str(Path(self.app.project_root).resolve()),

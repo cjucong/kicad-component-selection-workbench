@@ -2379,7 +2379,11 @@ class PartSelectionOverridesTest(unittest.TestCase):
         self.assertIn('$EnablePageSwitch -and $Mode -eq "SearchPanel" -and $page', script)
         self.assertIn("Start-Sleep -Milliseconds 420", script)
         self.assertIn("Resolve-SearchPanelScreenPoint", script)
-        self.assertIn("SEARCH_PANEL_GRID_RECT source=UIA", script)
+        self.assertIn('GridHwnd = $grid.Hwnd', script)
+        fast_panel = script[script.index('function Get-SearchPanelElementsFast'):script.index('function Invoke-MouseClick')]
+        self.assertNotIn('Ensure-UiAutomation', fast_panel)
+        self.assertIn('NativeSearchList]::SelectMatch', script)
+        self.assertIn('SEARCH_PANEL_OPEN native_command=', script)
         self.assertIn("GetDpiForWindow", script)
         self.assertIn("SEARCH_PANEL_COORDS_DPI", script)
         self.assertIn("SEARCH_PANEL_COORDS_ADJUST", script)

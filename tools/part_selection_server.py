@@ -3029,6 +3029,16 @@ class PartSelectionApp:
         if urlparse(url).scheme != self.config.get("kicad_protocol", "kicad-sch-search"):
             raise ValueError("Not a KiCad schematic jump URL")
         switches = ["-Mode", "SearchPanel"]
+        # Older standalone schematic callers have no project identity. Real
+        # projects resolve configured multi-unit suffixes from saved instances.
+        if any(self.project_root.glob('*.kicad_pro')):
+            ref = urlparse(url).netloc.upper()
+            try:
+                target = self.design_sync.sources.navigation_target(ref)
+            except (OSError, ValueError) as exc:
+                return {'ok': False, 'message': '无法核验原理图定位目标：' + str(exc)}
+            switches.extend(['-NavigationName', target.search_name,
+                             '-NavigationTitle', target.title_prefix])
         if self.config.get("jump_cursor_behavior", "return") == "stay":
             switches.append("-MoveCursorAfterJump")
         return self.run_kicad_script(url, switches)

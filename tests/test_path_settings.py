@@ -33,8 +33,13 @@ def test_snapshot_handles_missing_optional_converter(app):
 
 
 def test_navigation_preference_is_validated_persisted_and_used_without_restart(app):
+    from types import SimpleNamespace
     assert settings_snapshot(app.config)['values']['jump_cursor_behavior'] == 'return'
-    with patch.object(app, 'run_kicad_script', return_value={'ok':True}) as run:
+    # This preference fixture has an empty schematic. Supply the independently
+    # tested navigation identity so this case still measures runtime settings.
+    with patch.object(app.design_sync.sources, 'navigation_target', return_value=SimpleNamespace(
+            search_name='C103', title_prefix='example')), \
+            patch.object(app, 'run_kicad_script', return_value={'ok':True}) as run:
         app.jump_to_schematic('kicad-sch-search://C103')
         assert '-MoveCursorAfterJump' not in run.call_args.args[1]
         app.save_path_settings(payload(app, jump_cursor_behavior='stay'))

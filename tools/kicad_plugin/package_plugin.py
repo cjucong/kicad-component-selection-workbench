@@ -33,6 +33,7 @@ CORE_FILES = (
     "web/design-sync.js", "web/design-sync.css",
     "web/tool-pages.js", "web/tool-pages.css",
     "part_selection_design_source.py",
+    "part_selection_navigation.py",
     "part_selection_pcb_connection.py",
     "part_selection_tool_windows.py", "web/tool-desktop.js",
     "part_selection_footprint_changes.py",

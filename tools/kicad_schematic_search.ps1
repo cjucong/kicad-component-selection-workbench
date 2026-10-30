@@ -51,6 +51,10 @@
     [ValidateSet("SearchPanel", "FindDialog")]
     [string]$Mode = "SearchPanel",
 
+    [string]$NavigationName = "",
+
+    [string]$NavigationTitle = "",
+
     [string]$ProjectRoot = ""
 )
 
@@ -270,6 +274,12 @@ public static class NativeMethods {
     public static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    public static extern bool IsChild(IntPtr parent, IntPtr child);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetParent(IntPtr child);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr SetFocus(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -316,6 +326,97 @@ public class KiCadEditorWindow {
     public bool CloseMainWindow() {
         Refresh();
         return NativeMethods.PostMessage(MainWindowHandle, 0x0010, IntPtr.Zero, IntPtr.Zero);
+    }
+}
+
+// Only the verified search list is read/selected; no UIAutomation or global keys.
+public static class NativeSearchList {
+    [StructLayout(LayoutKind.Sequential)]
+    struct LVITEM {
+        public uint mask; public int item, subItem; public uint state, stateMask;
+        public IntPtr text; public int textMax, image; public IntPtr param;
+        public int indent, groupId; public uint columns; public IntPtr columnPtr, formatPtr;
+        public int group;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr process);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr VirtualAllocEx(IntPtr process, IntPtr address, UIntPtr size, uint type, uint protection);
+    [DllImport("kernel32.dll")]
+    static extern bool VirtualFreeEx(IntPtr process, IntPtr address, UIntPtr size, uint type);
+    [DllImport("kernel32.dll")]
+    static extern bool WriteProcessMemory(IntPtr process, IntPtr address, byte[] bytes, UIntPtr size, out UIntPtr written);
+    [DllImport("kernel32.dll")]
+    static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] bytes, UIntPtr size, out UIntPtr read);
+
+    static void WriteItem(IntPtr process, IntPtr remote, LVITEM item) {
+        int size = Marshal.SizeOf(typeof(LVITEM));
+        IntPtr local = Marshal.AllocHGlobal(size);
+        try {
+            Marshal.StructureToPtr(item, local, false);
+            byte[] bytes = new byte[size]; Marshal.Copy(local, bytes, 0, size);
+            UIntPtr written;
+            if (!WriteProcessMemory(process, remote, bytes, (UIntPtr)size, out written) || written.ToUInt64() != (ulong)size)
+                throw new InvalidOperationException("Search list buffer write failed");
+        } finally { Marshal.FreeHGlobal(local); }
+    }
+    public static int SelectMatch(IntPtr frame, IntPtr list, uint pid, string reference) {
+        uint owner;
+        NativeMethods.GetWindowThreadProcessId(list, out owner);
+        var cls = new StringBuilder(256); NativeMethods.GetClassName(list, cls, cls.Capacity);
+        if (owner != pid || !NativeMethods.IsChild(frame, list) || cls.ToString() != "SysListView32") return -2;
+        UIntPtr reply;
+        if (NativeMethods.SendMessageTimeout(list, 0x1004, IntPtr.Zero, IntPtr.Zero, 0x22, 500, out reply) == IntPtr.Zero) return -2;
+        int count = (int)reply.ToUInt64();
+        if (count == 0) return -1;
+        if (count < 0 || count > 1000 || IntPtr.Size != 8) return -2;
+        IntPtr process = OpenProcess(0x38, false, pid);
+        if (process == IntPtr.Zero) return -2;
+        IntPtr remote = IntPtr.Zero;
+        bool completed = true;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        try {
+            remote = VirtualAllocEx(process, IntPtr.Zero, (UIntPtr)4096, 0x3000, 4);
+            if (remote == IntPtr.Zero) return -2;
+            var item = new LVITEM { mask=1, text=IntPtr.Add(remote, 512), textMax=512 };
+            int match = -1;
+            for (int i=0; i<count; i++) {
+                if (watch.ElapsedMilliseconds > 1500) return -2;
+                WriteItem(process, remote, item);
+                completed = false;
+                if (NativeMethods.SendMessageTimeout(list, 0x1073, (IntPtr)i, remote, 0x22, 500, out reply) == IntPtr.Zero) return -2;
+                completed = true;
+                int length = (int)reply.ToUInt64();
+                if (length < 1 || length >= 512) continue;
+                byte[] bytes = new byte[length*2]; UIntPtr read;
+                if (!ReadProcessMemory(process, item.text, bytes, (UIntPtr)bytes.Length, out read) || read.ToUInt64() != (ulong)bytes.Length) return -2;
+                if (String.Equals(Encoding.Unicode.GetString(bytes), reference, StringComparison.OrdinalIgnoreCase)) {
+                    if (match >= 0) return -2;
+                    match=i;
+                }
+            }
+            if (match < 0) return -1;
+            item.stateMask=3; item.state=0;
+            WriteItem(process, remote, item);
+            completed=false;
+            if (NativeMethods.SendMessageTimeout(list, 0x102b, (IntPtr)(-1), remote, 0x22, 500, out reply) == IntPtr.Zero) return -2;
+            completed=true;
+            if (reply == UIntPtr.Zero) return -2;
+            item.state=3; WriteItem(process, remote, item);
+            completed=false;
+            if (NativeMethods.SendMessageTimeout(list, 0x102b, (IntPtr)match, remote, 0x22, 500, out reply) == IntPtr.Zero) return -2;
+            completed=true;
+            if (reply == UIntPtr.Zero) return -2;
+            if (NativeMethods.SendMessageTimeout(list, 0x102c, (IntPtr)match, (IntPtr)3, 0x22, 500, out reply) == IntPtr.Zero || reply.ToUInt64() != 3) return -2;
+            return match;
+        } finally {
+            // A timed-out receiver may still hold the buffer. Leave that one
+            // page until process exit instead of freeing memory it could use.
+            if (completed && remote != IntPtr.Zero) VirtualFreeEx(process, remote, UIntPtr.Zero, 0x8000);
+            CloseHandle(process);
+        }
     }
 }
 "@
@@ -871,13 +972,18 @@ function Test-KiCadWindowMatchesPage {
         [string]$Page
     )
 
-    if (-not $Page -or -not $Window.MainWindowTitle) {
+    if ((-not $Page -and -not $NavigationTitle) -or -not $Window.MainWindowTitle) {
         return $false
+    }
+
+    if ($NavigationTitle) {
+        return $Window.MainWindowTitle -match ('^\*?' + [regex]::Escape($NavigationTitle) + '\s+[\u2014-]')
     }
 
     foreach ($alias in (Get-SchematicPageAliases -Page $Page)) {
         $escapedPage = [regex]::Escape($alias)
-        if ($Window.MainWindowTitle -match ("/Top/" + $escapedPage + "\]")) {
+        if ($Window.MainWindowTitle -match ("(?:^|/)" + $escapedPage + "\]") -or
+            $Window.MainWindowTitle -match ("^\*?" + $escapedPage + "(?:\s+\[|\s+[\u2014-])")) {
             return $true
         }
     }
@@ -1084,8 +1190,27 @@ function Get-SearchPanelElementsFast {
     }
 
     $children = @(Get-ChildWindowInfos -RootWindowHandle $windowHandle)
+    $searchHosts = @($children | Where-Object { $_.Text -eq 'searchCtrl' })
+    if ($searchHosts.Count -eq 1) {
+        $panelHandle = [NativeMethods]::GetParent($searchHosts[0].Hwnd)
+        $tabs = @($children | Where-Object {
+            $_.ClassName -match 'SysTabControl32|SysTabCtl32' -and [NativeMethods]::GetParent($_.Hwnd) -eq $panelHandle
+        })
+        if ($tabs.Count -ne 1) { return $null }
+        [UIntPtr]$tabIndex = [UIntPtr]::Zero
+        if ([NativeMethods]::SendMessageTimeout($tabs[0].Hwnd, 0x130b, [IntPtr]::Zero, [IntPtr]::Zero,
+            0x22, 500, [ref]$tabIndex) -eq [IntPtr]::Zero) { return $null }
+        if ($tabIndex.ToUInt64() -ne 0) {
+            [UIntPtr]$result = [UIntPtr]::Zero
+            # Focus selection changes notify wx; SETCURSEL alone does not.
+            [NativeMethods]::SendMessageTimeout($tabs[0].Hwnd, 0x1330, [IntPtr]::Zero, [IntPtr]::Zero,
+                0x22, 500, [ref]$result) | Out-Null
+            Write-Log 'SEARCH_PANEL_SELECT symbols_tab'
+            return $null
+        }
+    }
     $edits = @($children | Where-Object { $_.ClassName -eq "Edit" -and $_.Width -gt 200 -and $_.Height -ge 16 -and $_.Height -le 60 })
-    $grids = @($children | Where-Object { $_.ClassName -eq "SysListView32" -and $_.Width -gt 200 -and $_.Height -gt 80 })
+    $grids = @($children | Where-Object { $_.ClassName -eq "SysListView32" -and $_.Width -gt 200 -and $_.Height -gt 0 })
     Write-Log ("SEARCH_PANEL_FAST_COUNTS edits={0} grids={1}" -f $edits.Count, $grids.Count)
 
     $bestPair = $null
@@ -1096,30 +1221,10 @@ function Get-SearchPanelElementsFast {
             if ($isAboveGrid -and $isHorizontallyAligned) {
                 $gridRect = $grid.Rect
                 $gridRectSource = "Win32"
-                try {
-                    Ensure-UiAutomation
-                    $gridElement = [System.Windows.Automation.AutomationElement]::FromHandle($grid.Hwnd)
-                    if ($null -ne $gridElement) {
-                        $uiaRect = $gridElement.Current.BoundingRectangle
-                        if (-not $uiaRect.IsEmpty -and $uiaRect.Width -gt 0 -and $uiaRect.Height -gt 0) {
-                            $gridRect = [pscustomobject]@{
-                                Left = [int]$uiaRect.Left
-                                Top = [int]$uiaRect.Top
-                                Right = [int]($uiaRect.Left + $uiaRect.Width)
-                                Bottom = [int]($uiaRect.Top + $uiaRect.Height)
-                                Width = [int]$uiaRect.Width
-                                Height = [int]$uiaRect.Height
-                            }
-                            $gridRectSource = "UIA"
-                            Write-Log ("SEARCH_PANEL_GRID_RECT source=UIA rect={0},{1},{2},{3}" -f $gridRect.Left, $gridRect.Top, $gridRect.Right, $gridRect.Bottom)
-                        }
-                    }
-                } catch {
-                    Write-Log ("SEARCH_PANEL_GRID_RECT_UIA_FAILED " + $_.Exception.Message)
-                }
                 $bestPair = @{
                     Mode = "Win32"
                     EditHwnd = $edit.Hwnd
+                    GridHwnd = $grid.Hwnd
                     GridRect = $gridRect
                     GridRectSource = $gridRectSource
                     EditText = $edit.Text
@@ -1854,21 +1959,63 @@ function Save-AndCloseKiCadProject {
     return 'ProjectClosed=1'
 }
 
+function Open-KiCadSearchPanel {
+    param($Target)
+
+    $Target.Refresh()
+    $hwnd = $Target.MainWindowHandle
+    if ($hwnd -eq [IntPtr]::Zero -or -not [NativeMethods]::IsWindow($hwnd)) { return $false }
+    Assert-KiCadWindowResponsive -Target $Target -Phase 'search_panel'
+    if (-not [NativeMethods]::IsWindowEnabled($hwnd)) { return $false }
+    # wx menu checkmarks are cached until the menu is opened. The actual
+    # visible native search control is the authority for this toggle.
+    $searchControls = @(Get-ChildWindowInfos -RootWindowHandle $hwnd | Where-Object { $_.Text -eq 'searchCtrl' })
+    if ($searchControls.Count) {
+        Write-Log 'SEARCH_PANEL_OPEN already_visible'
+        return $true
+    }
+    $menu = [NativeMethods]::GetMenu($hwnd)
+    $simplified = -join ([char]0x641C, [char]0x7D22)
+    $traditional = -join ([char]0x641C, [char]0x5C0B)
+    $command = Find-KiCadMenuCommand -Menu $menu -Labels @('Search', $simplified, $traditional)
+    if ($null -eq $command) { return $false }
+    $state = [NativeMethods]::GetMenuState($menu, $command, 0)
+    if ($state -eq [uint32]::MaxValue -or ($state -band 3)) { return $false }
+    Write-Log ("SEARCH_PANEL_OPEN native_command={0}" -f $command)
+    return [NativeMethods]::PostMessage($hwnd, 0x0111, [IntPtr]$command, [IntPtr]::Zero)
+}
+
+function Show-KiCadSearchSelection {
+    param($Target)
+
+    $Target.Refresh()
+    $hwnd = $Target.MainWindowHandle
+    if (-not [NativeMethods]::IsWindowEnabled($hwnd)) { return $false }
+    $simplified = -join ([char]0x7F29, [char]0x653E, [char]0x81F3, [char]0x9009, [char]0x5B9A, [char]0x5BF9, [char]0x8C61)
+    $command = Find-KiCadMenuCommand -Menu ([NativeMethods]::GetMenu($hwnd)) -Labels @(
+        'Zoom to Selection', 'Zoom to Selected Objects', 'Zoom to Selected', $simplified)
+    if ($null -eq $command) { return $false }
+    [UIntPtr]$result = [UIntPtr]::Zero
+    # Explicit read-only view action also works when Search's selection zoom is
+    # disabled; do not change that preference or invoke a symbol's activation.
+    $ok = [NativeMethods]::SendMessageTimeout($hwnd, 0x0111, [IntPtr]$command, [IntPtr]::Zero,
+        0x22, 1000, [ref]$result) -ne [IntPtr]::Zero
+    Write-Log "SEARCH_PANEL_SHOW_SELECTION command=$command completed=$ok"
+    return $ok
+}
+
 function Invoke-SearchPanelFirstResult {
     param(
         $Target,
-        [string]$Ref
+        [string]$Ref,
+        [string]$Page = ''
     )
 
+    $searchName = if ($NavigationName) { $NavigationName } else { $Ref }
     $elements = Wait-SearchPanelElementsFast -Target $Target -TimeoutMs 250
     if ($null -eq $elements) {
-        Set-KiCadForeground -Target $Target
-        if (-not (Invoke-KiCadSearchPanelApi -ProcessId $Target.Id)) {
-            [System.Windows.Forms.SendKeys]::SendWait("^g")
-            Write-Log 'SEARCH_PANEL_OPEN shortcut=Ctrl+G'
-        }
-        Start-Sleep -Milliseconds 160
-        $elements = Wait-SearchPanelElementsFast -Target $Target -TimeoutMs 900
+        if (-not (Open-KiCadSearchPanel -Target $Target)) { return $false }
+        $elements = Wait-SearchPanelElementsFast -Target $Target -TimeoutMs 3000
     }
     if ($null -eq $elements) {
         Write-Log "SEARCH_PANEL_ELEMENTS_NOT_FOUND_FAST"
@@ -1876,17 +2023,45 @@ function Invoke-SearchPanelFirstResult {
     }
     if ($elements.Mode -eq "Win32") {
         $gridRect = $elements.GridRect
-        $inputOk = Set-EditWindowText -EditHwnd $elements.EditHwnd -Text $Ref
+        $inputOk = Set-EditWindowText -EditHwnd $elements.EditHwnd -Text $searchName
         if (-not $inputOk) {
             Write-Log "SEARCH_PANEL_WIN32_INPUT_FAILED"
             return $false
         }
     } else {
         $gridRect = $elements.Grid.Current.BoundingRectangle
-        $inputOk = Set-EditControlText -EditElement $elements.Edit -Text $Ref
+        $inputOk = Set-EditControlText -EditElement $elements.Edit -Text $searchName
     }
     if (-not $inputOk) {
         return $false
+    }
+    if ($elements.Mode -eq 'Win32' -and $elements.GridHwnd) {
+        $deadline = (Get-Date).AddMilliseconds(2000)
+        do {
+            $row = [NativeSearchList]::SelectMatch($Target.MainWindowHandle, $elements.GridHwnd, $Target.Id, $searchName)
+            if ($row -ge 0) { break }
+            if ($row -eq -2) { return $false }
+            Start-Sleep -Milliseconds 80
+        } while ((Get-Date) -lt $deadline)
+        if ($row -lt 0) {
+            Write-Log "SEARCH_PANEL_NO_EXACT_RESULT ref=$Ref"
+            return $false
+        }
+        # KiCad navigates on the native selection notification. Enter would
+        # activate the newly selected symbol and can open its properties.
+        if ($Page -or $NavigationTitle) {
+            $deadline = (Get-Date).AddMilliseconds(2500)
+            do {
+                $Target.Refresh()
+                if (Test-KiCadWindowMatchesPage -Window $Target -Page $Page) { break }
+                Start-Sleep -Milliseconds 80
+            } while ((Get-Date) -lt $deadline)
+            if (-not (Test-KiCadWindowMatchesPage -Window $Target -Page $Page)) { return $false }
+        }
+        if (-not (Show-KiCadSearchSelection -Target $Target)) { return $false }
+        if ($MoveCursorAfterJump) { Move-CursorToSchematicCanvas -Target $Target }
+        Write-Log "DONE ref=$Ref action=search_panel_exact_result row=$row"
+        return $true
     }
     if ($elements.Mode -eq "Win32") {
         [NativeMethods]::SetFocus($elements.EditHwnd) | Out-Null
@@ -2072,7 +2247,7 @@ try {
     }
 
     if ($Mode -eq "SearchPanel") {
-        if (Invoke-SearchPanelFirstResult -Target $target -Ref $ref) {
+        if (Invoke-SearchPanelFirstResult -Target $target -Ref $ref -Page $page) {
             exit 0
         }
         $message = "KiCad search panel was not available. Open the Search panel (Ctrl+G) in the schematic editor and click again. Ref=$ref"

@@ -577,14 +577,16 @@ assert.ok(!bomRowMatchesSearch(row,'missing'));
                 request = Request(url + "/api/kicad_jump", data=json.dumps(
                     {"url": "kicad-sch-search://R1"}).encode(), headers={"Content-Type": "application/json"})
                 with urlopen(request) as response:
-                    self.assertTrue(json.load(response)["ok"])
-                run.assert_called_once_with("kicad-sch-search://R1", ["-Mode", "SearchPanel"])
+                    # This newly created project has no R1 instance. A valid
+                    # URL cannot authorize guessing an unverified search row.
+                    self.assertFalse(json.load(response)["ok"])
+                run.assert_not_called()
                 bad = Request(url + "/api/kicad_jump", data=b'{"url":"https://example.com"}',
                               headers={"Content-Type": "application/json"})
                 with self.assertRaises(HTTPError) as error:
                     urlopen(bad)
                 self.assertEqual(error.exception.code, 400)
-                run.assert_called_once()
+                run.assert_not_called()
         finally:
             server.shutdown()
             server.server_close()
