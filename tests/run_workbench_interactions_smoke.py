@@ -85,6 +85,15 @@ const assert = require('node:assert/strict');
       assert.equal(await page.locator('#bomSelect').inputValue(),'__schematic__');
       assert.equal(await page.locator('#syncAllSchematic').isEnabled(),true);
     });
+    await check('partial_bom_search', async page => {
+      await load(page);
+      await page.locator('#selectVisibleRows').check();
+      for (const [query, count] of [['c10',2],['C101',1],['C10 100n',1],['C10 missing',0],['.*',0],['',2]]) {
+        await page.locator('#bomSearch').fill(query);
+        assert.equal(await page.locator('#rows tr[data-ref]:visible').count(),count,query);
+        if (count) assert.equal(await page.locator('#syncSelectedSchematic [data-button-count]').innerText(),String(count));
+      }
+    });
     await check('filter_empty_reset_and_selection', async page => {
       await load(page);
       assert.equal(await page.locator('#rows tr[data-ref]').count(),2);

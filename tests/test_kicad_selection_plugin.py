@@ -493,12 +493,21 @@ assert.equal(candidateKeywordFromFields({refs:'R85',comment:'P2TC0805D5002LNTA',
 assert.equal(candidateKeywordFromFields({refs:'C1',comment:'Capacitor',value:'100nF',footprint:'0402'}), '100nF 0402');
 const row = {refs:'R85,R86',comment:'P2TC0805D5002LNTA',value:'50k',footprint:'0805',effective_c_code:'C4283613',page_refs:'POWER: R85,R86',description:'precision resistor'};
 assert.ok(bomRowMatchesSearch(row,'r85'));
-assert.ok(!bomRowMatchesSearch(row,'R8'));
+assert.ok(bomRowMatchesSearch(row,'R8'));
 assert.ok(bomRowMatchesSearch(row,'50K 0805'));
 assert.ok(bomRowMatchesSearch(row,'c4283613'));
-assert.ok(!bomRowMatchesSearch(row,'C428361'));
+assert.ok(bomRowMatchesSearch(row,'C428361'));
+assert.ok(bomRowMatchesSearch(row,'  r8   c428361  '));
+assert.ok(bomRowMatchesSearch({...row,comment:'OPA2210IDGKR'},'2210'));
+assert.ok(bomRowMatchesSearch({...row,comment:'OPA2210IDGKR'},'OPA2210'));
+assert.ok(bomRowMatchesSearch({...row,note:'待核实交期'},'核实'));
+assert.ok(bomRowMatchesSearch({...row,footprint:'DSMU:SOT-23-5'},'SOT-23'));
+assert.ok(!bomRowMatchesSearch(row,'R8 missing'));
+assert.ok(!bomRowMatchesSearch(row,'.*'));
+assert.ok(!bomRowMatchesSearch(row,'R[85]'));
 assert.ok(bomRowMatchesSearch(row,'power precision'));
 assert.ok(bomRowMatchesSearch({...row,alternate_parts:[{c_code:'C1234',model:'Alternate'}]},'C1234'));
+assert.ok(bomRowMatchesSearch({...row,alternate_parts:[{c_code:'C1234',model:'Alternate'}]},'C123'));
 assert.ok(bomRowMatchesSearch(row,''));
 assert.ok(!bomRowMatchesSearch(row,'missing'));
 '''

@@ -6245,8 +6245,7 @@ function bomRowMatchesSearch(row, query) {{
     row.stock?.param, row.stock?.param_detail, row.stock?.model,
     ...(row.alternate_parts || []).flatMap(item => [item.c_code, item.model, item.package, item.param])];
   const text = values.filter(Boolean).join(" ").toLocaleLowerCase();
-  return terms.every(term => /^[a-z]+\d+[a-z]?$/.test(term)
-    ? new RegExp(`\\\\b${{term}}\\\\b`, "i").test(text) : text.includes(term));
+  return terms.every(term => text.includes(term));
 }}
 
 function filterViewKey() {{

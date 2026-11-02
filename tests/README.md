@@ -1,5 +1,7 @@
 # 插件回归测试
 
+`test_kicad_selection_plugin.py::SelectionPluginTests::test_bom_search_and_chip_keyword_behavior` 覆盖主表部分位号/C编码/型号、中文、标点、备选料、大小写、多词交集和无匹配/清空；`run_workbench_interactions_smoke.py` 在隔离合成工程的真实 Chromium 中验证部分搜索、可见行与所选同步计数，不访问商城或生产 CAD。
+
 `test_sync_refresh_regression.py` 覆盖同步后刷新不为未编辑/混合描述制造待同步、显式清空及真实 C 编码修改仍生效，以及源页面按内容缓存、同时间戳不同内容重新解析。`test_design_status.py` 的真实 Chromium 主表刷新同时验证描述不回退成写入目标；快照缓存不替代原生保存回读测试。
 
 `test_portable_design_status.py` 覆盖只复制工程（不复制本机缓存）的完成状态、相对库路径、真实焊盘/UUID/选型/库变化、运行中拉取记录、旧证据安全迁移、冲突文件保留及多实例增量合并；Chromium 和导出测试分别核对“待同步”与“PCB 待核验”独立计数/筛选。`run_native_design_keep_open.py --with-footprints` 在真实 KiCad 同步保存三种封装后，另复制工程到新路径，断言无需原缓存即可显示完成且不写 CAD。
