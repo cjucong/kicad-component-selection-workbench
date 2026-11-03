@@ -45,6 +45,8 @@ def test_manual_inventory_update_is_independent_and_preserves_sources(inventory_
     assert result['item']['quantity'] == 0
     assert result['item']['source_orders'] == ['SO1']
     assert result['item']['manual_updated_at']
+    assert result['item']['quantity_change'] == {
+        'old': 12, 'new': 0, 'updated_at': result['item']['manual_updated_at']}
     assert saved['items']['C200']['quantity'] == 8
     assert saved['unmatched']['pending']['quantity'] == 3
     assert Path(result['backup']).is_file()
@@ -64,6 +66,94 @@ def test_manual_inventory_conflict_does_not_overwrite_other_window(inventory_app
         app.update_local_inventory({'c_code': 'C100', 'quantity': 1, 'expected': item})
     assert load_inventory(app.local_inventory_path)['items'] == {'C100': newer,
         'C200': load_inventory(app.local_inventory_path)['items']['C200']}
+
+
+def test_inventory_change_survives_restart_is_shared_and_preserves_zero(inventory_app):
+    app = inventory_app
+    first = app.update_local_inventory({'c_code': 'C100', 'quantity': 0, 'expected': None})['item']
+    assert first['quantity_change']['old'] is None
+    assert first['quantity_change']['new'] == 0
+    second = app.update_local_inventory({'c_code': 'C100', 'quantity': 8, 'expected': first})['item']
+    assert second['quantity_change']['old'] == 0
+    assert second['quantity_change']['new'] == 8
+    assert app.update_local_inventory({'c_code': 'C100', 'quantity': 8, 'expected': second})['item'] == second
+    restored = PartSelectionApp(app.project_root / 'settings.json')
+    try:
+        rows = [{'quantity': 1, 'effective_c_code': 'C100'},
+                {'quantity': 2, 'effective_c_code': 'C100'},
+                {'quantity': 1, 'effective_c_code': 'C200'},
+                {'quantity': 1, 'effective_c_code': 'C100', 'selection_codes_mixed': True}]
+        restored.enrich_local_inventory(rows)
+        assert rows[0]['local_inventory']['quantity_change'] == second['quantity_change']
+        assert rows[1]['local_inventory']['quantity_change'] == second['quantity_change']
+        assert rows[2]['local_inventory']['quantity_change'] is None
+        assert rows[3]['local_inventory']['quantity_change'] is None
+        assert all(not row.get('field_changed_refs') and not row.get('pcb_changed_refs') for row in rows)
+    finally:
+        restored.search_jobs.close()
+        restored.selection_jobs.close()
+
+
+def test_import_clears_stale_quantity_change_but_keeps_matching_one():
+    previous = {'quantity': 8, 'quantity_change': {'old': 0, 'new': 8, 'updated_at': 'today'}}
+    existing = {'schema_version': 1, 'items': {'C100': previous}}
+    for incoming in [{'quantity': 10}, {'quantity': None, 'status': 'unresolved'}]:
+        merged = merge_inventory_records(existing, {'items': {'C100': incoming}})
+        assert 'quantity_change' not in merged['items']['C100']
+    same = merge_inventory_records(existing, {'items': {'C100': {'quantity': 8}}})
+    assert same['items']['C100']['quantity_change'] == previous['quantity_change']
+
+
+@pytest.mark.skipif(not shutil.which('node'), reason='Node required for change detail validation')
+def test_inventory_change_detail_is_validated_and_legacy_records_stay_unchanged():
+    source = Path(__file__).resolve().parents[1] / 'tools/web/local-inventory.js'
+    result = subprocess.run([shutil.which('node'), '-e', r'''
+const assert=require('node:assert/strict');
+const {localInventoryQuantityChange:change}=require(process.argv[1]);
+const saved={quantity:8,quantity_change:{old:0,new:8,updated_at:'today'}};
+assert.deepEqual(change(saved),saved.quantity_change);
+assert.deepEqual(change({quantity:0,quantity_change:{old:null,new:0,updated_at:'today'}}),{old:null,new:0,updated_at:'today'});
+for(const value of [null,{}, {quantity:8}, {...saved,status:'unresolved'}, {...saved,status:null}, {...saved,status:0}, {...saved,quantity:9},
+ {...saved,quantity_change:{old:true,new:8,updated_at:'today'}},
+ {...saved,quantity_change:{old:8,new:8,updated_at:'today'}},
+ {...saved,quantity_change:{old:0,new:'8',updated_at:'today'}}]) assert.equal(change(value),null);
+''', str(source)], capture_output=True, text=True, encoding='utf-8', timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_inventory_change_metadata_validation_matches_current_balance():
+    from part_selection_inventory import inventory_quantity_change
+    saved = {'quantity': 8, 'quantity_change': {'old': 0, 'new': 8, 'updated_at': 'today'}}
+    assert inventory_quantity_change(saved) == saved['quantity_change']
+    assert inventory_quantity_change({'quantity': 0, 'quantity_change': {
+        'old': None, 'new': 0, 'updated_at': 'today'}})['old'] is None
+    for record in [None, {}, {'quantity': 8}, {**saved, 'status': None}, {**saved, 'status': 0},
+                   {**saved, 'status': 'unresolved'}, {**saved, 'quantity': 9},
+                   *[{**saved, 'quantity_change': value} for value in [
+                       {'old': True, 'new': 8, 'updated_at': 'today'},
+                       {'old': 8, 'new': 8, 'updated_at': 'today'},
+                       {'old': 0, 'new': '8', 'updated_at': 'today'}]]]:
+        assert inventory_quantity_change(record) is None
+
+
+@pytest.mark.skipif(not shutil.which('node'), reason='Node required for inventory record comparison')
+def test_inventory_retry_compares_json_content_not_property_order():
+    source = Path(__file__).resolve().parents[1] / 'tools/web/local-inventory.js'
+    result = subprocess.run([shutil.which('node'), '-e', r'''
+const assert=require('node:assert/strict');
+const {localInventoryRecordsEqual:equal}=require(process.argv[1]);
+const before={quantity:8,quantity_change:{old:0,new:8,updated_at:'today'},source_orders:['SO1','SO2']};
+const reordered={source_orders:['SO1','SO2'],quantity_change:{updated_at:'today',new:8,old:0},quantity:8};
+assert.equal(equal(before,reordered),true);
+assert.equal(equal(before,{...reordered,quantity:9}),false);
+assert.equal(equal(before,{...reordered,source_orders:['SO2','SO1']}),false);
+assert.equal(equal(before,{...reordered,quantity_change:{...reordered.quantity_change,old:null}}),false);
+assert.equal(equal(null,{}),false);
+assert.equal(equal(0,false),false);
+assert.equal(equal([],{}),false);
+assert.equal(equal(null,null),true);
+''', str(source)], capture_output=True, text=True, encoding='utf-8', timeout=10)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize('payload', [
@@ -102,6 +192,26 @@ def test_manual_inventory_atomic_failure_keeps_existing(inventory_app):
         with pytest.raises(OSError):
             app.update_local_inventory({'c_code': 'C100', 'quantity': 3, 'expected': original})
     assert load_inventory(app.local_inventory_path)['items']['C100'] == original
+
+
+def test_manual_inventory_final_write_failure_preserves_change_after_backup(inventory_app):
+    import part_selection_inventory as inventory
+    app = inventory_app
+    first = app.update_local_inventory({'c_code': 'C100', 'quantity': 12, 'expected': None})['item']
+    replace = inventory.os.replace
+    backups = []
+
+    def fail_only_final(source, target):
+        if Path(target) == app.local_inventory_path:
+            raise OSError('final inventory disk full')
+        replace(source, target)
+        backups.append(Path(target))
+
+    with patch('part_selection_inventory.os.replace', side_effect=fail_only_final):
+        with pytest.raises(OSError, match='final inventory'):
+            app.update_local_inventory({'c_code': 'C100', 'quantity': 0, 'expected': first})
+    assert backups and load_inventory(backups[-1])['items']['C100'] == first
+    assert load_inventory(app.local_inventory_path)['items']['C100'] == first
 
 
 def test_import_uses_current_aggregate_and_deduplicates_equal_order_rows(scratch_project):

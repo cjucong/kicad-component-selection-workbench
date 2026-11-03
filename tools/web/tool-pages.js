@@ -159,6 +159,7 @@
     async function refreshUtilityRows(kind) {
       const request=++refreshVersion;
       await flushRowEdits();
+      if(kind==='settings') await window.reloadLocalInventory?.();
       if(['settings','field-mapping'].includes(kind)) await loadBomOptions(true);
       const bom=bomSelect.value, version=rowsLoadVersion, epoch=editEpoch;
       if(loadedRowsBom!==bom) {await loadRows();return;}

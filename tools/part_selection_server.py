@@ -41,7 +41,8 @@ from part_selection_footprints import FootprintChoices
 from part_selection_footprint_changes import footprint_intent_hint
 from part_selection_inventory import (calculate_inventory_status, load_inventory,
                                       merge_inventory_records, parse_inventory_workbook, save_inventory,
-                                      inventory_import_time, apply_inventory_matches, inventory_source_owners)
+                                      inventory_import_time, apply_inventory_matches, inventory_source_owners,
+                                      inventory_quantity_change)
 from part_selection_specs import validate_passive_specs
 
 from part_selection_helper import (
@@ -1736,8 +1737,13 @@ class PartSelectionApp:
             backup = runtime_directory(self.project_root) / (
                 f'inventory_edit_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}') / 'inventory_before.json'
             save_inventory(backup, existing)
+            previous_quantity = old.get('quantity') if old and old.get('status', 'ready') == 'ready' else None
+            if type(previous_quantity) is not int or not 0 <= previous_quantity <= 9007199254740991:
+                previous_quantity = None
+            updated_at = inventory_import_time()
             item = {**(old or {}), 'quantity': quantity, 'status': 'ready', 'issue': '',
-                    'manual_updated_at': inventory_import_time()}
+                    'manual_updated_at': updated_at, 'quantity_change': {
+                        'old': previous_quantity, 'new': quantity, 'updated_at': updated_at}}
             existing['items'][code] = item
             save_inventory(self.local_inventory_path, existing)
         return {'ok': True, 'c_code': code, 'item': item, 'backup': str(backup)}
@@ -1762,6 +1768,8 @@ class PartSelectionApp:
                            'issue': issue or inventory.get(code, {}).get('issue', '')})
             if issue or row.get('selection_codes_mixed'):
                 result.update({'status': 'unresolved', 'inventory': None, 'difference': None})
+            result['quantity_change'] = (None if issue or row.get('selection_codes_mixed')
+                                         else inventory_quantity_change(inventory.get(code)))
             if row_is_nc(row):
                 result['status'] = 'nc'
             model = str(row.get('comment') or '').strip().upper()

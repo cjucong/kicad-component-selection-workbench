@@ -174,6 +174,10 @@ def merge_inventory_records(existing: dict, preview: dict) -> dict:
     for code, incoming in (preview.get("items") or {}).items():
         previous = result["items"].get(code, {})
         result["items"][code] = {**previous, **incoming}
+        merged = result['items'][code]
+        if (merged.get('quantity') != previous.get('quantity')
+                or merged.get('status', 'ready') != previous.get('status', 'ready')):
+            merged.pop('quantity_change', None)
         keys = sorted(set(previous.get('source_group_keys', []) + incoming.get('source_group_keys', [])))
         if keys:
             result['items'][code]['source_group_keys'] = keys
@@ -218,6 +222,22 @@ def apply_inventory_matches(preview: dict, matches: dict) -> dict:
         'unresolved': sum(item['status'] == 'unresolved' for item in result['items'].values()),
         'unmatched': len(result.get('unmatched', {}))})
     return result
+
+
+def inventory_quantity_change(record: dict | None) -> dict | None:
+    if not isinstance(record, dict) or record.get('status', 'ready') != 'ready':
+        return None
+    quantity = record.get('quantity')
+    change = record.get('quantity_change')
+    if (type(quantity) is not int or not 0 <= quantity <= 9007199254740991
+            or not isinstance(change, dict) or 'old' not in change
+            or type(change.get('new')) is not int or change['new'] != quantity):
+        return None
+    old = change['old']
+    if (old is not None and (type(old) is not int or not 0 <= old <= 9007199254740991)
+            or old == quantity or not isinstance(change.get('updated_at'), str) or not change['updated_at']):
+        return None
+    return {'old': old, 'new': quantity, 'updated_at': change['updated_at']}
 
 
 def load_inventory(path: Path) -> dict:

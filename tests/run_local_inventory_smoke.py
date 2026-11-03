@@ -91,6 +91,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   assert.match(await page.locator('#inventoryStatus').innerText(),/待匹配 0/);
   await page.locator('#localInventoryDialog [data-inventory-close]').first().click();
   await page.setViewportSize({width:1600,height:1000});
+  // Settle the earlier C-code edit before measuring inventory-only changes.
+  await page.reload(); await qty('R2').waitFor();
   const overridesBefore=await page.evaluate(()=>JSON.stringify(currentRows.map(row=>[row.ref,row.review_status,row.status,row.schematic_sync])));
   const inventory=()=>page.evaluate(async()=>await (await fetch('/api/local_inventory')).json());
   // A single main code shares one physical balance, even across NC rows.
@@ -98,6 +100,27 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   assert.equal(await qty('R3').inputValue(),'24');
   await page.waitForFunction(async()=>(await (await fetch('/api/local_inventory')).json()).items.C100.quantity===24);
   await page.evaluate(()=>flushRowEdits());
+  const marker=ref=>page.locator(`#rows tr[data-refs="${ref}"] [data-local-inventory-change]`);
+  for(const ref of ['R2','R3']) {
+    await marker(ref).waitFor();
+    assert.match(await marker(ref).innerText(),/本地库存.*5 → 24/s);
+    assert.match(await marker(ref).innerText(),/已保存/);
+    assert.equal(await marker(ref).locator('[data-sync-marker]').count(),0);
+  }
+  assert.equal(await marker('R1').count(),0);
+  if(process.env.LOCAL_INVENTORY_SCREENSHOTS) {
+    await marker('R2').scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(process.env.LOCAL_INVENTORY_SCREENSHOTS,'inventory-change-desktop.png')});
+    await page.setViewportSize({width:390,height:844});
+    await marker('R2').scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(process.env.LOCAL_INVENTORY_SCREENSHOTS,'inventory-change-mobile.png')});
+    await page.setViewportSize({width:1600,height:1000});
+  }
+  const savedInventoryMarker=await marker('R2').innerText();
+  const cadState=await page.evaluate(()=>currentRows.map(row=>[row.ref,designSyncPending(row),row.field_changed_refs,row.pcb_changed_refs]));
+  await page.reload(); await qty('R2').waitFor();
+  assert.equal(await marker('R2').innerText(),savedInventoryMarker);
+  assert.deepEqual(await page.evaluate(()=>currentRows.map(row=>[row.ref,designSyncPending(row),row.field_changed_refs,row.pcb_changed_refs])),cadState);
   // In-flight edits serialize; the old response must not replace newer input.
   let release, held, interceptedOnce=false;
   const intercepted=new Promise(resolve=>held=resolve);
@@ -201,6 +224,27 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict'),path
   assert.equal(exportRequests,2);
   await page.unroute('**/api/local_inventory/update');
   await qty('R2').press('Escape');
+  // Settings source changes reload balances and invalidate an older in-flight read.
+  const oldSource=await inventory();
+  let sourceRelease, sourceHeld, firstSource=true;
+  const sourceStarted=new Promise(resolve=>sourceHeld=resolve);
+  await page.route('**/api/local_inventory',async route=>{
+    if(firstSource) {
+      firstSource=false;
+      await new Promise(resolve=>{sourceRelease=resolve;sourceHeld();});
+      await route.fulfill({contentType:'application/json',body:JSON.stringify(oldSource)});
+    } else await route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,items:{C100:{quantity:77},C200:{quantity:41}}})});
+  });
+  await page.evaluate(()=>{window.olderInventoryRead=window.reloadLocalInventory();});
+  await sourceStarted;
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('workbench-tool-changed',{detail:{kind:'settings'}})));
+  await page.waitForFunction(()=>document.querySelector('#rows tr[data-refs="R2"] [data-inventory-quantity]')?.value==='77');
+  assert.equal(await marker('R2').count(),0);
+  sourceRelease();
+  await page.evaluate(()=>window.olderInventoryRead);
+  assert.equal(await qty('R2').inputValue(),'77');
+  assert.equal(await marker('R2').count(),0);
+  await page.unroute('**/api/local_inventory');
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({preview:true,confirm:true,dedupe:true,shared_demand:true,zero_stock:true,nc:true,
     inline_edit:true,inflight_edits:true,save_failure:true,conflict_confirmation:true,focus_preserved:true,

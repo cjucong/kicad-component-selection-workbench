@@ -22,7 +22,27 @@ function localInventoryPresentation(result, market = {}, hasCode = true, selecte
   return {label: local, local, tone: 'neutral'};
 }
 
-if (typeof module !== 'undefined') module.exports = {localInventoryComparison, localInventoryPresentation};
+function localInventoryQuantityChange(record) {
+  const change = record?.quantity_change;
+  if (!record || record.status !== undefined && record.status !== 'ready' || !change ||
+      !Object.prototype.hasOwnProperty.call(change, 'old') ||
+      !Number.isSafeInteger(record.quantity) || record.quantity < 0 ||
+      !Number.isSafeInteger(change.new) || change.new !== record.quantity ||
+      change.old !== null && (!Number.isSafeInteger(change.old) || change.old < 0) ||
+      change.old === change.new || typeof change.updated_at !== 'string' || !change.updated_at) return null;
+  return {old: change.old, new: change.new, updated_at: change.updated_at};
+}
+
+function localInventoryRecordsEqual(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object' ||
+      Array.isArray(left) !== Array.isArray(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every(key =>
+    Object.prototype.hasOwnProperty.call(right, key) && localInventoryRecordsEqual(left[key], right[key]));
+}
+
+if (typeof module !== 'undefined') module.exports = {localInventoryComparison, localInventoryPresentation, localInventoryQuantityChange, localInventoryRecordsEqual};
 
 if (typeof document !== 'undefined') (() => {
   if (candidateOnly) return;
@@ -36,6 +56,27 @@ if (typeof document !== 'undefined') (() => {
   count.value = Number.isInteger(savedCount) && savedCount >= 1 && savedCount <= 1000000 ? savedCount : 3;
   let sets = Number(count.value);
 
+  function refreshQuantityChange(tr, record) {
+    const review = tr.querySelector('[data-col="review"]');
+    if (!review) return;
+    const previous = review.querySelector('[data-local-inventory-change]');
+    const change = localInventoryQuantityChange(record);
+    if (!change) { previous?.remove(); return; }
+    const key = JSON.stringify(change);
+    if (previous?.dataset.localInventoryChange === key) return;
+    const marker = document.createElement('div');
+    marker.className = 'local-inventory-change';
+    marker.dataset.localInventoryChange = key;
+    marker.title = `仅工程库存记录，不写入原理图或 PCB；${change.updated_at}`;
+    const label = document.createElement('strong'), detail = document.createElement('div');
+    label.textContent = '本地库存已修改（已保存）';
+    detail.className = 'sync-row-diff';
+    detail.textContent = `本地库存: ${change.old === null ? '未记录/待核实' : change.old} → ${change.new}`;
+    marker.append(label, detail);
+    if (previous) previous.replaceWith(marker);
+    else review.append(marker);
+  }
+
   window.refreshLocalInventory = () => {
     const totals = new Map();
     const rowsByRef = new Map(currentRows.map(row => [row.ref, row]));
@@ -47,6 +88,7 @@ if (typeof document !== 'undefined') (() => {
       const row = rowsByRef.get(tr.dataset.ref), cell = tr.querySelector('[data-local-inventory]');
       if (!row || !cell) continue;
       const code = stockCode(row), quantity = Number(row.quantity || 0);
+      refreshQuantityChange(tr, initialized && !readIssue && code && !row.selection_codes_mixed ? records[code] : null);
       if (!initialized) { cell.textContent = '本地库存 读取中…'; continue; }
       const result = localInventoryComparison(records[code], quantity, totals.get(code) || quantity, sets,
         {nc: rowIsNc(row), mixed: row.selection_codes_mixed, issue: readIssue});
@@ -170,7 +212,7 @@ if (typeof document !== 'undefined') (() => {
       const result = await request('/api/local_inventory');
       if (edits.get(code) !== edit || edit.promise) return;
       const latest = result.items?.[code] || null;
-      if (JSON.stringify(latest) !== JSON.stringify(edit.expected) &&
+      if (!localInventoryRecordsEqual(latest, edit.expected) &&
           !window.confirm(`${code} 最新本地库存为 ${latest?.quantity ?? '待核实'}，是否仍按输入的 ${edit.value} 保存？`)) return;
       records[code] = latest;
       edit.expected = latest;

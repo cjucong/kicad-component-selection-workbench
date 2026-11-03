@@ -11,6 +11,7 @@
 .local-inventory-editor input[aria-invalid="true"] { border-color: #b52c3b; }
 .inventory-edit-status { padding: 1px 4px; margin-left: 4px; font-size: 11px; color: #b52c3b; background: transparent; border: 0; text-decoration: underline; }
 .inventory-edit-status:disabled { color: #637177; text-decoration: none; }
+.local-inventory-change { margin-top: 6px; color: #326b57; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .stock-options-popup { min-width: 200px; }
 .stock-section .section-actions { gap: 5px; }
 #stockOptionsMenu { padding-inline: 5px; }
