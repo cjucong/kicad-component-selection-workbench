@@ -141,7 +141,7 @@ class DesignStatus:
             return digest, self.parts
         parts = {}
         text = content.decode('utf-8-sig')
-        for fp in parse_sexpr(text, 'kicad_pcb').children_named('footprint'):
+        for fp in parse_sexpr(text, 'kicad_pcb', root_children={'footprint'}).children_named('footprint'):
             fields = {}
             for prop in fp.children_named('property'):
                 name = prop.arg().casefold()
@@ -186,7 +186,7 @@ class DesignStatus:
                            'scope':'project' if local else 'external'})
         return result
 
-    def _valid_targets(self, evidence, *, legacy=False, footprint=None):
+    def _valid_targets(self, evidence, *, legacy=False, footprint=None, read_cache=None):
         try:
             root = Path(self.app.project_root).resolve()
             targets = evidence.get('targets', [])
@@ -205,10 +205,24 @@ class DesignStatus:
                 if footprint:
                     from part_selection_footprints import FootprintChoices, item_name
                     nickname, name = (item_name(value) for value in footprint.split(':'))
-                    library = FootprintChoices(root).libraries().get(nickname)
+                    if read_cache is None:
+                        libraries = FootprintChoices(root).libraries()
+                    else:
+                        key = ('libraries', str(root))
+                        if key not in read_cache:
+                            read_cache[key] = FootprintChoices(root).libraries()
+                        libraries = read_cache[key]
+                    library = libraries.get(nickname)
                     if library is None or (library / (name + '.kicad_mod')).resolve() != path.resolve():
                         return False
-                if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != item['hash']:
+                if read_cache is None:
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+                else:
+                    key = str(path.resolve())
+                    if key not in read_cache:
+                        read_cache[key] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+                    digest = read_cache[key]
+                if digest != item['hash']:
                     return False
             return True
         except (OSError, ValueError, KeyError, TypeError):
@@ -349,6 +363,7 @@ class DesignStatus:
                     evidence_error = 'PCB 核验记录不可用：' + str(exc)
                 if desired is None:
                     desired = self.app.design_sync_fields(source, '__schematic__')
+                target_reads = {}
                 for row in rows:
                     states = {}
                     for ref in row.get('refs_list', []):
@@ -381,7 +396,8 @@ class DesignStatus:
                                           or evidence.get('pad_instance') == part['pad_digest'])
                                          and self._source_matches(evidence, source, ref))
                         certified = (same_instance and not evidence.get('pending_kind')
-                                     and self._valid_targets(evidence, footprint=target))
+                                     and self._valid_targets(evidence, footprint=target,
+                                                             read_cache=target_reads))
                         if part['footprint'] != target:
                             status['status'] = 'pending'
                         elif intent.get('operation') == 'replace' and not certified:

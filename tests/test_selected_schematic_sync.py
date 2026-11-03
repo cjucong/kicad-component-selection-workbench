@@ -231,7 +231,7 @@ const window = {};
 let bulkSyncRunning = false;
 const bomSelect = {value:'B'}, refsInput = {value:''};
 const queryMissingButton = {}, queryAllButton = {}, syncAllButton = {};
-const rowsEl = {innerHTML:'old rows'};
+const rowsEl = {innerHTML:'old rows',childNodes:[],setAttribute(){},removeAttribute(){},replaceChildren(){}};
 let currentRows = ['old'], rendered = [], states = [], pending = [];
 const selectedRowRefs = new Set(['R1']);
 function cancelStockQueries() {}
@@ -241,6 +241,8 @@ function updateRowsEmptyState() {}
 function resetQueryAllButton() {}
 function restoreRowAnchor() {}
 function renderRows(rows) {rendered = rows;}
+function tableLoadProgress() {}
+async function renderRowsProgressively(rows,active) {if(!active()) return false;renderRows(rows);return true;}
 async function flushRowEdits() {}
 function fetch(url) {return new Promise((resolve, reject) => pending.push({url,resolve,reject}));}
 FUNCTIONS

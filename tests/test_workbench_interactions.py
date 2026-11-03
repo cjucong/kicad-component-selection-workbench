@@ -30,7 +30,8 @@ def test_source_loading_checks_http_and_payload_and_allows_retry():
 const assert=require('node:assert/strict');
 const refresh={disabled:false}, bomSelect={innerHTML:'original options'};
 const states=[];
-let response, loaded=0;
+let response, loaded=0, rowsLoading=false;
+const tableLoadProgress=()=>{};
 const document={getElementById:()=>refresh};
 const sessionStorage={getItem:()=>null,removeItem:()=>{}};
 const esc=x=>x, updateUiSettings=()=>{};

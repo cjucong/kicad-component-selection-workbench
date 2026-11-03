@@ -162,7 +162,7 @@
       if(kind==='settings') await window.reloadLocalInventory?.();
       if(['settings','field-mapping'].includes(kind)) await loadBomOptions(true);
       const bom=bomSelect.value, version=rowsLoadVersion, epoch=editEpoch;
-      if(loadedRowsBom!==bom) {await loadRows();return;}
+      if(rowsLoading || loadedRowsBom!==bom) {await loadRows();return;}
       const response=await fetch('/api/rows?refs='+encodeURIComponent(refsInput.value.trim())+
         '&bom='+encodeURIComponent(bom)+'&stock=0');
       const data=await response.json();

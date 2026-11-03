@@ -1,5 +1,7 @@
 # 插件回归测试
 
+`run_table_loading_smoke.py` 使用650行合成数据在真实Chromium中验证加载进度、分批显示、搜索、失败恢复、空表与迟到渲染隔离；`TABLE_SCREENSHOTS` 可指定工程外截图目录。`test_selective_sexpr.py` 验证选择性解析保留封装及源偏移、不接受跳过区域的损坏结构；`test_table_loading.py` 验证目标哈希只在同轮共享、下轮重新读取。
+
 `test_part_selection_inventory.py` 另覆盖库存修改明细的原子保存、零/未知区分、重开共享、旧数据兼容、导入失效，以及JSON字段顺序不同不误判冲突。`run_local_inventory_smoke.py` 在合成工程的真实Chromium中检查同步栏数量变化、刷新保留、换编码隔离、保存失败/真正并发冲突，且不改变CAD待同步状态。没有拿生产数据做写入测试。
 
 `test_kicad_selection_plugin.py::SelectionPluginTests::test_bom_search_and_chip_keyword_behavior` 覆盖主表部分位号/C编码/型号、中文、标点、备选料、大小写、多词交集和无匹配/清空；`run_workbench_interactions_smoke.py` 在隔离合成工程的真实 Chromium 中验证部分搜索、可见行与所选同步计数，不访问商城或生产 CAD。

@@ -4454,6 +4454,10 @@ body {{ --sticky-toolbar-height: 0px; --sticky-filter-height: 0px; --statusbar-h
 .toolbar-tooltip span {{ color: #687078; font-size: 11px; }}
 .workbench-statusbar {{ position: fixed; bottom: 0; left: 0; right: 0; z-index: 7; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; min-height: 28px; padding: 3px 10px; background: #eee; border-top: 1px solid #c9cdd1; font-size: 11px; }}
 .status-line {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
+#tableLoadProgress {{ padding: 10px 14px; background: #edf6fa; border-bottom: 1px solid #b7d3df; color: #294d60; }}
+#tableLoadProgress[hidden] {{ display: none; }}
+#tableLoadProgress span {{ display: block; margin-bottom: 6px; font-size: 12px; }}
+#tableLoadProgress progress {{ display: block; width: min(520px, 100%); height: 10px; accent-color: #21868a; }}
 .status-line > #state {{ flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .status-line > #state.error {{ white-space: normal; max-height: 100px; overflow: auto; overflow-wrap: anywhere; }}
 #workbenchSummary {{ display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 12px; color: #687681; }}
@@ -4866,6 +4870,7 @@ tr.hidden-row {{ display: none; }}
 </div>
 </footer>
 <main>
+<div id="tableLoadProgress" role="status" aria-live="polite" hidden><span></span><progress aria-label="表格加载进度"></progress></div>
 <nav class="filter-tabs" aria-label="筛选视图">
   <button type="button" class="active" data-filter="all">全部</button>
   <button type="button" data-filter="needs_sync">待同步设计</button>
@@ -5467,7 +5472,7 @@ function measureColumnWidth(table, key, candidate) {{
   const attr = candidate ? "data-candidate-col" : "data-col";
   const rows = Array.from(table.tBodies[0]?.rows || []).filter(row => !row.hidden && !row.classList.contains("hidden-row"));
   // Sample throughout the visible result set, not just its first rows.
-  const step = Math.max(1, Math.ceil(rows.length / 100));
+  const step = Math.max(1, Math.ceil(rows.length / 20));
   const cells = [table.querySelector(`th[${{attr}}="${{key}}"]`),
     ...rows.filter((_, index) => index % step === 0 || index === rows.length - 1)
       .map(row => row.querySelector(`td[${{attr}}="${{key}}"]`))].filter(Boolean);
@@ -7189,7 +7194,7 @@ async function applyStatus(tr) {{
   await loadRows(rowAnchor(tr));
 }}
 
-function renderRows(rows, {{patch = false}} = {{}}) {{
+function renderRows(rows, {{patch = false, alreadyRendered = false}} = {{}}) {{
   const previous = currentRows;
   const existing = [...rowsEl.querySelectorAll("tr[data-refs]")];
   const existingByRefs = new Map(existing.map(tr => [tr.dataset.refs, tr]));
@@ -7200,7 +7205,28 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
   const availableRefs = new Set(rows.flatMap(row => row.refs_list || [row.ref]));
   for (const ref of selectedRowRefs) if (!availableRefs.has(ref)) selectedRowRefs.delete(ref);
   refsInput.value = rows.flatMap(row => row.refs_list || [row.ref]).join(",");
-  const markup = rows.map((row, index) => {{
+  const markup = alreadyRendered ? "" : rows.map(rowMarkup).join("");
+  if (patchInPlace) {{
+    patchRenderedRows(markup, rows, existingByRefs, previousByRefs);
+  }} else {{
+    if (!alreadyRendered) rowsEl.innerHTML = markup;
+    rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
+  }}
+  rowsEl.querySelectorAll("tr[data-ref]").forEach((tr, index) => {{
+    setDesignStatusDataset(tr, rows[index]);
+    tr.dataset.filterKey = filterKeysFromDataset(tr);
+  }});
+  refreshFootprintLibraries();
+  updateSplitPageChecks();
+  applyColumnOrder();
+  applyColumnVisibility();
+  applyActiveFilter();
+  if (!patch) fitDefaultColumnWidths();
+  window.refreshLocalInventory?.();
+  window.refreshSpecificationWarnings?.(rows.some(row => row.spec_check_needs_refresh));
+}}
+
+function rowMarkup(row, index) {{
     const ov = row.override || {{}};
     const effective = row.effective_c_code || "";
     const replacement = effective;
@@ -7262,8 +7288,9 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
       <td data-col="alternates">${{renderAlternateParts(row)}}</td>
       <td data-col="note"><textarea class="edit note" data-field="note">${{esc(note)}}</textarea></td>
     </tr>`;
-  }}).join("");
-  if (patchInPlace) {{
+}}
+
+function patchRenderedRows(markup, rows, existingByRefs, previousByRefs) {{
     const template = document.createElement("template");
     template.innerHTML = markup;
     const focused = document.activeElement;
@@ -7296,22 +7323,41 @@ function renderRows(rows, {{patch = false}} = {{}}) {{
       }}
     }});
     if (focused?.isConnected && document.activeElement !== focused) focused.focus({{preventScroll:true}});
-  }} else {{
-    rowsEl.innerHTML = markup;
-    rowsEl.querySelectorAll("textarea[data-field], input[data-field]").forEach(input => {{ input.dataset.savedValue = input.value; }});
+}}
+
+function tableLoadProgress(message, done = null, total = null) {{
+  const panel = document.getElementById("tableLoadProgress");
+  panel.hidden = !message;
+  panel.querySelector("span").textContent = message || "";
+  const bar = panel.querySelector("progress");
+  if (done === null) bar.removeAttribute("value");
+  else {{ bar.max = Math.max(1, total); bar.value = done; }}
+}}
+
+async function renderRowsProgressively(rows, active) {{
+  if (!active()) return false;
+  if (rows.length <= 30) {{ renderRows(rows); return true; }}
+  rowsEl.replaceChildren();
+  for (let offset = 0; offset < rows.length; offset += 30) {{
+    if (!active()) return false;
+    const template = document.createElement("template");
+    template.innerHTML = rows.slice(offset, offset + 30).map((row, i) => rowMarkup(row, offset + i)).join("");
+    const order = orderedColumns(), hidden = columnHiddenMap();
+    for (const tr of template.content.children) {{
+      const cells = new Map([...tr.children].map(cell => [cell.dataset.col, cell]));
+      for (const key of order) {{
+        const cell = cells.get(key);
+        if (cell) {{ cell.classList.toggle("hidden-col", !!hidden[key]); tr.append(cell); }}
+      }}
+    }}
+    rowsEl.append(template.content);
+    tableLoadProgress(`正在显示表格 ${{Math.min(offset + 30, rows.length)}} / ${{rows.length}} 行`, Math.min(offset + 30, rows.length), rows.length);
+    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
   }}
-  rowsEl.querySelectorAll("tr[data-ref]").forEach(tr => {{
-    setDesignStatusDataset(tr, rowDataForElement(tr));
-    tr.dataset.filterKey = filterKeysFromDataset(tr);
-  }});
-  refreshFootprintLibraries();
-  updateSplitPageChecks();
-  applyColumnOrder();
-  applyColumnVisibility();
-  applyActiveFilter();
-  if (!patch) fitDefaultColumnWidths();
-  window.refreshLocalInventory?.();
-  window.refreshSpecificationWarnings?.(rows.some(row => row.spec_check_needs_refresh));
+  if (!active()) return false;
+  tableLoadProgress("正在整理筛选与库存显示…");
+  renderRows(rows, {{alreadyRendered: true}});
+  return true;
 }}
 
 function updateRowsForStock(code, stock) {{
@@ -8388,6 +8434,9 @@ async function loadRows(anchor = null) {{
   try {{ await flushRowEdits(); }} catch (error) {{ setState(error.message, "error"); return; }}
   if (version !== rowsLoadVersion || bom !== (bomSelect.value || "")) return;
   rowsLoading = true;
+  rowsEl.inert = true;
+  rowsEl.setAttribute("aria-busy", "true");
+  tableLoadProgress("正在读取原理图、选料记录与设计状态…");
   updateRowsEmptyState();
   if (loadedRowsBom !== bom) {{
     rowsEl.innerHTML = "";
@@ -8405,8 +8454,18 @@ async function loadRows(anchor = null) {{
     const data = await res.json();
     if (version !== rowsLoadVersion || bom !== (bomSelect.value || "")) return;
     if (!res.ok) throw new Error(data.error || "加载 BOM 失败");
+    if (!Array.isArray(data.rows)) throw new Error("数据源未返回有效表格");
+    const previousNodes = [...rowsEl.childNodes], previousRows = currentRows;
+    try {{
+      if (!await renderRowsProgressively(data.rows, () => version === rowsLoadVersion && bom === (bomSelect.value || ""))) return;
+    }} catch (error) {{
+      if (version === rowsLoadVersion && bom === (bomSelect.value || "")) {{
+        rowsEl.replaceChildren(...previousNodes);
+        currentRows = previousRows;
+      }}
+      throw error;
+    }}
     loadedRowsBom = bom;
-    renderRows(data.rows);
     restoreRowAnchor(anchor);
     const refCount = data.rows.flatMap(row => row.refs_list || [row.ref]).length;
     setState(`已加载 ${{data.rows.length}} 个分组 / ${{refCount}} 个位号；输入 C 编码后自动查询库存`, "saved");
@@ -8416,6 +8475,9 @@ async function loadRows(anchor = null) {{
   }} finally {{
     if (version === rowsLoadVersion) {{
       rowsLoading = false;
+      rowsEl.inert = false;
+      rowsEl.removeAttribute("aria-busy");
+      tableLoadProgress("");
       updateRowsEmptyState();
       syncAllButton.disabled = bulkSyncRunning || loadedRowsBom !== (bomSelect.value || "");
       updateSyncSelection();
@@ -8447,11 +8509,12 @@ async function initializeWorkbenchRows() {{
   refresh.disabled = true;
   try {{
     setState("正在读取数据源…");
+    tableLoadProgress("正在读取数据源…");
     await loadBomOptions();
     await loadRows();
   }} catch (error) {{
     setState(`读取数据源失败：${{error.message || String(error)}}；可点击“重新读取”重试`, "error");
-  }} finally {{ refresh.disabled = false; }}
+  }} finally {{ refresh.disabled = false; if (!rowsLoading) tableLoadProgress(""); }}
 }}
 
 const rowEditQueue = createRowEditQueue({{
@@ -9291,6 +9354,7 @@ document.querySelectorAll("[data-design-destination]").forEach(button => button.
 }}));
 let designStatusRefreshVersion = 0;
 async function refreshDesignSyncRows() {{
+  if (rowsLoading) {{ await loadRows(); return; }}
   const refreshVersion = ++designStatusRefreshVersion;
   await flushRowEdits();
   const version = rowsLoadVersion, bom = loadedRowsBom, edits = rowEditGeneration;

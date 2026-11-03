@@ -5,6 +5,9 @@ Extracted from the engineering FPGA utility; has no project or UI dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
+
+_SKIP_TOKEN = re.compile(r'\s*(?:(\()|(\))|("(?:\\[\s\S]|[^"\\])*")|([^\s()]+))')
 
 
 @dataclass
@@ -28,11 +31,29 @@ class Node:
         return (self.children[index].value or "") if index < len(self.children) else ""
 
 
-def parse_sexpr(source: str, expected_root: str = "kicad_sch") -> Node:
+def parse_sexpr(source: str, expected_root: str = "kicad_sch", *, root_children=None) -> Node:
     length = len(source)
     index = 0
 
-    def parse() -> Node:
+    def skip_expression():
+        # Validate discarded trees without allocating nodes for copper fills.
+        nonlocal index
+        depth = 0
+        while True:
+            token = _SKIP_TOKEN.match(source, index)
+            if token is None:
+                raise ValueError("Unclosed KiCad expression")
+            index = token.end()
+            if token[1]:
+                depth += 1
+            elif token[2]:
+                depth -= 1
+            elif token[4] and token[4].startswith('"'):
+                raise ValueError("Unclosed KiCad string")
+            if depth == 0:
+                return
+
+    def parse(*, root=False) -> Node:
         nonlocal index
         while index < length and source[index].isspace():
             index += 1
@@ -50,6 +71,11 @@ def parse_sexpr(source: str, expected_root: str = "kicad_sch") -> Node:
                 if source[index] == ")":
                     index += 1
                     return Node(None, start, index, children)
+                if root and root_children is not None and children and source[index] == '(':
+                    head = re.match(r'\(\s*([^\s()"]+)', source[index:index + 128])
+                    if head and head[1] not in root_children:
+                        skip_expression()
+                        continue
                 children.append(parse())
         if source[index] == '"':
             index += 1
@@ -73,7 +99,7 @@ def parse_sexpr(source: str, expected_root: str = "kicad_sch") -> Node:
             raise ValueError(f"Unexpected character at offset {index}")
         return Node(source[start:index], start, index)
 
-    result = parse()
+    result = parse(root=True)
     if result.head != expected_root:
         raise ValueError(f"Not a KiCad {expected_root} expression")
     if source[index:].strip():
