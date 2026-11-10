@@ -55,10 +55,10 @@ def read_export(result):
     (["R1", "R2"], {"R1,R2": "2"}),
     (["R2"], {"R2": "1"}),
     ([" r2 ", "R2", "c1"], {"R2": "1", "C1": "1"}),
-    (["C2", "C1"], {"C1": "1"}),
-    (["C2"], {}),
+    (["C2", "C1"], {"C1": "1", "C2": "0"}),
+    (["C2"], {"C2": "0"}),
 ])
-def test_selected_refs_are_scoped_before_grouping_and_nc_filtering(selected_app, refs, expected):
+def test_selected_refs_are_scoped_before_grouping_and_keep_nc(selected_app, refs, expected):
     source_path = selected_app.project_root / "BOM/source.csv"
     source = source_path.read_bytes()
     overrides = selected_app.overrides_path.read_bytes()

@@ -65,6 +65,7 @@ def test_template_columns_come_first_and_preserve_engineering_details(scratch_pr
         "MPQ", "Price", "Param", "ReviewStatus", "PerReferenceSelection",
         "SchematicSyncStatus", "Note",
         "PcbSyncStatus", "PendingPcbRefs", "UnverifiedPcbRefs",
+        "装配状态", "设计数量",
     ]
     row = rows[0]
     assert [row[key] for key in TEMPLATE_COLUMNS] == [
@@ -126,7 +127,7 @@ def test_numbering_is_contiguous_after_filtering_and_does_not_multiply_quantity(
         make_row("C9", value="NC"), make_row("C1,C2"),
         make_row("R1", review_status="Pending", value="10k"),
         make_row("C3,C4,C5"),
-    ], export_filter="current_filter", active_filters=["review_confirmed"])
+    ], export_filter="current_filter", active_filters=["review_confirmed", "non_nc"])
     assert result["count"] == 2
     assert [row["序号"] for row in rows] == ["1", "2"]
     assert [row["位号"] for row in rows] == ["C1,C2", "C3,C4,C5"]

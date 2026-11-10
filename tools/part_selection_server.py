@@ -782,7 +782,9 @@ def row_filter_keys(row: dict[str, object]) -> set[str]:
     return keys
 
 
-def row_is_pump_exportable(row: dict[str, object]) -> bool:
+def row_is_pump_exportable(row: dict[str, object], *, include_nc: bool = False) -> bool:
+    if include_nc and row_is_nc(row):
+        return True
     has_any_code = bool(row_effective_c_code(row)) or any(selection_codes_for_row(row).values())
     return bool(
         has_any_code
@@ -1771,6 +1773,7 @@ class PartSelectionApp:
             result['quantity_change'] = (None if issue or row.get('selection_codes_mixed')
                                          else inventory_quantity_change(inventory.get(code)))
             if row_is_nc(row):
+                result['inventory_status'] = result['status']
                 result['status'] = 'nc'
             model = str(row.get('comment') or '').strip().upper()
             result['model_suggestions'] = [key for key, item in inventory.items()
@@ -3796,7 +3799,8 @@ class PartSelectionApp:
                 raise ValueError("勾选的位号已变化，请重新读取并勾选后导出")
 
         def include_row(row: dict[str, object]) -> bool:
-            if not row_is_pump_exportable(row):
+            include_nc = export_filter not in {"all_non_nc", "stock_issue", "low_stock", "stock_error"}
+            if not row_is_pump_exportable(row, include_nc=include_nc):
                 return False
             keys = row_filter_keys(row)
             if export_filter == "current_filter":
@@ -3847,6 +3851,8 @@ class PartSelectionApp:
             "PcbSyncStatus",
             "PendingPcbRefs",
             "UnverifiedPcbRefs",
+            "装配状态",
+            "设计数量",
         ]
         code_counts = {}
         for row in rows:
@@ -3858,16 +3864,17 @@ class PartSelectionApp:
             if not code:
                 return "—", "未选择 C 编码"
             local = row.get("local_inventory") or {}
+            status = local.get("inventory_status", local.get("status"))
             if (normalize_lcsc_c_code(local.get("c_code")) != code
-                    or local.get("status") not in {"unmatched", "sufficient", "insufficient"}
+                    or status not in {"unmatched", "sufficient", "insufficient", "nc"}
                     or local.get("issue")):
                 return "待核实", str(local.get("issue") or "本地库存未读取、冲突或编码不匹配")
             quantity = local.get("inventory")
-            if local.get("status") == "unmatched":
+            if status == "unmatched":
                 quantity = 0
             if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
                 return "待核实", "本地库存数量无效"
-            note = "无本地记录，按 0 显示" if local.get("status") == "unmatched" else "实际数量，未扣减需求"
+            note = "无本地记录，按 0 显示" if status == "unmatched" else "实际数量，未扣减需求"
             if code_counts.get(code, 0) > 1:
                 note += "；同 C 编码跨行共享，勿重复累加"
             return str(quantity), note
@@ -3882,13 +3889,18 @@ class PartSelectionApp:
             if not normalized_code or normalize_lcsc_c_code(stock.get("c_code")) != normalized_code:
                 stock = {}
             balance, balance_note = local_balance(row, normalized_code)
+            is_nc = row_is_nc(row)
+            design_quantity = str(row.get("quantity") or "")
+            note = str(row.get("note") or "")
+            if is_nc:
+                note = f"NC / 不装；设计数量 {design_quantity}" + (f"；{note}" if note else "")
             export_rows.append(
                 {
                     "序号": str(len(export_rows) + 1),
                     "型号": str(stock.get("model") or ""),
                     "封装": str(stock.get("package") or str(row.get("footprint") or "").rsplit(":", 1)[-1]),
                     "参数/规格": str(row.get("value") or stock.get("param_detail") or stock.get("param") or ""),
-                    "单套用量": str(row.get("quantity") or ""),
+                    "单套用量": "0" if is_nc else design_quantity,
                     "品牌": str(stock.get("brand") or ""),
                     "分类": str(stock.get("category") or ""),
                     "商品编号": c_code,
@@ -3923,7 +3935,9 @@ class PartSelectionApp:
                         "SyncedOrNoDiff" if row.get("pcb_sync_by_ref") else "NotChecked",
                     "PendingPcbRefs": str(row.get("pcb_changed_refs") or ""),
                     "UnverifiedPcbRefs": str(row.get("pcb_unverified_refs") or ""),
-                    "Note": str(row.get("note") or ""),
+                    "Note": note,
+                    "装配状态": "NC / 不装" if is_nc else "装配",
+                    "设计数量": design_quantity,
                 }
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4817,11 +4831,12 @@ tr.hidden-row {{ display: none; }}
 <section class="toolbar-section export-section" aria-label="表格导出">
   <span class="section-title">表格导出</span><div class="section-actions">
   <div class="app-menu">
-    <button type="button" id="exportPumpMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="导出 BOM 表" data-tooltip="支持导出勾选行；含本地库存实际数量，不扣减套数需求；导出仅包含非 NC 器件。">{toolbar_content('table-2', 'BOM 导出')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
+    <button type="button" id="exportPumpMenu" class="tool-button" data-menu-trigger aria-expanded="false" aria-label="导出 BOM 表" data-tooltip="含本地库存实际数量；NC 保留并标为不装，单套用量为 0，设计数量另列。">{toolbar_content('table-2', 'BOM 导出')}<svg class="toolbar-icon toolbar-chevron" aria-hidden="true"><use href="#toolbar-icon-chevron-down"></use></svg></button>
     <div class="menu-popup export-popup">
     <label>导出范围<select id="pumpExportMode" title="选择导出 BOM 内容">
   <option value="current_filter">当前筛选结果</option>
   <option value="selected">勾选行（当前可见）</option>
+  <option value="all">全部器件（含 NC）</option>
   <option value="stock_issue">库存异常/低库存</option>
   <option value="low_stock">低库存器件</option>
   <option value="stock_error">库存异常器件</option>

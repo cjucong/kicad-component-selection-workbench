@@ -14,7 +14,7 @@
 
 `run_native_pad_sync_verdict_probe.py --report-dir <工程外绝对目录>` 在自动清理的合成工程中实际选择封装、同步原理图、更新PCB、保存重开，再给实例添加板级丝印，核验重复预检为无需替换、应用不产生事务、实时完整内容与磁盘字节不变；不接受生产工程参数，不联网查询商城。
 
-`test_selected_bom_export.py` 使用合成工程覆盖勾选行 BOM 导出的分组数量、部分分组、空/过期勾选、NC 排除、HTTP 与前端选择范围；不读写生产 CAD 或联网查料。`run_selected_bom_export_smoke.py` 使用隔离 HTTP 工程和真实 Chromium 验证可见勾选、隐藏行排除、清空选择和恢复选择。
+`test_selected_bom_export.py` 使用合成工程覆盖勾选行 BOM 导出的分组数量、部分分组、空/过期勾选、NC 保留、HTTP 与前端选择范围；不读写生产 CAD 或联网查料。`test_nc_bom_export.py` 覆盖 NC/DNP/DNF/NO LOAD、无 C 编码、零装配用量与设计数量、真实库存与未知区分、采购范围继续排除 NC、NC 开头型号不误判。`run_selected_bom_export_smoke.py` 使用隔离 HTTP 工程和真实 Chromium 验证可见勾选、隐藏行排除、清空/恢复选择、无编码 NC 勾选及全部导出，并解析实际 CSV；`NC_BOM_SCREENSHOT` 可指定工程外截图文件。
 
 PCB 重复待核验：`test_design_status.py` 覆盖精确等值数字及顶层排序、真实坐标/UUID/字段/编号/重复对象/轮廓顺序反例；`test_pcb_native_types.py` 覆盖直线反向与位置/宽度/层变化；`test_pad_mapping_native_types.py` 覆盖已应用适配目标变更的无变化核验、首次写入及真实焊盘变化拒绝。完整事务不采用完成状态的几何容差；真实 `run_native_design_keep_open.py --with-footprints` 另验保存、重开工作台及状态证据持久化。
 
@@ -58,7 +58,7 @@ PCB 保存超时：`test_pcb_session.py` 覆盖保存独立限时、禁止 Req0 
 
 `test_stock_delivery.py` 覆盖主商品渲染交期（4 小时、24 小时、工作日）、SSR/卡片三重身份、页脚排除、候选缓存、国际查询补齐与网络失败保留、主表转义及旧缓存保护；还验证超过 4 小时高库存、立即零值与部分供货、小时上限、未知及 NC 的 Python/JS 分类一致。`test_bom_export_template.py` 另验证延迟物料进入异常/当前筛选导出但不冒充数量低库存，以及本地库存零值/未知/无编码/陈旧编码、跨行共享不扣减；均使用合成数据。`run_supply_column_smoke.py` 在真实 Chromium 检查初始交期异常、快速发货局部刷新清除警告、高库存长交期重新归类与筛选。
 
-`test_bom_export_template.py` 使用合成分组与可清理工程验证立创模板前 10 列顺序、本地库存数量/说明紧随模板、附加信息后置、同料号参数与旧缓存隔离、单套数量、筛选后连续编号、空表表头和中文/逗号/换行往返。`run_local_inventory_smoke.py` 另验证手动编辑后立即点击真实导出按钮、等待在途库存保存、零值导出、保存失败不生成旧数量文件，并逐行解析实际 CSV，确认数量不随套数或需求改变、共享编码不重复累加；不读写真实采购单或生产 CAD。原导出范围与 NC 排除由 `test_part_selection_overrides.py` 继续覆盖。
+`test_bom_export_template.py` 使用合成分组与可清理工程验证立创模板前 10 列顺序、本地库存数量/说明紧随模板、附加信息后置、同料号参数与旧缓存隔离、单套数量、筛选后连续编号、空表表头和中文/逗号/换行往返。`run_local_inventory_smoke.py` 另验证手动编辑后立即点击真实导出按钮、等待在途库存保存、零值导出、保存失败不生成旧数量文件，并逐行解析实际 CSV，确认数量不随套数或需求改变、共享编码不重复累加；不读写真实采购单或生产 CAD。采购导出范围的 NC 排除由 `test_part_selection_overrides.py` 继续覆盖。
 
 自定义封装名称：`test_footprint_choices.py` 检查后端报错指出封装名/目标库及具体限制。Chromium `custom-name` 场景覆盖两个入口的非法字符/完整库前缀/保留名称提前拦截、中文自定义名、保存失败重试、取消冲突保留草稿及保存期间 Esc/导航关闭保护。真实 WebView2 探测在六位号 8→10 的两种入口中分别使用自定义中文名称，检查非法名不能提交、注入一次保存失败后名称/映射/偏移保留，随后真实保存并核验工程库文件；只有上游立创输入和故意失败是合成夹具，不使用生产工程写入。
 

@@ -50,9 +50,20 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   response=page.waitForResponse('**/api/export_pump_table');
   await exportBom();
   assert.equal((await (await response).json()).count,1);
+  await resistor.locator('[data-select-row]').uncheck();
+  await page.locator('#rows tr[data-refs="R9"] [data-select-row]').check();
+  response=page.waitForResponse('**/api/export_pump_table');
+  await exportBom();
+  assert.equal((await (await response).json()).count,1);
+  await page.locator('#exportPumpMenu').click();
+  await page.locator('#pumpExportMode').selectOption('all');
+  if(process.env.NC_BOM_SCREENSHOT) await page.screenshot({path:process.env.NC_BOM_SCREENSHOT});
+  response=page.waitForResponse('**/api/export_pump_table');
+  await page.locator('#exportPumpTable').click();
+  assert.equal((await (await response).json()).count,3);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({checked_group:true,hidden_checked_excluded:true,empty_selection_blocked:true,
-    restored_visible_selection:true,page_errors:errors}));
+    restored_visible_selection:true,nc_without_code:true,all_includes_nc:true,page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
@@ -66,6 +77,7 @@ def main():
             ("C1", "Capacitor", "100nF", "C1001"),
             ("C2", "Capacitor", "100nF", "C1001"),
             ("R1", "Resistor", "10k", "C2001"),
+            ("R9", "Resistor", "NC", ""),
         ]:
             symbols.append(f'(symbol (property "Reference" "{ref}") '
                            f'(property "Comment" "{comment}") (property "Value" "{value}") '
@@ -99,12 +111,16 @@ def main():
                 **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
             print(result.stdout)
             assert result.returncode == 0, result.stderr
-            assert [[(row["位号"], row["单套用量"]) for row in rows] for rows in exports] == [
+            assert [[(row["位号"], row["单套用量"]) for row in rows] for rows in exports[:4]] == [
                 [("C1,C2", "2")], [("C1,C2", "2")], [("R1", "1")],
+                [("R9", "0")],
             ]
+            assert {row["位号"]: row["单套用量"] for row in exports[4]} == {
+                "C1,C2": "2", "R1": "1", "R9": "0"}
+            assert next(row for row in exports[4] if row["位号"] == "R9")["装配状态"] == "NC / 不装"
             assert source.read_text(encoding="utf-8") == schematic
             assert not app.overrides_path.exists()
-            assert app._open_directory.call_count == 3
+            assert app._open_directory.call_count == 5
         finally:
             server.shutdown()
             server.server_close()
