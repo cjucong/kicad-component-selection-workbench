@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 from _scratch import temporary_project
 from part_selection_server import PartSelectionApp, make_handler
+from part_selection_overrides import save_override
 
 
 BROWSER = r'''
@@ -60,10 +61,32 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
   if(process.env.NC_BOM_SCREENSHOT) await page.screenshot({path:process.env.NC_BOM_SCREENSHOT});
   response=page.waitForResponse('**/api/export_pump_table');
   await page.locator('#exportPumpTable').click();
-  assert.equal((await (await response).json()).count,3);
+  let exported=await (await response).json();
+  assert.equal(exported.count,7);
+  assert.equal(exported.reference_count,83);
+  assert.equal(exported.unselected_reference_count,79);
+  await page.waitForFunction(()=>document.querySelector('#state').textContent.includes('83 个位号'));
+  assert.match(await page.locator('#state').textContent(),/79 个位号未选择 C 编码/);
+  await page.locator('#rows tr[data-refs="R9"] [data-select-row]').uncheck();
+  await page.locator('#rows tr[data-refs="TP1"] [data-select-row]').check();
+  response=page.waitForResponse('**/api/export_pump_table');
+  await exportBom();
+  exported=await (await response).json();
+  assert.equal(exported.count,1);
+  assert.equal(exported.reference_count,1);
+  for(const scope of ['all_non_nc','current_filter']) {
+    await page.locator('#exportPumpMenu').click();
+    await page.locator('#pumpExportMode').selectOption(scope);
+    response=page.waitForResponse('**/api/export_pump_table');
+    await page.locator('#exportPumpTable').click();
+    exported=await (await response).json();
+    assert.equal(exported.reference_count,scope==='all_non_nc'?82:83);
+    assert.equal(exported.unselected_reference_count,79);
+  }
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({checked_group:true,hidden_checked_excluded:true,empty_selection_blocked:true,
-    restored_visible_selection:true,nc_without_code:true,all_includes_nc:true,page_errors:errors}));
+    restored_visible_selection:true,nc_without_code:true,all_includes_nc:true,
+    cleared_selection_76_refs:true,unselected_connectors_and_testpoint:true,page_errors:errors}));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
@@ -73,15 +96,23 @@ def main():
     with temporary_project(prefix="selected-bom-browser-") as directory:
         root = Path(directory)
         symbols = []
-        for ref, comment, value, code in [
-            ("C1", "Capacitor", "100nF", "C1001"),
-            ("C2", "Capacitor", "100nF", "C1001"),
-            ("R1", "Resistor", "10k", "C2001"),
-            ("R9", "Resistor", "NC", ""),
-        ]:
+        parts = [
+            ("C1", "Capacitor", "100nF", "C1001", "0603"),
+            ("C2", "Capacitor", "100nF", "C1001", "0603"),
+            ("R1", "Resistor", "10k", "C2001", "0603"),
+            ("R9", "Resistor", "NC", "", "0603"),
+        ]
+        cleared = [(f"R{n}", "Resistor", "0", "C2002", "0603") for n in range(101, 129)]
+        cleared += [(f"R{n}", "Resistor", "10k", "C2003", "0402") for n in range(201, 249)]
+        parts += cleared + [
+            ("J1", "Connector", "Connector", "", "SMA"),
+            ("J2", "Connector", "Connector", "", "SMA"),
+            ("TP1", "Testpoint", "Test point", "", "TP_SMD"),
+        ]
+        for ref, comment, value, code, footprint in parts:
             symbols.append(f'(symbol (property "Reference" "{ref}") '
                            f'(property "Comment" "{comment}") (property "Value" "{value}") '
-                           f'(property "Footprint" "Library:0603") (property "LCSC" "{code}"))')
+                           f'(property "Footprint" "Library:{footprint}") (property "LCSC" "{code}"))')
         schematic = "(kicad_sch " + " ".join(symbols) + ")"
         source = root / "example.kicad_sch"
         source.write_text(schematic, encoding="utf-8")
@@ -90,6 +121,10 @@ def main():
         config.write_text(json.dumps({"source_bom": "__schematic__", "schematic_dir": ".",
                                      "bom_dir": "data"}), encoding="utf-8")
         app = PartSelectionApp(config)
+        for ref, *_ in cleared:
+            save_override(app.overrides_path, ref, {"decision": "ClearSelection",
+                "accepted_c_code": "", "manual_c_code": "", "stock_c_code": ""})
+        original_overrides = app.overrides_path.read_bytes()
         app._open_directory = Mock(return_value={"ok": True})
         exports = []
         original_export = app.export_pump_table
@@ -115,12 +150,20 @@ def main():
                 [("C1,C2", "2")], [("C1,C2", "2")], [("R1", "1")],
                 [("R9", "0")],
             ]
-            assert {row["位号"]: row["单套用量"] for row in exports[4]} == {
-                "C1,C2": "2", "R1": "1", "R9": "0"}
+            expected = {ref for ref, *_ in parts}
+            missing_before_fix = {ref for ref, *_ in cleared} | {"J1", "J2", "TP1"}
+            for index, refs in [(4, expected), (6, expected - {"R9"}), (7, expected)]:
+                actual = [ref for row in exports[index] for ref in row["位号"].split(",")]
+                assert set(actual) == refs and len(actual) == len(refs)
+                assert sum(int(row["单套用量"]) for row in exports[index]) == 82
+                for row in exports[index]:
+                    if set(row["位号"].split(",")) & missing_before_fix:
+                        assert row["商品编号"] == "" and "未选择 C 编码" in row["Note"]
+            assert [(row["位号"], row["单套用量"]) for row in exports[5]] == [("TP1", "1")]
             assert next(row for row in exports[4] if row["位号"] == "R9")["装配状态"] == "NC / 不装"
             assert source.read_text(encoding="utf-8") == schematic
-            assert not app.overrides_path.exists()
-            assert app._open_directory.call_count == 5
+            assert app.overrides_path.read_bytes() == original_overrides
+            assert app._open_directory.call_count == 8
         finally:
             server.shutdown()
             server.server_close()

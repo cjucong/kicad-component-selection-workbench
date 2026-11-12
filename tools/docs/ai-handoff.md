@@ -22,7 +22,7 @@
 
 ## 立创模板 BOM 导出
 
-勾选导出使用 `export_filter=selected` 与非空 `selected_refs` 数组；前端复用可见行选择器，先等待行编辑保存，并拒绝加载中或数据源不匹配的旧勾选。后端在分组前按位号读取，校验请求与实际位号集合完全相同，避免合行后夹带未选位号或数量；空、非法或过期选择直接失败，不回退全部。NC 仍排除，现有列、库存、输出目录和导出后打开文件夹流程保持不变。回归见 `test_selected_bom_export.py`。
+勾选导出使用 `export_filter=selected` 与非空 `selected_refs` 数组；前端复用可见行选择器，先等待行编辑保存，并拒绝加载中或数据源不匹配的旧勾选。后端在分组前按位号读取，校验请求与实际位号集合完全相同，避免合行后夹带未选位号或数量；空、非法或过期选择直接失败，不回退全部。NC 在完整范围保留为零装配用量。当前筛选/所选/全部/非NC及状态范围的成员资格不得依赖商品选型；只有库存专项范围要求有效选料。ClearSelection/Reject/DNP等选料决定不代替设计NC判定，无编码装配行备注待补采购信息，不恢复旧编码。返回reference_count与unselected_reference_count供UI区分行数和位号数。回归见 `test_selected_bom_export.py`、`test_bom_export_completeness.py` 和 `run_selected_bom_export_smoke.py`；合成79个无选料器件覆盖76电阻、2连接器及测试点，原生CSV逐位号核验。
 
 `PartSelectionApp.export_pump_table` 保持原 CSV 路径和 API，前 10 列按立创商城模板，非重复工程列后置；不要把商品编号 C 编码当作内部物料编码。导出只读已保存行和同编码缓存，不查询网络、不改变确认状态或 CAD。单套用量使用分组 quantity，不乘套数；模板示例数据不随插件分发。`test_bom_export_template.py` 与原导出筛选测试共同覆盖列顺序、数量、字段回退及参数身份隔离。
 

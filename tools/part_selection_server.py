@@ -782,15 +782,16 @@ def row_filter_keys(row: dict[str, object]) -> set[str]:
     return keys
 
 
-def row_is_pump_exportable(row: dict[str, object], *, include_nc: bool = False) -> bool:
-    if include_nc and row_is_nc(row):
+def row_is_pump_exportable(row: dict[str, object], *, include_nc: bool = False,
+                          require_selection: bool = True) -> bool:
+    if row_is_nc(row):
+        return include_nc
+    # A missing/rejected procurement selection never removes a design BOM member.
+    if not require_selection:
         return True
     has_any_code = bool(row_effective_c_code(row)) or any(selection_codes_for_row(row).values())
     return bool(
         has_any_code
-        and not row_is_nc(row)
-        and not all(item.get("decision") == "Reject" or item.get("review_status") == "Rejected"
-                    for item in (row.get("per_ref_selection") or {}).values())
         and (not row.get("per_ref_selection") or any(
             item.get("decision") != "Reject" and item.get("review_status") != "Rejected"
             for item in row["per_ref_selection"].values()
@@ -3799,8 +3800,9 @@ class PartSelectionApp:
                 raise ValueError("勾选的位号已变化，请重新读取并勾选后导出")
 
         def include_row(row: dict[str, object]) -> bool:
-            include_nc = export_filter not in {"all_non_nc", "stock_issue", "low_stock", "stock_error"}
-            if not row_is_pump_exportable(row, include_nc=include_nc):
+            stock_scope = export_filter in {"stock_issue", "low_stock", "stock_error"}
+            include_nc = export_filter != "all_non_nc" and not stock_scope
+            if not row_is_pump_exportable(row, include_nc=include_nc, require_selection=stock_scope):
                 return False
             keys = row_filter_keys(row)
             if export_filter == "current_filter":
@@ -3894,6 +3896,8 @@ class PartSelectionApp:
             note = str(row.get("note") or "")
             if is_nc:
                 note = f"NC / 不装；设计数量 {design_quantity}" + (f"；{note}" if note else "")
+            elif not normalized_code:
+                note = "未选择 C 编码，请补充采购信息" + (f"；{note}" if note else "")
             export_rows.append(
                 {
                     "序号": str(len(export_rows) + 1),
@@ -3945,7 +3949,10 @@ class PartSelectionApp:
             writer = csv.DictWriter(file, fieldnames=columns)
             writer.writeheader()
             writer.writerows(export_rows)
-        return {"ok": True, "path": str(output_path), "count": len(export_rows), "filter": export_filter}
+        return {"ok": True, "path": str(output_path), "count": len(export_rows), "filter": export_filter,
+                "reference_count": sum(len(split_refs(row["位号"])) for row in export_rows),
+                "unselected_reference_count": sum(len(split_refs(row["位号"])) for row in export_rows
+                    if row["装配状态"] == "装配" and not normalize_lcsc_c_code(row["商品编号"]))}
 
     def open_export_folder(self, result: dict[str, object]) -> dict[str, object]:
         if not result.get("ok"):
@@ -7049,7 +7056,9 @@ async function saveStockCode(tr, code) {{
 }}
 
 function showExportResult(data, label) {{
-  const message = `已导出${{label}}：${{data.count}} 条，${{data.path}}`;
+  const count = Number.isInteger(data.reference_count) ? `${{data.count}} 行、${{data.reference_count}} 个位号` : `${{data.count}} 条`;
+  const pending = data.unselected_reference_count > 0 ? `；${{data.unselected_reference_count}} 个位号未选择 C 编码` : "";
+  const message = `已导出${{label}}：${{count}}，${{data.path}}${{pending}}`;
   if (data.folder_opened === false) {{
     setState(`${{message}}；无法打开目标文件夹：${{data.folder_error || "请手动打开上述路径"}}`, "error");
   }} else {{

@@ -1,5 +1,7 @@
 # 插件回归测试
 
+`test_bom_export_completeness.py` 和 `run_selected_bom_export_smoke.py` 复现并核验完整BOM不因ClearSelection、拒选、未选料或无C编码漏行。合成79个位号覆盖28颗0Ω、48颗10kΩ、2连接器及1测试点，检查全部/非NC/筛选/所选范围的真实CSV数量、无编码备注、NC零用量、原理图与记录字节不变；真实Chromium另验证页面显示位号数及待补编码数。库存专项仍排除无选料与拒选项。
+
 `run_table_loading_smoke.py` 使用650行合成数据在真实Chromium中验证加载进度、分批显示、搜索、失败恢复、空表与迟到渲染隔离；`TABLE_SCREENSHOTS` 可指定工程外截图目录。`test_selective_sexpr.py` 验证选择性解析保留封装及源偏移、不接受跳过区域的损坏结构；`test_table_loading.py` 验证目标哈希只在同轮共享、下轮重新读取。
 
 `test_part_selection_inventory.py` 另覆盖库存修改明细的原子保存、零/未知区分、重开共享、旧数据兼容、导入失效，以及JSON字段顺序不同不误判冲突。`run_local_inventory_smoke.py` 在合成工程的真实Chromium中检查同步栏数量变化、刷新保留、换编码隔离、保存失败/真正并发冲突，且不改变CAD待同步状态。没有拿生产数据做写入测试。
