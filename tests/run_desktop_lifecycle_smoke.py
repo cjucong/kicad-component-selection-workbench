@@ -167,10 +167,20 @@ def child(root, phase):
                         window.destroy = original_destroy
                     window.destroy()
 
-        window.events.loaded += exercise
+        window._lifecycle_smoke_exercise = exercise
         return window
 
     webview.create_window = create
+    original_shortcuts = desktop.enable_browser_shortcuts
+
+    def workbench_ready(window):
+        original_shortcuts(window)
+        exercise = getattr(window, '_lifecycle_smoke_exercise', None)
+        if exercise:
+            # The first loaded event belongs to the startup page.
+            threading.Thread(target=exercise, daemon=True).start()
+
+    desktop.enable_browser_shortcuts = workbench_ready
 
     def restart(project, config, logs):
         command = [sys.executable,'-B',str(Path(__file__).resolve()),'--child',str(root),'--phase','final']

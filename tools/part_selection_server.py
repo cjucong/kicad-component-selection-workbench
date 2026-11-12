@@ -8866,17 +8866,17 @@ document.addEventListener("click", async event => {{
 candidateRows.addEventListener("click", async event => {{
   const button = event.target.closest("button[data-action]");
   if (!button) return;
-  if (button.dataset.action === "retry-candidate-parameters") {{
-    const item = candidateRawItems.find(item => normalizeCCode(item.c_code) === button.dataset.code);
-    if (item) {{
-      candidateParameterRequests.delete(candidateParameterKey(item));
-      delete item.detail_parameter_status;
-      supplementCandidateParameters(candidateSearchToken, button.dataset.code);
-      renderCandidateResults();
-    }}
-    return;
-  }}
   try {{
+    if (button.dataset.action === "retry-candidate-parameters") {{
+      const item = candidateRawItems.find(item => normalizeCCode(item.c_code) === button.dataset.code);
+      if (item) {{
+        candidateParameterRequests.delete(candidateParameterKey(item));
+        delete item.detail_parameter_status;
+        supplementCandidateParameters(candidateSearchToken, button.dataset.code);
+        renderCandidateResults();
+      }}
+      return;
+    }}
     if (button.dataset.action === "choose-candidate") await chooseCandidate(button.dataset.code || "");
     if (button.dataset.action === "add-candidate-alternate") await addCandidateAsAlternate(button.dataset.code || "");
     if (button.dataset.action === "select-procurement") await selectProcurement(button.dataset.quoteKey || "");

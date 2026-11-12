@@ -134,3 +134,56 @@ const {chromium}=require('playwright'), assert=require('node:assert/strict');
                CANDIDATE_JS=str(base / 'candidate-desktop.js'))
     result = subprocess.run(['node','-e',script],env=env,capture_output=True,text=True,timeout=40)
     assert result.returncode == 0, result.stderr
+
+
+def test_candidate_parameter_retry_releases_exit_guard(monkeypatch):
+    import run_candidate_search_smoke as fixture
+
+    script = r'''
+const {chromium}=require('playwright'),assert=require('node:assert/strict');
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage(),errors=[];
+  page.setDefaultTimeout(5000);
+  page.on('pageerror',error=>errors.push(error.message));
+  let failDetails=true,saveRequests=0,releaseSave;
+  const saved=new Promise(resolve=>releaseSave=resolve);
+  const item={c_code:'C101',product_id:'321',model:'FIXTURE',package:'0603',stock:'100'};
+  await page.route('**/api/lcsc_search?*',route=>route.fulfill({json:{
+   ok:true,done:true,revision:1,items:[item],sources:{domestic:'ready'}}}));
+  await page.route('**/api/candidate_parameters',route=>route.fulfill({json:failDetails
+   ? {ok:false,status:'failed',error:'offline fixture'}
+   : {ok:true,...item,parameters:[{name:'工作电压',value:'50V'}],param_detail:'工作电压: 50V'}}));
+  await page.route('**/api/select_candidate',async route=>{
+   saveRequests++;await saved;await route.fulfill({json:{ok:true}});
+  });
+  await page.goto(process.env.CANDIDATE_TEST_URL+'/?view=candidate');
+  await page.evaluate(()=>{
+   window.pywebview={api:{tool_window:async()=>({ok:true})}};
+   const result=receiveNativeToolRequest({kind:'candidate',request_id:'one',host:'fixture',project:'fixture',
+    payload:{ref:'C1',refs:'C1',bom:'__schematic__',comment:'capacitor',value:'4.7uF',footprint:'Library:0805'}});
+   if(!result.ok)throw Error(result.error);
+  });
+  await page.locator('[data-action="retry-candidate-parameters"]').waitFor();
+  failDetails=false;
+  await page.locator('[data-action="retry-candidate-parameters"]').click();
+  await page.waitForFunction(()=>document.querySelector('#candidateRows').textContent.includes('50V'));
+  assert.equal(await page.evaluate(()=>nativeCandidateCanExit()),true,
+   'Read-only parameter retry left the candidate window permanently busy');
+  assert.equal(await page.evaluate(()=>prepareNativeToolExit(true)),true);
+  await page.evaluate(()=>cancelNativeToolExit());
+  await page.locator('[data-action="choose-candidate"]').click();
+  await page.waitForFunction(()=>candidateTargetRow.dataset.candidateSaving==='1');
+  assert.equal(await page.evaluate(()=>prepareNativeToolExit(true)),false,
+   'A real selection write must still block shutdown');
+  assert.equal(saveRequests,1);
+  releaseSave();
+  await page.waitForFunction(()=>nativeCandidateCanExit());
+  assert.equal(await page.evaluate(()=>prepareNativeToolExit(true)),true);
+  assert.deepEqual(errors,[]);
+ } finally {await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    monkeypatch.setattr(fixture, 'BROWSER', script)
+    fixture.main()

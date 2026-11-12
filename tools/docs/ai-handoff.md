@@ -1,5 +1,11 @@
 # 开发接手说明
 
+## 候选参数重试与退出保护
+
+候选按钮的捕获监听器设置 `candidateActionBusy`，异步操作监听器必须在所有分支的 `finally` 调用 `finishNativeCandidateAction`。参数重试曾在 `try` 外提前返回，导致只读请求已经完成，宿主仍永久判定子窗口正在写入。重试分支纳入同一清理路径；不得通过关闭后台、超时强制清状态或放宽真实保存保护修复。`test_tool_desktop_ui.py::test_candidate_parameter_retry_releases_exit_guard` 使用可清理合成工程的真实 Chromium 验证参数失败后重试、宿主退出准备/恢复、延迟选料保存仍拦截及完成后释放。
+
+`run_desktop_lifecycle_smoke.py` 的主窗口操作由工作台就绪回调启动，不能在首次 `loaded`（启动进度页）上阻塞等待主表，否则会阻止后续启动监听器。`--lifecycle-only` 验证原生保存退出、慢库存退出、重启和启动尚未就绪时关闭；候选参数重试的完整页面回归另由 Chromium 测试覆盖。
+
 ## 原理图只读定位
 
 `kicad_schematic_search.ps1` 的 SearchPanel 路径只枚举已核实工程窗口的原生子控件。结果列表可能只有 28 像素高，不以旧的 80 像素门槛判断关闭；菜单勾选状态在 wx 中可能未刷新，以实际可见的 searchCtrl 为准，缺失时只向该窗口发送一次原生命令。此路径不再依赖旧 MCP 虚拟环境、UIAutomation、全局 Ctrl+G、坐标点击或 Enter。

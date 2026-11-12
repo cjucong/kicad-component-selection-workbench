@@ -32,6 +32,8 @@
 
 ## 测试与临时产物
 
+- 更换型号的参数重试与选料操作共用完整的 `try/finally` 操作状态释放；只读重试不得永久阻止宿主退出，真实保存/转换未结束仍须保护。保留 `test_candidate_parameter_retry_releases_exit_guard` 的真实 Chromium 重试和延迟保存回归，不靠强制清忙碌状态或结束后台恢复。
+
 - 用户2026-11-12要求完整BOM保留设计范围内所有器件，覆盖此前非NC选型有效性筛选：未选料、ClearSelection/Reject等选料状态、无C编码不能静默删除0Ω、连接器或测试点。只有库存专项范围继续要求有效选料；不恢复已清空编码、不反向改CAD或把选料DNP当作设计NC。无编码装配行注明待补采购信息，返回位号及无编码数量。保留 `test_bom_export_completeness.py` 与真实Chromium逐位号CSV回归，仅使用合成可清理工程。
 
 - 2026-11-10：BOM 当前筛选、勾选行及全部器件范围保留 NC/DNP/DNF/NO LOAD，无 C 编码也须可导出；单套用量为 0，附加装配状态及设计数量，备注注明不装，不改变 CAD/选料/库存数量或采购需求。全部非NC及库存异常/低库存范围继续排除 NC。保持立创模板前10列及非NC原筛选规则；保留 `test_nc_bom_export.py` 和真实 Chromium CSV 回归。
